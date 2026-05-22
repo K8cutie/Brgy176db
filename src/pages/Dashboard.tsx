@@ -159,15 +159,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     // Load data from localStorage via store helpers
-    const persistedEvents = getPersisted<CalendarEvent[]>('calendar_events', []);
+    // NOTE: AppState keys are: 'events', 'ministries', 'collections', 'journal', etc.
+    const persistedEvents = getPersisted<CalendarEvent[]>('events', []);
     const persistedMinistries = getPersisted<Ministry[]>('ministries', []);
-    const persistedActivities = getPersisted<ActivityItem[]>('recent_activity', []);
-    const persistedFinance = getPersisted('finance_summary', {
-      sundayCollection: 2250,
-      pendingApprovals: 3,
-      ytdIncome: 128450,
-      ytdExpenses: 98200
-    });
+    const persistedCollections = getPersisted<any[]>('collections', []);
+    const persistedJournal = getPersisted<any[]>('journal', []);
+    const persistedApplications = getPersisted<any[]>('applications', []);
 
     // Sort events: upcoming first
     const now = new Date();
@@ -178,8 +175,55 @@ export default function Dashboard() {
 
     setEvents(upcoming);
     setMinistries(persistedMinistries);
-    setActivities(persistedActivities.slice(0, 8));
-    setFinanceSummary(persistedFinance);
+
+    // Derive recent activity from events + journal + collections
+    const syntheticActivities: ActivityItem[] = [
+      ...persistedEvents.map((e: CalendarEvent) => ({
+        id: `evt-${e.id}`,
+        type: 'event' as const,
+        description: `${e.type}: ${e.title}`,
+        detail: e.location,
+        date: e.date
+      })),
+      ...persistedCollections.map((c: any, i: number) => ({
+        id: `col-${i}`,
+        type: 'collection' as const,
+        description: `Sunday collection posted: ₱${c.amount?.toLocaleString() || '0'}`,
+        detail: c.massTime || 'Mass collection',
+        date: c.date || new Date().toISOString()
+      })),
+      ...persistedJournal.map((j: any, i: number) => ({
+        id: `jrn-${i}`,
+        type: 'approval' as const,
+        description: j.description || 'Journal entry recorded',
+        detail: `₱${j.amount?.toLocaleString() || '0'}`,
+        date: j.date || new Date().toISOString()
+      }))
+    ]
+    .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime())
+    .slice(0, 8);
+
+    setActivities(syntheticActivities);
+
+    // Compute finance summary from collections + journal
+    const latestCollection = persistedCollections[persistedCollections.length - 1];
+    const incomeEntries = persistedJournal.filter((j: any) => j.type === 'income' || (j.amount && j.amount > 0));
+    const expenseEntries = persistedJournal.filter((j: any) => j.type === 'expense' || (j.amount && j.amount < 0));
+
+    const ytdIncome = incomeEntries.reduce((sum: number, j: any) => sum + (Math.abs(j.amount) || 0), 0);
+    const ytdExpenses = expenseEntries.reduce((sum: number, j: any) => sum + (Math.abs(j.amount) || 0), 0);
+
+    // Pending approvals from applications or journal entries with status 'pending'
+    const pendingCount = persistedApplications.filter((a: any) => a.status === 'pending').length
+      || persistedJournal.filter((j: any) => j.status === 'pending').length
+      || 0;
+
+    setFinanceSummary({
+      sundayCollection: latestCollection?.amount || 0,
+      pendingApprovals: pendingCount,
+      ytdIncome,
+      ytdExpenses
+    });
   }, []);
 
   // Mini calendar data

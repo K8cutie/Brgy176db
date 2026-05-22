@@ -305,6 +305,20 @@ When starting a new ChurchOS session:
 | Date | File Changed | Description | Status |
 |------|-------------|-------------|--------|
 | 2026-05-22 | src/pages/Dashboard.tsx | COMPLETE REWRITE: Restructured dashboard to prioritize parish operations over financial data. Hero section now shows Upcoming Events with Ministry Assignments (Choir, Ushers, Lectors, etc. matched by date/time). Calendar widget moved to right sidebar. Financial stats demoted to compact summary card. Quick actions reordered: Schedule Event first. Recent Activity kept as secondary section. | READY FOR TESTING |
+| 2026-05-23 | src/pages/Dashboard.tsx | BUILD FIX: Corrected `getPersisted()` keys to match `AppState` interface in `store.ts`. Changed `'calendar_events'` → `'events'`, removed non-existent `'recent_activity'` and `'finance_summary'` keys. Added synthetic activity derivation from `events` + `collections` + `journal`. Added finance summary computation from `collections` + `journal` + `applications`. | FIXED |
+
+**Build Error Details:**
+- Error: `Argument of type '"finance_summary"' is not assignable to parameter of type 'keyof AppState'`
+- Error: `Argument of type '"recent_activity"' is not assignable to parameter of type 'keyof AppState'`
+- Error: `Argument of type '"calendar_events"' is not assignable to parameter of type 'keyof AppState'`
+- Root cause: Dashboard used guessed keys that don't exist in `AppState` interface
+- Fix: Used actual keys (`events`, `ministries`, `collections`, `journal`, `applications`) and derived missing data
+
+**Warning (non-fatal):**
+- GitHub Actions Node.js 20 deprecation — will break after September 2026
+- Recommend updating `.github/workflows/deploy.yml` to `actions/setup-node@v4` with Node 24
+
+
 
 **Dashboard v2.0 Changes:**
 1. **Hero Section (2/3 width):** Upcoming Events & Ministry Assignments — shows next 10 events with serving ministries matched via `ministry.scheduleAssignments` by `day + massTime`
@@ -365,4 +379,4 @@ When starting a new ChurchOS session:
 ---
 
 *Version: 1.1*
-*Updated: 2026-05-22*
+*Updated: 2026-05-23*
