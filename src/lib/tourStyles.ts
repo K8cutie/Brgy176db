@@ -1,0 +1,121 @@
+import type { Styles } from 'react-joyride';
+
+export const tourStyles: Partial<Styles> = {
+  arrow: {
+    color: '#FAF8F3',
+  },
+  tooltip: {
+    backgroundColor: '#FAF8F3',
+    borderRadius: '12px',
+    boxShadow: '0 8px 32px rgba(27, 42, 74, 0.18)',
+    width: '380px',
+    maxWidth: '100%',
+  },
+  tooltipContainer: {
+    borderRadius: '12px',
+    overflow: 'hidden',
+  },
+  tooltipTitle: {
+    fontFamily: "'Playfair Display', Georgia, serif",
+    fontSize: '18px',
+    fontWeight: 700,
+    color: '#1B2A4A',
+    padding: '20px 20px 0',
+  },
+  tooltipContent: {
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontSize: '14px',
+    lineHeight: '1.65',
+    color: '#3D3A36',
+    padding: '12px 20px 0',
+  },
+  tooltipFooter: {
+    padding: '16px 20px 20px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  tooltipFooterSpacer: {
+    flex: 1,
+  },
+  buttonPrimary: {
+    backgroundColor: '#C9963B',
+    borderRadius: '8px',
+    color: '#FFFFFF',
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontSize: '13px',
+    fontWeight: 600,
+    padding: '8px 18px',
+    border: 'none',
+    cursor: 'pointer',
+    transition: 'background-color 0.2s ease',
+  },
+  buttonBack: {
+    backgroundColor: 'transparent',
+    borderRadius: '8px',
+    color: '#8C8374',
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontSize: '13px',
+    fontWeight: 500,
+    padding: '8px 14px',
+    border: '1px solid #EAE5D9',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  buttonSkip: {
+    backgroundColor: 'transparent',
+    borderRadius: '8px',
+    color: '#8C8374',
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontSize: '12px',
+    fontWeight: 400,
+    padding: '6px 12px',
+    border: 'none',
+    cursor: 'pointer',
+    textDecoration: 'underline',
+  },
+  buttonClose: {
+    backgroundColor: 'transparent',
+    borderRadius: '50%',
+    color: '#8C8374',
+    fontSize: '16px',
+    padding: '4px',
+    border: 'none',
+    cursor: 'pointer',
+    position: 'absolute',
+    top: '12px',
+    right: '12px',
+    width: '28px',
+    height: '28px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  overlay: {
+    backgroundColor: 'rgba(27, 42, 74, 0.5)',
+  },
+  spotlight: {
+    // borderRadius is handled by the SVG path
+  },
+  floater: {
+    filter: 'drop-shadow(0 4px 12px rgba(27, 42, 74, 0.12))',
+  },
+  beacon: {
+    backgroundColor: '#C9963B',
+    borderRadius: '50%',
+    width: '36px',
+    height: '36px',
+  },
+  beaconInner: {
+    backgroundColor: '#C9963B',
+    borderRadius: '50%',
+  },
+  beaconOuter: {
+    backgroundColor: 'rgba(201, 150, 59, 0.3)',
+    borderRadius: '50%',
+  },
+  beaconWrapper: {
+    cursor: 'pointer',
+  },
+};
