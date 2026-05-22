@@ -1,656 +1,541 @@
-import { useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { format } from 'date-fns';
-import {
-  Users,
-  BookOpen,
-  DollarSign,
-  Clock,
-  Plus,
-  Calendar,
-  FileText,
-  Droplets,
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
+import { 
+  CalendarDays, 
+  Users, 
+  Music, 
+  BookOpen, 
+  HandHelping,
+  Cross,
+  Mic,
+  Baby,
   Heart,
+  Church,
+  FileText,
   TrendingUp,
+  DollarSign,
+  AlertCircle,
   ChevronRight,
+  Clock,
+  MapPin,
+  User
 } from 'lucide-react';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-} from 'recharts';
-import StatCard from '@/components/StatCard';
-import DataTable from '@/components/DataTable';
-import BackToTop from '@/components/BackToTop';
-import EmptyState from '@/components/EmptyState';
-import { getLabel } from '@/lib/friendlyLabels';
-import {
-  baptismRecords,
-  marriageRecords,
-  confirmationRecords,
-  deathRecords,
-} from '@/lib/registryData';
-import { families } from '@/lib/directoryData';
-import { collectionsData, approvalItems } from '@/lib/financeData';
-import { SAMPLE_EVENTS } from '@/lib/calendarData';
-import { getParishConfig } from '@/lib/parishConfig';
+import { getPersisted } from '@/lib/store';
+import { format, parseISO, isToday, isTomorrow, isThisWeek, getDay } from 'date-fns';
 
-/* ─────────────────────── sample data ─────────────────────── */
+// --- Types (mirroring your data structures) ---
+interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string; // ISO date
+  startTime: string;
+  endTime?: string;
+  location: string;
+  officiant?: string;
+  type: 'Mass' | 'Baptism' | 'Wedding' | 'Confirmation' | 'Funeral' | 'Meeting' | 'SSDM' | 'General';
+  sacramentRecordId?: string;
+  notes?: string;
+}
 
-const incomeExpenseData = [
-  { name: 'Income', value: 128450, color: '#2D6A4F' },
-  { name: 'Expenses', value: 98200, color: '#6B2737' },
-];
+interface Ministry {
+  id: string;
+  name: string;
+  members: string[];
+  scheduleAssignments: {
+    day: string; // e.g., "Sunday", "Monday"
+    massTime: string; // e.g., "6:00 AM", "8:00 AM"
+    memberName: string;
+  }[];
+}
 
-interface MassAttendanceRow {
+interface ActivityItem {
+  id: string;
+  type: 'registry' | 'collection' | 'approval' | 'directory' | 'ssdm' | 'event';
+  description: string;
+  detail?: string;
   date: string;
-  time: string;
-  attendance: number;
-  officiant: string;
-  notes: string;
 }
 
-const massAttendanceData: MassAttendanceRow[] = [
-  { date: 'May 18, 2026', time: '6:00 AM', attendance: 340, officiant: 'Fr. Reyes', notes: 'Regular Sunday' },
-  { date: 'May 18, 2026', time: '8:00 AM', attendance: 520, officiant: 'Fr. Santos', notes: 'Main Mass' },
-  { date: 'May 18, 2026', time: '10:00 AM', attendance: 410, officiant: 'Fr. Reyes', notes: '' },
-  { date: 'May 11, 2026', time: '6:00 AM', attendance: 310, officiant: 'Fr. Reyes', notes: '' },
-  { date: 'May 11, 2026', time: '8:00 AM', attendance: 495, officiant: 'Fr. Santos', notes: 'Feast of the Ascension' },
-  { date: 'May 11, 2026', time: '10:00 AM', attendance: 380, officiant: 'Fr. Reyes', notes: '' },
-  { date: 'May 4, 2026', time: '6:00 AM', attendance: 325, officiant: 'Fr. Reyes', notes: '' },
-  { date: 'May 4, 2026', time: '8:00 AM', attendance: 510, officiant: 'Fr. Santos', notes: '' },
-  { date: 'May 4, 2026', time: '10:00 AM', attendance: 395, officiant: 'Fr. Reyes', notes: 'Youth choir present' },
-  { date: 'Apr 27, 2026', time: '8:00 AM', attendance: 480, officiant: 'Fr. Reyes', notes: '' },
-];
+// --- Helpers ---
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-const upcomingEvents = [
-  { date: 'May 21', time: '6:00 AM', title: 'Sunday Mass', type: 'Mass', color: '#3B6BC9', bgColor: 'rgba(59,107,201,0.12)' },
-  { date: 'May 21', time: '9:00 AM', title: 'Baptism: Santos Family', type: 'Baptism', color: '#2D6A4F', bgColor: 'rgba(45,106,79,0.12)' },
-  { date: 'May 22', time: '2:00 PM', title: 'Finance Council Meeting', type: 'General', color: '#8C8374', bgColor: 'rgba(140,131,116,0.12)' },
-  { date: 'May 22', time: '3:00 PM', title: 'Wedding: Garcia-Lim', type: 'Wedding', color: '#6B2737', bgColor: 'rgba(107,39,55,0.12)' },
-  { date: 'May 23', time: '4:00 PM', title: 'SSD Scholarship Review', type: 'SSDM', color: '#5B3A73', bgColor: 'rgba(91,58,115,0.12)' },
-];
-
-/* ─────────────────────── mini calendar data ─────────────────────── */
-
-function getDaysInMonth(year: number, month: number) {
-  return new Date(year, month + 1, 0).getDate();
+function getEventDayName(dateStr: string): string {
+  const d = parseISO(dateStr);
+  return DAY_NAMES[getDay(d)];
 }
 
-function getFirstDayOfMonth(year: number, month: number) {
-  return new Date(year, month, 1).getDay();
+function normalizeTime(timeStr: string): string {
+  // Normalize "6:00 AM" / "06:00" / "6am" for matching
+  return timeStr.trim().toUpperCase().replace(/\s+/g, ' ');
 }
 
-const today = new Date();
-const currentYear = today.getFullYear();
-const currentMonth = today.getMonth();
-const currentDate = today.getDate();
-const daysInMonth = getDaysInMonth(currentYear, currentMonth);
-const firstDay = getFirstDayOfMonth(currentYear, currentMonth);
-const eventDates = [5, 12, 18, 21, 22, 23, 28];
+function getMinistryAssignmentsForEvent(event: CalendarEvent, ministries: Ministry[]): Record<string, string[]> {
+  if (event.type !== 'Mass') return {};
 
-/* ─────────────────────── easing ─────────────────────── */
+  const eventDay = getEventDayName(event.date);
+  const eventTime = normalizeTime(event.startTime);
 
-const enterEase = [0, 0, 0.2, 1] as [number, number, number, number];
+  const assignments: Record<string, string[]> = {};
 
-/* ─────────────────────── component ─────────────────────── */
+  ministries.forEach(ministry => {
+    const matched = ministry.scheduleAssignments.filter(
+      sa => sa.day === eventDay && normalizeTime(sa.massTime) === eventTime
+    );
+    if (matched.length > 0) {
+      assignments[ministry.name] = matched.map(m => m.memberName);
+    }
+  });
 
+  return assignments;
+}
+
+function getEventIcon(type: CalendarEvent['type']) {
+  switch (type) {
+    case 'Mass': return <Church className="h-4 w-4" />;
+    case 'Baptism': return <Baby className="h-4 w-4" />;
+    case 'Wedding': return <Heart className="h-4 w-4" />;
+    case 'Funeral': return <Cross className="h-4 w-4" />;
+    case 'SSDM': return <HandHelping className="h-4 w-4" />;
+    default: return <CalendarDays className="h-4 w-4" />;
+  }
+}
+
+function getEventBadgeColor(type: CalendarEvent['type']) {
+  switch (type) {
+    case 'Mass': return 'bg-blue-100 text-blue-800 border-blue-200';
+    case 'Baptism': return 'bg-green-100 text-green-800 border-green-200';
+    case 'Wedding': return 'bg-pink-100 text-pink-800 border-pink-200';
+    case 'Funeral': return 'bg-gray-100 text-gray-800 border-gray-200';
+    case 'SSDM': return 'bg-purple-100 text-purple-800 border-purple-200';
+    default: return 'bg-amber-100 text-amber-800 border-amber-200';
+  }
+}
+
+function formatEventDate(dateStr: string): string {
+  const d = parseISO(dateStr);
+  if (isToday(d)) return 'Today';
+  if (isTomorrow(d)) return 'Tomorrow';
+  if (isThisWeek(d)) return format(d, 'EEEE');
+  return format(d, 'MMM d');
+}
+
+// --- Ministry Icon Map ---
+const MINISTRY_ICONS: Record<string, React.ReactNode> = {
+  'Choir': <Music className="h-3.5 w-3.5" />,
+  'Music Ministry': <Music className="h-3.5 w-3.5" />,
+  'Ushers': <Users className="h-3.5 w-3.5" />,
+  'Lectors': <BookOpen className="h-3.5 w-3.5" />,
+  'Commentators': <Mic className="h-3.5 w-3.5" />,
+  'Sacristans': <Cross className="h-3.5 w-3.5" />,
+  'Altar Servers': <Cross className="h-3.5 w-3.5" />,
+  'Servers': <Cross className="h-3.5 w-3.5" />,
+};
+
+function getMinistryIcon(name: string): React.ReactNode {
+  for (const [key, icon] of Object.entries(MINISTRY_ICONS)) {
+    if (name.toLowerCase().includes(key.toLowerCase())) return icon;
+  }
+  return <Users className="h-3.5 w-3.5" />;
+}
+
+// --- Main Component ---
 export default function Dashboard() {
   const navigate = useNavigate();
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [ministries, setMinistries] = useState<Ministry[]>([]);
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [financeSummary, setFinanceSummary] = useState({
+    sundayCollection: 0,
+    pendingApprovals: 0,
+    ytdIncome: 0,
+    ytdExpenses: 0
+  });
 
-  const config = useMemo(() => getParishConfig(), []);
+  useEffect(() => {
+    // Load data from localStorage via store helpers
+    const persistedEvents = getPersisted<CalendarEvent[]>('calendar_events', []);
+    const persistedMinistries = getPersisted<Ministry[]>('ministries', []);
+    const persistedActivities = getPersisted<ActivityItem[]>('recent_activity', []);
+    const persistedFinance = getPersisted('finance_summary', {
+      sundayCollection: 2250,
+      pendingApprovals: 3,
+      ytdIncome: 128450,
+      ytdExpenses: 98200
+    });
 
-  const greeting = useMemo(() => {
-    const hour = new Date().getHours();
-    const priestName = config.parishPriest;
-    if (hour >= 5 && hour < 12) return `Good morning, ${priestName}`;
-    if (hour >= 12 && hour < 18) return `Good afternoon, ${priestName}`;
-    return `Good evening, ${priestName}`;
-  }, [config]);
-
-  const formattedDate = format(new Date(), 'MMMM d, yyyy');
-
-  /* ─── KPI computations ─── */
-  const totalParishioners = useMemo(
-    () => families.reduce((sum, f) => sum + f.members.length, 0),
-    []
-  );
-
-  const sacramentsThisMonth = useMemo(() => {
+    // Sort events: upcoming first
     const now = new Date();
-    const month = now.getMonth();
-    const year = now.getFullYear();
-    return [
-      ...baptismRecords,
-      ...marriageRecords,
-      ...confirmationRecords,
-      ...deathRecords,
-    ].filter((r) => {
-      const dateStr =
-        'dateOfBaptism' in r && r.dateOfBaptism
-          ? r.dateOfBaptism
-          : 'dateOfMarriage' in r && r.dateOfMarriage
-            ? r.dateOfMarriage
-            : 'dateOfConfirmation' in r && r.dateOfConfirmation
-              ? r.dateOfConfirmation
-              : 'dateOfDeath' in r && r.dateOfDeath
-                ? r.dateOfDeath
-                : 'dateOfBurial' in r && r.dateOfBurial
-                  ? r.dateOfBurial
-                  : undefined;
-      if (!dateStr) return false;
-      const d = new Date(dateStr);
-      return d.getMonth() === month && d.getFullYear() === year;
-    }).length;
+    const upcoming = persistedEvents
+      .filter(e => parseISO(e.date) >= new Date(now.getTime() - 24 * 60 * 60 * 1000)) // Include today
+      .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime())
+      .slice(0, 10); // Next 10 events
+
+    setEvents(upcoming);
+    setMinistries(persistedMinistries);
+    setActivities(persistedActivities.slice(0, 8));
+    setFinanceSummary(persistedFinance);
   }, []);
 
-  const sundayCollection = useMemo(() => {
-    const latest = collectionsData[collectionsData.length - 1];
-    return latest ? latest.total : 0;
-  }, []);
+  // Mini calendar data
+  const today = new Date();
+  const currentMonth = format(today, 'MMMM yyyy');
+  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).getDay();
 
-  const pendingApprovals = useMemo(
-    () => approvalItems.filter((a) => a.status === 'Pending').length,
-    []
-  );
-
-  /* ─── Baptism trend (12 months) ─── */
-  const baptismTrend = useMemo(() => {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return months.map((month, i) => ({
-      month,
-      baptisms: baptismRecords.filter((r) => {
-        const d = new Date(r.dateOfBaptism);
-        return d.getMonth() === i;
-      }).length,
-    }));
-  }, []);
-
-  const totalBaptisms = useMemo(() => baptismRecords.length, []);
-
-  /* ─── Dynamic Activity Feed ─── */
-  const activityData = useMemo(() => {
-    const items: Array<{
-      icon: typeof Users;
-      iconColor: string;
-      bgColor: string;
-      text: string;
-      detail: string;
-      time: string;
-      path: string;
-    }> = [];
-
-    // Latest baptism
-    const latestBaptism = [...baptismRecords].sort(
-      (a, b) => new Date(b.dateOfBaptism).getTime() - new Date(a.dateOfBaptism).getTime()
-    )[0];
-    if (latestBaptism) {
-      items.push({
-        icon: Droplets,
-        iconColor: '#2D6A4F',
-        bgColor: 'rgba(45,106,79,0.12)',
-        text: `Baptism recorded for ${latestBaptism.childFirstName} ${latestBaptism.childLastName}`,
-        detail: `Registry #${latestBaptism.registryNumber}`,
-        time: format(new Date(latestBaptism.dateOfBaptism), 'MMM d'),
-        path: '/registry',
-      });
-    }
-
-    // Latest collection
-    const latestCollection = collectionsData[collectionsData.length - 1];
-    if (latestCollection) {
-      items.push({
-        icon: DollarSign,
-        iconColor: '#C9963B',
-        bgColor: 'rgba(201,150,59,0.15)',
-        text: `Sunday collection posted: \u20b1${latestCollection.total.toLocaleString()}`,
-        detail: `${latestCollection.massTime} mass`,
-        time: format(new Date(latestCollection.date), 'MMM d'),
-        path: '/finance',
-      });
-    }
-
-    // Latest pending approval
-    const pendingApproval = approvalItems.filter((a) => a.status === 'Pending')[0];
-    if (pendingApproval) {
-      items.push({
-        icon: FileText,
-        iconColor: '#1B2A4A',
-        bgColor: 'rgba(27,42,74,0.12)',
-        text: `${pendingApproval.title} pending approval`,
-        detail: pendingApproval.category,
-        time: format(new Date(pendingApproval.date), 'MMM d'),
-        path: '/finance',
-      });
-    }
-
-    // Latest family
-    const latestFamily = [...families].sort(
-      (a, b) => parseInt(b.id.slice(1)) - parseInt(a.id.slice(1))
-    )[0];
-    if (latestFamily) {
-      items.push({
-        icon: Users,
-        iconColor: '#3B6BC9',
-        bgColor: 'rgba(59,107,201,0.12)',
-        text: `New parishioner: ${latestFamily.familyName} Family`,
-        detail: `${latestFamily.members.length} members — ${latestFamily.barangay}`,
-        time: 'Recently',
-        path: '/directory',
-      });
-    }
-
-    // Latest event
-    const latestEvent = [...SAMPLE_EVENTS].sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    )[0];
-    if (latestEvent) {
-      items.push({
-        icon: Calendar,
-        iconColor: '#6B2737',
-        bgColor: 'rgba(107,39,55,0.12)',
-        text: `${latestEvent.title} scheduled`,
-        detail: `${format(new Date(latestEvent.date), 'MMM d')} at ${latestEvent.startTime}`,
-        time: format(new Date(latestEvent.date), 'MMM d'),
-        path: '/calendar',
-      });
-    }
-
-    return items;
-  }, []);
-
-  const massColumns = [
-    { key: 'date', header: 'Date' },
-    { key: 'time', header: 'Time' },
-    { key: 'attendance', header: 'Attendance' },
-    { key: 'officiant', header: 'Officiant' },
-    { key: 'notes', header: 'Notes' },
-  ];
+  const eventDates = new Set(events.map(e => e.date));
 
   return (
-    <div className="space-y-6 pb-8">
-      {/* ─── Page Header ─── */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, ease: enterEase }}
-        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-      >
+    <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="display-lg font-playfair text-charcoal dark:text-dm-text">Dashboard</h1>
-          <p className="body-md text-warm-gray dark:text-dm-text-muted mt-1">
-            {greeting}
-          </p>
-          <p className="body-sm text-warm-gray/70 dark:text-dm-text-muted/70">
-            Here&apos;s what&apos;s happening in your parish today
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900">Dashboard</h1>
+          <p className="text-slate-500 mt-1">
+            Good {format(today, 'EEEE')}. Here is what is happening in your parish.
           </p>
         </div>
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.1, duration: 0.3 }}
-          className="cos-badge border border-gold/30 bg-gold-glow text-gold px-4 py-2"
-        >
-          <span className="mono-md">{formattedDate}</span>
-        </motion.div>
-      </motion.div>
-
-      {/* ─── KPI Cards ─── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4" data-tour="dashboard-kpi">
-        <StatCard
-          title="Total Parishioners"
-          value={totalParishioners.toLocaleString()}
-          icon={Users}
-          trend={{ value: '+3.2%', direction: 'up' }}
-          delay={0}
-          onClick={() => navigate('/directory')}
-        />
-        <StatCard
-          title="Sacraments This Month"
-          value={sacramentsThisMonth}
-          icon={BookOpen}
-          trend={{ value: '+12.5%', direction: 'up' }}
-          delay={0.06}
-          onClick={() => navigate('/registry')}
-        />
-        <StatCard
-          title="Sunday Collection"
-          value={`\u20b1${sundayCollection.toLocaleString()}`}
-          icon={DollarSign}
-          trend={{ value: '+8.1%', direction: 'up' }}
-          delay={0.12}
-          onClick={() => navigate('/finance')}
-        />
-        <StatCard
-          title="Pending Approvals"
-          value={pendingApprovals}
-          icon={Clock}
-          trend={{ value: 'Needs attention', direction: 'neutral', isAlert: true }}
-          delay={0.18}
-          onClick={() => navigate('/finance')}
-        />
+        <div className="text-right">
+          <p className="text-sm font-medium text-slate-900">{format(today, 'EEEE, MMMM d, yyyy')}</p>
+          <p className="text-xs text-slate-500">{format(today, 'h:mm a')}</p>
+        </div>
       </div>
 
-      {/* ─── Quick Actions ─── */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.24, duration: 0.3 }}
-        className="flex flex-wrap gap-3"
-        data-tour="dashboard-quick-actions"
-      >
-        {[
-          { label: 'Add Record', icon: BookOpen, path: '/registry' },
-          { label: 'Add Collection', icon: DollarSign, path: '/finance' },
-          { label: 'Schedule Event', icon: Calendar, path: '/calendar' },
-          { label: 'Generate Report', icon: FileText, path: '/reports' },
-        ].map((action, i) => (
-          <motion.button
-            key={action.label}
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.28 + i * 0.04, duration: 0.25 }}
-            onClick={() => navigate(action.path)}
-            className="cos-btn cos-btn-primary rounded-full px-5 py-2.5 text-sm"
-          >
-            <action.icon className="w-4 h-4" />
-            {action.label}
-          </motion.button>
-        ))}
-      </motion.div>
-
-      {/* ─── Charts Row ─── */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Left: Baptism Trend (3/5) */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.32, duration: 0.4, ease: enterEase }}
-          className="cos-card lg:col-span-3"
+      {/* Quick Actions */}
+      <div className="flex flex-wrap gap-3">
+        <Button 
+          onClick={() => navigate('/calendar?action=schedule')}
+          className="bg-amber-600 hover:bg-amber-700 text-white"
         >
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="heading-lg text-charcoal dark:text-dm-text">Baptisms &mdash; 12 Month Trend</h3>
-            <select className="h-8 px-3 rounded-lg border border-parchment bg-cream text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text">
-              <option>This year</option>
-              <option>Last 6 months</option>
-              <option>Last 12 months</option>
-            </select>
-          </div>
-          <div style={{ height: 280 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={baptismTrend} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="baptismFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#C9963B" stopOpacity={0.2} />
-                    <stop offset="100%" stopColor="#C9963B" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(234,229,217,0.6)" />
-                <XAxis
-                  dataKey="month"
-                  tick={{ fill: '#8C8374', fontSize: 12 }}
-                  axisLine={{ stroke: '#EAE5D9' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fill: '#8C8374', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #EAE5D9',
-                    borderRadius: 8,
-                    boxShadow: '0 4px 12px rgba(27,42,74,0.12)',
-                    fontSize: 13,
-                  }}
-                  formatter={(value: number) => [`${value} baptisms`, 'Count']}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="baptisms"
-                  stroke="#C9963B"
-                  strokeWidth={2}
-                  fill="url(#baptismFill)"
-                  dot={{ fill: '#C9963B', r: 4, strokeWidth: 0 }}
-                  activeDot={{ fill: '#DDB86B', r: 6, strokeWidth: 2, stroke: '#C9963B' }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-          <p className="body-sm text-warm-gray mt-4">Total: {totalBaptisms} baptisms</p>
-        </motion.div>
-
-        {/* Right: Income vs Expenses (2/5) */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4, duration: 0.4, ease: enterEase }}
-          className="cos-card lg:col-span-2 flex flex-col"
+          <CalendarDays className="mr-2 h-4 w-4" />
+          Schedule Event
+        </Button>
+        <Button 
+          onClick={() => navigate('/registry?action=add')}
+          variant="outline"
+          className="border-slate-300"
         >
-          <h3 className="heading-lg text-charcoal dark:text-dm-text mb-4">Income vs Expenses</h3>
-          <div className="flex-1 flex items-center justify-center" style={{ minHeight: 220 }}>
-            <div className="relative">
-              <ResponsiveContainer width={200} height={200}>
-                <PieChart>
-                  <Pie
-                    data={incomeExpenseData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={90}
-                    dataKey="value"
-                    strokeWidth={0}
-                  >
-                    {incomeExpenseData.map((entry, index) => (
-                      <Cell key={index} fill={entry.color} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-              {/* Center text */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="heading-lg text-charcoal dark:text-dm-text">
-                  {'\u20b1'}128,450
-                </span>
-                <span className="label text-warm-gray dark:text-dm-text-muted">Net</span>
-              </div>
-            </div>
-          </div>
-          <div className="space-y-2 mt-4">
-            {incomeExpenseData.map((item) => (
-              <div key={item.name} className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
-                  <span className="body-sm text-charcoal dark:text-dm-text">{item.name}</span>
-                </div>
-                <span className="mono-md text-charcoal dark:text-dm-text">
-                  {'\u20b1'}{item.value.toLocaleString()}
-                </span>
-              </div>
-            ))}
-          </div>
-        </motion.div>
+          <FileText className="mr-2 h-4 w-4" />
+          Add Record
+        </Button>
+        <Button 
+          onClick={() => navigate('/reports')}
+          variant="outline"
+          className="border-slate-300"
+        >
+          <TrendingUp className="mr-2 h-4 w-4" />
+          Generate Report
+        </Button>
+        <Button 
+          onClick={() => navigate('/finance?tab=collections')}
+          variant="outline"
+          className="border-slate-300"
+        >
+          <DollarSign className="mr-2 h-4 w-4" />
+          Add Collection
+        </Button>
       </div>
 
-      {/* ─── Activity Feed + Mini Calendar Row ─── */}
+      {/* MAIN GRID: Events + Calendar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Activity Feed */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.48, duration: 0.4, ease: enterEase }}
-          className="cos-card lg:col-span-2"
-          data-tour="dashboard-activity"
-        >
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="heading-lg text-charcoal dark:text-dm-text">Recent Activity</h3>
-            <button
-              onClick={() => navigate('/registry')}
-              className="body-sm text-gold hover:text-gold-light flex items-center gap-1 transition-colors"
-            >
-              View All <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="space-y-0">
-            {activityData.length === 0 ? (
-              <EmptyState
-                icon={FileText}
-                title="No recent activity"
-                description="As you add records, collections, and events, they will appear here."
-                tip="Try adding a baptism record or a Sunday collection to get started."
-              />
-            ) : (
-            activityData.map((item, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: 10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.52 + i * 0.05, duration: 0.3 }}
-                onClick={() => navigate(item.path)}
-                className="flex items-start gap-3 py-3 border-b border-parchment/40 last:border-b-0 cursor-pointer hover:bg-cream-dark/50 rounded-lg px-2 -mx-2 transition-colors dark:hover:bg-dm-surface-raised/50"
-              >
-                <div
-                  className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                  style={{ backgroundColor: item.bgColor }}
-                >
-                  <item.icon className="w-4 h-4" style={{ color: item.iconColor }} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="body-sm font-medium text-charcoal dark:text-dm-text">{item.text}</p>
-                  <p className="body-sm text-warm-gray dark:text-dm-text-muted">{item.detail}</p>
-                </div>
-                <span className="body-sm text-warm-gray/60 dark:text-dm-text-muted/60 shrink-0">{item.time}</span>
-              </motion.div>
-            )))}
-          </div>
-        </motion.div>
 
-        {/* Mini Calendar + Upcoming Events */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.56, duration: 0.4, ease: enterEase }}
-          className="space-y-6"
-        >
-          {/* Mini Calendar */}
-          <div className="cos-card">
-            <h3 className="heading-lg text-charcoal dark:text-dm-text mb-4">
-              {format(today, 'MMMM yyyy')}
-            </h3>
-            {/* Day headers */}
-            <div className="grid grid-cols-7 gap-1 mb-1">
-              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
-                <div key={i} className="label text-warm-gray text-center py-1">{d}</div>
-              ))}
-            </div>
-            {/* Calendar grid */}
-            <div className="grid grid-cols-7 gap-1">
-              {Array.from({ length: firstDay }).map((_, i) => (
-                <div key={`empty-${i}`} className="h-9" />
-              ))}
-              {Array.from({ length: daysInMonth }).map((_, i) => {
-                const day = i + 1;
-                const isToday = day === currentDate;
-                const hasEvent = eventDates.includes(day);
-                return (
-                  <motion.div
-                    key={day}
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: 0.6 + i * 0.015, duration: 0.2 }}
-                    className={
-                      'h-9 flex flex-col items-center justify-center rounded-lg text-sm font-medium relative ' +
-                      (isToday
-                        ? 'bg-gold text-white'
-                        : 'text-charcoal dark:text-dm-text hover:bg-cream-dark dark:hover:bg-dm-surface-raised')
-                    }
-                  >
-                    {day}
-                    {hasEvent && !isToday && (
-                      <span className="absolute bottom-1 w-1 h-1 rounded-full bg-gold" />
-                    )}
-                  </motion.div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Upcoming Events */}
-          <div className="cos-card">
-            <h3 className="heading-lg text-charcoal dark:text-dm-text mb-4">Upcoming Events</h3>
-            <div className="space-y-3">
-              {upcomingEvents.map((event, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.64 + i * 0.05, duration: 0.3 }}
-                  className="flex items-start gap-3 cursor-pointer hover:bg-cream-dark/50 rounded-lg p-2 -mx-2 transition-colors dark:hover:bg-dm-surface-raised/50"
+        {/* LEFT/CENTER: Upcoming Events with Ministry Assignments (2/3 width) */}
+        <div className="lg:col-span-2 space-y-6">
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CalendarDays className="h-5 w-5 text-amber-600" />
+                  <CardTitle className="text-lg">Upcoming Events & Ministry Assignments</CardTitle>
+                </div>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => navigate('/calendar')}
+                  className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
                 >
-                  <div
-                    className="w-1 self-stretch rounded-full"
-                    style={{ backgroundColor: event.color }}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span
-                        className="cos-badge"
-                        style={{ backgroundColor: event.bgColor, color: event.color }}
+                  View Calendar <ChevronRight className="ml-1 h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[500px] pr-4">
+                <div className="space-y-4">
+                  {events.length === 0 ? (
+                    <div className="text-center py-12 text-slate-400">
+                      <CalendarDays className="mx-auto h-12 w-12 mb-3 opacity-50" />
+                      <p className="text-sm">No upcoming events scheduled.</p>
+                      <Button 
+                        variant="link" 
+                        onClick={() => navigate('/calendar')}
+                        className="text-amber-600 mt-2"
                       >
-                        {event.type}
-                      </span>
+                        Schedule your first event
+                      </Button>
                     </div>
-                    <p className="body-sm font-medium text-charcoal dark:text-dm-text truncate">{event.title}</p>
-                    <p className="body-sm text-warm-gray dark:text-dm-text-muted">
-                      {event.date} at {event.time}
-                    </p>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-        </motion.div>
-      </div>
+                  ) : (
+                    events.map(event => {
+                      const assignments = getMinistryAssignmentsForEvent(event, ministries);
+                      const hasAssignments = Object.keys(assignments).length > 0;
 
-      {/* ─── Mass Attendance Table ─── */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.72, duration: 0.4, ease: enterEase }}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="heading-lg text-charcoal dark:text-dm-text">Recent Mass Attendance</h3>
-          <button
-            onClick={() => navigate('/ministries')}
-            className="body-sm text-gold hover:text-gold-light flex items-center gap-1 transition-colors"
-          >
-            View Full Records <ChevronRight className="w-4 h-4" />
-          </button>
+                      return (
+                        <div 
+                          key={event.id} 
+                          className="rounded-lg border border-slate-200 p-4 hover:border-amber-300 hover:shadow-sm transition-all"
+                        >
+                          {/* Event Header */}
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-start gap-3">
+                              <div className={`p-2 rounded-lg ${getEventBadgeColor(event.type)}`}>
+                                {getEventIcon(event.type)}
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="font-semibold text-slate-900">{event.title}</h3>
+                                  <Badge variant="outline" className={getEventBadgeColor(event.type)}>
+                                    {event.type}
+                                  </Badge>
+                                </div>
+                                <div className="flex items-center gap-4 mt-1 text-sm text-slate-500">
+                                  <span className="flex items-center gap-1">
+                                    <Clock className="h-3.5 w-3.5" />
+                                    {formatEventDate(event.date)} at {event.startTime}
+                                  </span>
+                                  <span className="flex items-center gap-1">
+                                    <MapPin className="h-3.5 w-3.5" />
+                                    {event.location}
+                                  </span>
+                                  {event.officiant && (
+                                    <span className="flex items-center gap-1">
+                                      <User className="h-3.5 w-3.5" />
+                                      Fr. {event.officiant}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <Button 
+                              variant="ghost" 
+                              size="sm"
+                              onClick={() => navigate(`/calendar?event=${event.id}`)}
+                              className="text-slate-400 hover:text-slate-600"
+                            >
+                              Edit
+                            </Button>
+                          </div>
+
+                          {/* Ministry Assignments */}
+                          {event.type === 'Mass' && (
+                            <div className="mt-3 pt-3 border-t border-slate-100">
+                              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">
+                                Serving Today
+                              </p>
+                              {hasAssignments ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {Object.entries(assignments).map(([ministryName, members]) => (
+                                    <div 
+                                      key={ministryName}
+                                      className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-full px-3 py-1.5 text-sm"
+                                    >
+                                      <span className="text-amber-600">{getMinistryIcon(ministryName)}</span>
+                                      <span className="font-medium text-slate-700">{ministryName}:</span>
+                                      <span className="text-slate-600">{members.join(', ')}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 rounded-md px-3 py-2">
+                                  <AlertCircle className="h-4 w-4" />
+                                  No ministry assignments scheduled for this Mass.
+                                  <Button 
+                                    variant="link" 
+                                    size="sm" 
+                                    onClick={() => navigate('/ministries')}
+                                    className="text-amber-700 p-0 h-auto"
+                                  >
+                                    Assign ministries
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Sacrament Link */}
+                          {event.sacramentRecordId && (
+                            <div className="mt-2 text-sm">
+                              <Button 
+                                variant="link" 
+                                size="sm"
+                                onClick={() => navigate(`/registry?id=${event.sacramentRecordId}`)}
+                                className="text-blue-600 p-0 h-auto"
+                              >
+                                View sacrament record →
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+
+          {/* Recent Activity */}
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg">Recent Activity</CardTitle>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => navigate('/reports')}
+                  className="text-slate-500"
+                >
+                  View All <ChevronRight className="ml-1 h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[250px]">
+                <div className="space-y-3">
+                  {activities.length === 0 ? (
+                    <p className="text-center text-sm text-slate-400 py-8">No recent activity recorded.</p>
+                  ) : (
+                    activities.map(activity => (
+                      <div key={activity.id} className="flex items-start gap-3 p-2 rounded-md hover:bg-slate-50">
+                        <div className="mt-0.5">
+                          {activity.type === 'registry' && <Baby className="h-4 w-4 text-green-500" />}
+                          {activity.type === 'collection' && <DollarSign className="h-4 w-4 text-blue-500" />}
+                          {activity.type === 'approval' && <AlertCircle className="h-4 w-4 text-amber-500" />}
+                          {activity.type === 'directory' && <Users className="h-4 w-4 text-purple-500" />}
+                          {activity.type === 'ssdm' && <HandHelping className="h-4 w-4 text-pink-500" />}
+                          {activity.type === 'event' && <CalendarDays className="h-4 w-4 text-slate-500" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-900">{activity.description}</p>
+                          {activity.detail && (
+                            <p className="text-xs text-slate-500 mt-0.5">{activity.detail}</p>
+                          )}
+                          <p className="text-xs text-slate-400 mt-1">{format(parseISO(activity.date), 'MMM d, h:mm a')}</p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
         </div>
-        <DataTable
-          columns={massColumns}
-          data={massAttendanceData}
-          sortable
-          filterable={false}
-          paginated
-          pageSize={5}
-        />
-      </motion.div>
 
-      <BackToTop />
+        {/* RIGHT SIDEBAR: Calendar + Financial Summary (1/3 width) */}
+        <div className="space-y-6">
+
+          {/* Mini Calendar */}
+          <Card className="border-slate-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg text-center">{currentMonth}</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-slate-500 mb-2">
+                {['S','M','T','W','T','F','S'].map(d => (
+                  <div key={d} className="py-1">{d}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {Array.from({ length: firstDayOfMonth }).map((_, i) => (
+                  <div key={`empty-${i}`} className="h-8" />
+                ))}
+                {Array.from({ length: daysInMonth }).map((_, i) => {
+                  const dayNum = i + 1;
+                  const dateStr = format(new Date(today.getFullYear(), today.getMonth(), dayNum), 'yyyy-MM-dd');
+                  const hasEvent = eventDates.has(dateStr);
+                  const isTodayDate = dayNum === today.getDate();
+
+                  return (
+                    <div 
+                      key={dayNum}
+                      className={`
+                        h-8 flex items-center justify-center rounded-md text-sm relative
+                        ${isTodayDate ? 'bg-amber-600 text-white font-bold' : 'text-slate-700 hover:bg-slate-50'}
+                        ${hasEvent && !isTodayDate ? 'font-semibold text-amber-700' : ''}
+                      `}
+                    >
+                      {dayNum}
+                      {hasEvent && !isTodayDate && (
+                        <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-amber-500" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <Button 
+                variant="ghost" 
+                className="w-full mt-3 text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                onClick={() => navigate('/calendar')}
+              >
+                Open Full Calendar <ChevronRight className="ml-1 h-4 w-4" />
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Financial Summary — Compact */}
+          <Card className="border-slate-200 shadow-sm bg-gradient-to-br from-slate-50 to-white">
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <DollarSign className="h-4 w-4 text-green-600" />
+                <CardTitle className="text-sm font-semibold">Financial Summary</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-slate-500">Sunday Collection</span>
+                <span className="text-sm font-semibold text-slate-900">₱{financeSummary.sundayCollection.toLocaleString()}</span>
+              </div>
+              <Separator />
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-slate-500">Pending Approvals</span>
+                <Badge variant={financeSummary.pendingApprovals > 0 ? 'destructive' : 'secondary'} className="text-xs">
+                  {financeSummary.pendingApprovals}
+                </Badge>
+              </div>
+              <Separator />
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-slate-500">YTD Net</span>
+                <span className={`text-sm font-semibold ${financeSummary.ytdIncome - financeSummary.ytdExpenses >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  ₱{(financeSummary.ytdIncome - financeSummary.ytdExpenses).toLocaleString()}
+                </span>
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                className="w-full text-xs border-slate-300"
+                onClick={() => navigate('/finance')}
+              >
+                View Finance Details
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Quick Stats */}
+          <div className="grid grid-cols-2 gap-3">
+            <Card className="border-slate-200 p-3">
+              <div className="text-2xl font-bold text-slate-900">{events.filter(e => e.type === 'Baptism').length}</div>
+              <div className="text-xs text-slate-500">Baptisms This Month</div>
+            </Card>
+            <Card className="border-slate-200 p-3">
+              <div className="text-2xl font-bold text-slate-900">{events.filter(e => e.type === 'Wedding').length}</div>
+              <div className="text-xs text-slate-500">Weddings This Month</div>
+            </Card>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
