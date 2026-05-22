@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import StatCard from '@/components/StatCard';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
 import EmptyState from '@/components/EmptyState';
+import AnalyticsDashboard from '@/components/AnalyticsDashboard';
 import { getLabel } from '@/lib/friendlyLabels';
 import {
   chartOfAccounts, journalEntries, collectionsData, budgetData, approvalItems,
@@ -21,7 +22,7 @@ import type { Account, JournalEntry, JournalLine, Collection, BudgetItem, Approv
 // ============================================
 // Types
 // ============================================
-type TabId = 'coa' | 'journal' | 'collections' | 'budget' | 'approvals';
+type TabId = 'coa' | 'journal' | 'collections' | 'budget' | 'analytics' | 'approvals';
 
 interface ExpandedState { [key: string]: boolean }
 
@@ -44,6 +45,7 @@ export default function FinancePage() {
     { id: 'journal', label: 'Journal' },
     { id: 'collections', label: 'Collections' },
     { id: 'budget', label: 'Budget' },
+    { id: 'analytics', label: 'Analytics' },
     { id: 'approvals', label: 'Approvals' },
   ];
 
@@ -100,6 +102,7 @@ export default function FinancePage() {
           {activeTab === 'journal' && <JournalTab />}
           {activeTab === 'collections' && <CollectionsTab />}
           {activeTab === 'budget' && <BudgetTab />}
+          {activeTab === 'analytics' && <AnalyticsDashboard />}
           {activeTab === 'approvals' && <ApprovalsTab />}
         </motion.div>
       </AnimatePresence>
