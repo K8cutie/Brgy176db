@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { 
@@ -24,16 +23,20 @@ import {
   ChevronRight,
   Clock,
   MapPin,
-  User
+  User,
+  Plus,
+  BarChart3,
+  Settings,
+  Sparkles
 } from 'lucide-react';
 import { getPersisted } from '@/lib/store';
-import { format, parseISO, isToday, isTomorrow, isThisWeek, getDay } from 'date-fns';
+import { format, parseISO, isToday, isTomorrow, isThisWeek, getDay, addDays } from 'date-fns';
 
-// --- Types (mirroring your data structures) ---
+// --- Types ---
 interface CalendarEvent {
   id: string;
   title: string;
-  date: string; // ISO date
+  date: string;
   startTime: string;
   endTime?: string;
   location: string;
@@ -48,18 +51,10 @@ interface Ministry {
   name: string;
   members: string[];
   scheduleAssignments: {
-    day: string; // e.g., "Sunday", "Monday"
-    massTime: string; // e.g., "6:00 AM", "8:00 AM"
+    day: string;
+    massTime: string;
     memberName: string;
   }[];
-}
-
-interface ActivityItem {
-  id: string;
-  type: 'registry' | 'collection' | 'approval' | 'directory' | 'ssdm' | 'event';
-  description: string;
-  detail?: string;
-  date: string;
 }
 
 // --- Helpers ---
@@ -71,18 +66,14 @@ function getEventDayName(dateStr: string): string {
 }
 
 function normalizeTime(timeStr: string): string {
-  // Normalize "6:00 AM" / "06:00" / "6am" for matching
   return timeStr.trim().toUpperCase().replace(/\s+/g, ' ');
 }
 
 function getMinistryAssignmentsForEvent(event: CalendarEvent, ministries: Ministry[]): Record<string, string[]> {
   if (event.type !== 'Mass') return {};
-
   const eventDay = getEventDayName(event.date);
   const eventTime = normalizeTime(event.startTime);
-
   const assignments: Record<string, string[]> = {};
-
   ministries.forEach(ministry => {
     const matched = ministry.scheduleAssignments.filter(
       sa => sa.day === eventDay && normalizeTime(sa.massTime) === eventTime
@@ -91,7 +82,6 @@ function getMinistryAssignmentsForEvent(event: CalendarEvent, ministries: Minist
       assignments[ministry.name] = matched.map(m => m.memberName);
     }
   });
-
   return assignments;
 }
 
@@ -125,23 +115,168 @@ function formatEventDate(dateStr: string): string {
   return format(d, 'MMM d');
 }
 
-// --- Ministry Icon Map ---
 const MINISTRY_ICONS: Record<string, React.ReactNode> = {
-  'Choir': <Music className="h-3.5 w-3.5" />,
-  'Music Ministry': <Music className="h-3.5 w-3.5" />,
-  'Ushers': <Users className="h-3.5 w-3.5" />,
-  'Lectors': <BookOpen className="h-3.5 w-3.5" />,
-  'Commentators': <Mic className="h-3.5 w-3.5" />,
-  'Sacristans': <Cross className="h-3.5 w-3.5" />,
-  'Altar Servers': <Cross className="h-3.5 w-3.5" />,
-  'Servers': <Cross className="h-3.5 w-3.5" />,
+  'Choir': <Music className="h-5 w-5" />,
+  'Music Ministry': <Music className="h-5 w-5" />,
+  'Ushers': <Users className="h-5 w-5" />,
+  'Lectors': <BookOpen className="h-5 w-5" />,
+  'Commentators': <Mic className="h-5 w-5" />,
+  'Sacristans': <Cross className="h-5 w-5" />,
+  'Altar Servers': <Cross className="h-5 w-5" />,
+  'Servers': <Cross className="h-5 w-5" />,
 };
 
 function getMinistryIcon(name: string): React.ReactNode {
   for (const [key, icon] of Object.entries(MINISTRY_ICONS)) {
     if (name.toLowerCase().includes(key.toLowerCase())) return icon;
   }
-  return <Users className="h-3.5 w-3.5" />;
+  return <Users className="h-5 w-5" />;
+}
+
+// Generate default Mass schedule for today if no events exist
+function getDefaultTodayEvents(): CalendarEvent[] {
+  const today = new Date();
+  const todayStr = format(today, 'yyyy-MM-dd');
+  const dayName = DAY_NAMES[getDay(today)];
+
+  // Common Philippine parish Mass schedules
+  const defaultMasses: CalendarEvent[] = [
+    {
+      id: `default-mass-1-${todayStr}`,
+      title: `Sunday Mass (${dayName})`,
+      date: todayStr,
+      startTime: '6:00 AM',
+      endTime: '7:00 AM',
+      location: 'Main Church',
+      officiant: 'Parish Priest',
+      type: 'Mass',
+      notes: 'Regular schedule'
+    },
+    {
+      id: `default-mass-2-${todayStr}`,
+      title: `Sunday Mass (${dayName})`,
+      date: todayStr,
+      startTime: '8:00 AM',
+      endTime: '9:00 AM',
+      location: 'Main Church',
+      officiant: 'Parish Priest',
+      type: 'Mass',
+      notes: 'Regular schedule'
+    },
+    {
+      id: `default-mass-3-${todayStr}`,
+      title: `Sunday Mass (${dayName})`,
+      date: todayStr,
+      startTime: '10:00 AM',
+      endTime: '11:00 AM',
+      location: 'Main Church',
+      officiant: 'Parish Priest',
+      type: 'Mass',
+      notes: 'Regular schedule'
+    },
+    {
+      id: `default-mass-4-${todayStr}`,
+      title: `Sunday Mass (${dayName})`,
+      date: todayStr,
+      startTime: '5:00 PM',
+      endTime: '6:00 PM',
+      location: 'Main Church',
+      officiant: 'Parish Priest',
+      type: 'Mass',
+      notes: 'Regular schedule'
+    }
+  ];
+
+  // Filter based on day of week - weekday masses are fewer
+  if (dayName === 'Sunday') {
+    return defaultMasses;
+  } else if (dayName === 'Saturday') {
+    return [defaultMasses[3]]; // Only evening Mass
+  } else {
+    // Weekday - morning and evening
+    return [defaultMasses[0], defaultMasses[3]];
+  }
+}
+
+// Quick Action Card Component
+function QuickActionCard({ 
+  icon, 
+  title, 
+  description, 
+  onClick, 
+  color 
+}: { 
+  icon: React.ReactNode; 
+  title: string; 
+  description: string; 
+  onClick: () => void;
+  color: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`
+        group relative overflow-hidden rounded-xl border border-slate-200 bg-white p-6 text-left
+        transition-all duration-200 hover:shadow-lg hover:border-slate-300 hover:-translate-y-0.5
+        focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2
+        w-full
+      `}
+    >
+      <div className={`
+        mb-4 inline-flex items-center justify-center rounded-xl p-3
+        ${color}
+      `}>
+        {icon}
+      </div>
+      <h3 className="font-semibold text-slate-900 group-hover:text-amber-700 transition-colors">
+        {title}
+      </h3>
+      <p className="mt-1 text-sm text-slate-500">
+        {description}
+      </p>
+      <div className="mt-4 flex items-center text-sm font-medium text-amber-600 opacity-0 group-hover:opacity-100 transition-opacity">
+        Get started <ChevronRight className="ml-1 h-4 w-4" />
+      </div>
+    </button>
+  );
+}
+
+// Ministry Schedule Box Component
+function MinistryScheduleBox({ ministry, todayDay }: { ministry: Ministry; todayDay: string }) {
+  const todayAssignments = ministry.scheduleAssignments.filter(sa => sa.day === todayDay);
+
+  return (
+    <Card className="border-slate-200 hover:border-amber-300 transition-colors">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <div className="text-amber-600">{getMinistryIcon(ministry.name)}</div>
+          <CardTitle className="text-base font-semibold">{ministry.name}</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {todayAssignments.length > 0 ? (
+          <div className="space-y-2">
+            {todayAssignments.map((assignment, idx) => (
+              <div key={idx} className="flex items-center justify-between text-sm">
+                <span className="text-slate-500 flex items-center gap-1">
+                  <Clock className="h-3.5 w-3.5" />
+                  {assignment.massTime}
+                </span>
+                <span className="font-medium text-slate-900">{assignment.memberName}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-slate-400 py-2">
+            No assignments scheduled for {todayDay}.
+          </div>
+        )}
+        <div className="mt-3 text-xs text-slate-400">
+          {ministry.members.length} members total
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 // --- Main Component ---
@@ -149,90 +284,69 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [ministries, setMinistries] = useState<Ministry[]>([]);
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
-  const [financeSummary, setFinanceSummary] = useState({
-    sundayCollection: 0,
-    pendingApprovals: 0,
-    ytdIncome: 0,
-    ytdExpenses: 0
-  });
+  const [hasRealEvents, setHasRealEvents] = useState(false);
 
-  useEffect(() => {
-    // Load data from localStorage via store helpers
-    // NOTE: AppState keys are: 'events', 'ministries', 'collections', 'journal', etc.
-    const persistedEvents = getPersisted<CalendarEvent[]>('events', []);
-    const persistedMinistries = getPersisted<Ministry[]>('ministries', []);
-    const persistedCollections = getPersisted<any[]>('collections', []);
-    const persistedJournal = getPersisted<any[]>('journal', []);
-    const persistedApplications = getPersisted<any[]>('applications', []);
-
-    // Sort events: upcoming first
-    const now = new Date();
-    const upcoming = persistedEvents
-      .filter(e => parseISO(e.date) >= new Date(now.getTime() - 24 * 60 * 60 * 1000)) // Include today
-      .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime())
-      .slice(0, 10); // Next 10 events
-
-    setEvents(upcoming);
-    setMinistries(persistedMinistries);
-
-    // Derive recent activity from events + journal + collections
-    const syntheticActivities: ActivityItem[] = [
-      ...persistedEvents.map((e: CalendarEvent) => ({
-        id: `evt-${e.id}`,
-        type: 'event' as const,
-        description: `${e.type}: ${e.title}`,
-        detail: e.location,
-        date: e.date
-      })),
-      ...persistedCollections.map((c: any, i: number) => ({
-        id: `col-${i}`,
-        type: 'collection' as const,
-        description: `Sunday collection posted: ₱${c.amount?.toLocaleString() || '0'}`,
-        detail: c.massTime || 'Mass collection',
-        date: c.date || new Date().toISOString()
-      })),
-      ...persistedJournal.map((j: any, i: number) => ({
-        id: `jrn-${i}`,
-        type: 'approval' as const,
-        description: j.description || 'Journal entry recorded',
-        detail: `₱${j.amount?.toLocaleString() || '0'}`,
-        date: j.date || new Date().toISOString()
-      }))
-    ]
-    .sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime())
-    .slice(0, 8);
-
-    setActivities(syntheticActivities);
-
-    // Compute finance summary from collections + journal
-    const latestCollection = persistedCollections[persistedCollections.length - 1];
-    const incomeEntries = persistedJournal.filter((j: any) => j.type === 'income' || (j.amount && j.amount > 0));
-    const expenseEntries = persistedJournal.filter((j: any) => j.type === 'expense' || (j.amount && j.amount < 0));
-
-    const ytdIncome = incomeEntries.reduce((sum: number, j: any) => sum + (Math.abs(j.amount) || 0), 0);
-    const ytdExpenses = expenseEntries.reduce((sum: number, j: any) => sum + (Math.abs(j.amount) || 0), 0);
-
-    // Pending approvals from applications or journal entries with status 'pending'
-    const pendingCount = persistedApplications.filter((a: any) => a.status === 'pending').length
-      || persistedJournal.filter((j: any) => j.status === 'pending').length
-      || 0;
-
-    setFinanceSummary({
-      sundayCollection: latestCollection?.amount || 0,
-      pendingApprovals: pendingCount,
-      ytdIncome,
-      ytdExpenses
-    });
-  }, []);
-
-  // Mini calendar data
   const today = new Date();
+  const todayDayName = DAY_NAMES[getDay(today)];
   const currentMonth = format(today, 'MMMM yyyy');
   const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).getDay();
 
+  useEffect(() => {
+    const persistedEvents = getPersisted<CalendarEvent[]>('events', []);
+    const persistedMinistries = getPersisted<Ministry[]>('ministries', []);
+
+    const now = new Date();
+    const upcoming = persistedEvents
+      .filter(e => parseISO(e.date) >= new Date(now.getTime() - 24 * 60 * 60 * 1000))
+      .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime())
+      .slice(0, 10);
+
+    if (upcoming.length > 0) {
+      setEvents(upcoming);
+      setHasRealEvents(true);
+    } else {
+      // Show default Mass schedule for today
+      setEvents(getDefaultTodayEvents());
+      setHasRealEvents(false);
+    }
+
+    setMinistries(persistedMinistries);
+  }, []);
+
   const eventDates = new Set(events.map(e => e.date));
+
+  // Quick action items
+  const quickActions = [
+    {
+      icon: <CalendarDays className="h-6 w-6" />,
+      title: 'Schedule Event',
+      description: 'Plan Masses, weddings, baptisms, and parish meetings.',
+      onClick: () => navigate('/calendar?action=schedule'),
+      color: 'bg-amber-100 text-amber-700'
+    },
+    {
+      icon: <FileText className="h-6 w-6" />,
+      title: 'Add Record',
+      description: 'Register baptisms, confirmations, marriages, and deaths.',
+      onClick: () => navigate('/registry?action=add'),
+      color: 'bg-blue-100 text-blue-700'
+    },
+    {
+      icon: <TrendingUp className="h-6 w-6" />,
+      title: 'Generate Report',
+      description: 'Create financial, sacramental, and attendance reports.',
+      onClick: () => navigate('/reports'),
+      color: 'bg-green-100 text-green-700'
+    },
+    {
+      icon: <DollarSign className="h-6 w-6" />,
+      title: 'Add Collection',
+      description: 'Record Sunday collections, donations, and special offerings.',
+      onClick: () => navigate('/finance?tab=collections'),
+      color: 'bg-purple-100 text-purple-700'
+    }
+  ];
 
   return (
     <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
@@ -250,52 +364,26 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="flex flex-wrap gap-3">
-        <Button 
-          onClick={() => navigate('/calendar?action=schedule')}
-          className="bg-amber-600 hover:bg-amber-700 text-white"
-        >
-          <CalendarDays className="mr-2 h-4 w-4" />
-          Schedule Event
-        </Button>
-        <Button 
-          onClick={() => navigate('/registry?action=add')}
-          variant="outline"
-          className="border-slate-300"
-        >
-          <FileText className="mr-2 h-4 w-4" />
-          Add Record
-        </Button>
-        <Button 
-          onClick={() => navigate('/reports')}
-          variant="outline"
-          className="border-slate-300"
-        >
-          <TrendingUp className="mr-2 h-4 w-4" />
-          Generate Report
-        </Button>
-        <Button 
-          onClick={() => navigate('/finance?tab=collections')}
-          variant="outline"
-          className="border-slate-300"
-        >
-          <DollarSign className="mr-2 h-4 w-4" />
-          Add Collection
-        </Button>
+      {/* Quick Actions — Icon Boxes */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {quickActions.map((action, idx) => (
+          <QuickActionCard key={idx} {...action} />
+        ))}
       </div>
 
-      {/* MAIN GRID: Events + Calendar */}
+      {/* MAIN GRID: Events + Calendar + Ministry Schedules */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-        {/* LEFT/CENTER: Upcoming Events with Ministry Assignments (2/3 width) */}
+        {/* LEFT/CENTER: Upcoming Events (2/3 width) */}
         <div className="lg:col-span-2 space-y-6">
           <Card className="border-slate-200 shadow-sm">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <CalendarDays className="h-5 w-5 text-amber-600" />
-                  <CardTitle className="text-lg">Upcoming Events & Ministry Assignments</CardTitle>
+                  <CardTitle className="text-lg">
+                    {hasRealEvents ? 'Upcoming Events & Ministry Assignments' : "Today's Mass Schedule"}
+                  </CardTitle>
                 </div>
                 <Button 
                   variant="ghost" 
@@ -310,59 +398,58 @@ export default function Dashboard() {
             <CardContent className="pt-0">
               <ScrollArea className="h-[500px] pr-4">
                 <div className="space-y-4">
-                  {events.length === 0 ? (
-                    <div className="text-center py-12 text-slate-400">
-                      <CalendarDays className="mx-auto h-12 w-12 mb-3 opacity-50" />
-                      <p className="text-sm">No upcoming events scheduled.</p>
-                      <Button 
-                        variant="link" 
-                        onClick={() => navigate('/calendar')}
-                        className="text-amber-600 mt-2"
-                      >
-                        Schedule your first event
-                      </Button>
-                    </div>
-                  ) : (
-                    events.map(event => {
-                      const assignments = getMinistryAssignmentsForEvent(event, ministries);
-                      const hasAssignments = Object.keys(assignments).length > 0;
+                  {events.map(event => {
+                    const assignments = getMinistryAssignmentsForEvent(event, ministries);
+                    const hasAssignments = Object.keys(assignments).length > 0;
+                    const isDefault = !hasRealEvents;
 
-                      return (
-                        <div 
-                          key={event.id} 
-                          className="rounded-lg border border-slate-200 p-4 hover:border-amber-300 hover:shadow-sm transition-all"
-                        >
-                          {/* Event Header */}
-                          <div className="flex items-start justify-between mb-3">
-                            <div className="flex items-start gap-3">
-                              <div className={`p-2 rounded-lg ${getEventBadgeColor(event.type)}`}>
-                                {getEventIcon(event.type)}
-                              </div>
-                              <div>
-                                <div className="flex items-center gap-2">
-                                  <h3 className="font-semibold text-slate-900">{event.title}</h3>
-                                  <Badge variant="outline" className={getEventBadgeColor(event.type)}>
-                                    {event.type}
+                    return (
+                      <div 
+                        key={event.id} 
+                        className={`rounded-lg border p-4 transition-all ${
+                          isDefault 
+                            ? 'border-dashed border-slate-300 bg-slate-50/50 hover:border-amber-300' 
+                            : 'border-slate-200 hover:border-amber-300 hover:shadow-sm'
+                        }`}
+                      >
+                        {/* Event Header */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-start gap-3">
+                            <div className={`p-2 rounded-lg ${getEventBadgeColor(event.type)}`}>
+                              {getEventIcon(event.type)}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="font-semibold text-slate-900">{event.title}</h3>
+                                <Badge variant="outline" className={getEventBadgeColor(event.type)}>
+                                  {event.type}
+                                </Badge>
+                                {isDefault && (
+                                  <Badge variant="outline" className="bg-slate-100 text-slate-500 border-slate-200 text-xs">
+                                    <Sparkles className="h-3 w-3 mr-1" />
+                                    Default Schedule
                                   </Badge>
-                                </div>
-                                <div className="flex items-center gap-4 mt-1 text-sm text-slate-500">
+                                )}
+                              </div>
+                              <div className="flex items-center gap-4 mt-1 text-sm text-slate-500">
+                                <span className="flex items-center gap-1">
+                                  <Clock className="h-3.5 w-3.5" />
+                                  {formatEventDate(event.date)} at {event.startTime}
+                                </span>
+                                <span className="flex items-center gap-1">
+                                  <MapPin className="h-3.5 w-3.5" />
+                                  {event.location}
+                                </span>
+                                {event.officiant && (
                                   <span className="flex items-center gap-1">
-                                    <Clock className="h-3.5 w-3.5" />
-                                    {formatEventDate(event.date)} at {event.startTime}
+                                    <User className="h-3.5 w-3.5" />
+                                    Fr. {event.officiant}
                                   </span>
-                                  <span className="flex items-center gap-1">
-                                    <MapPin className="h-3.5 w-3.5" />
-                                    {event.location}
-                                  </span>
-                                  {event.officiant && (
-                                    <span className="flex items-center gap-1">
-                                      <User className="h-3.5 w-3.5" />
-                                      Fr. {event.officiant}
-                                    </span>
-                                  )}
-                                </div>
+                                )}
                               </div>
                             </div>
+                          </div>
+                          {!isDefault && (
                             <Button 
                               variant="ghost" 
                               size="sm"
@@ -371,114 +458,112 @@ export default function Dashboard() {
                             >
                               Edit
                             </Button>
-                          </div>
+                          )}
+                        </div>
 
-                          {/* Ministry Assignments */}
-                          {event.type === 'Mass' && (
-                            <div className="mt-3 pt-3 border-t border-slate-100">
-                              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">
-                                Serving Today
-                              </p>
-                              {hasAssignments ? (
-                                <div className="flex flex-wrap gap-2">
-                                  {Object.entries(assignments).map(([ministryName, members]) => (
-                                    <div 
-                                      key={ministryName}
-                                      className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-full px-3 py-1.5 text-sm"
-                                    >
-                                      <span className="text-amber-600">{getMinistryIcon(ministryName)}</span>
-                                      <span className="font-medium text-slate-700">{ministryName}:</span>
-                                      <span className="text-slate-600">{members.join(', ')}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 rounded-md px-3 py-2">
-                                  <AlertCircle className="h-4 w-4" />
-                                  No ministry assignments scheduled for this Mass.
-                                  <Button 
-                                    variant="link" 
-                                    size="sm" 
-                                    onClick={() => navigate('/ministries')}
-                                    className="text-amber-700 p-0 h-auto"
+                        {/* Ministry Assignments */}
+                        {event.type === 'Mass' && (
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">
+                              Serving Today
+                            </p>
+                            {hasAssignments ? (
+                              <div className="flex flex-wrap gap-2">
+                                {Object.entries(assignments).map(([ministryName, members]) => (
+                                  <div 
+                                    key={ministryName}
+                                    className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-full px-3 py-1.5 text-sm"
                                   >
-                                    Assign ministries
-                                  </Button>
-                                </div>
-                              )}
-                            </div>
-                          )}
+                                    <span className="text-amber-600">{getMinistryIcon(ministryName)}</span>
+                                    <span className="font-medium text-slate-700">{ministryName}:</span>
+                                    <span className="text-slate-600">{members.join(', ')}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 rounded-md px-3 py-2">
+                                <AlertCircle className="h-4 w-4" />
+                                {isDefault 
+                                  ? 'Assign ministries to see who is serving today.' 
+                                  : 'No ministry assignments scheduled for this Mass.'}
+                                <Button 
+                                  variant="link" 
+                                  size="sm" 
+                                  onClick={() => navigate('/ministries')}
+                                  className="text-amber-700 p-0 h-auto"
+                                >
+                                  Assign ministries
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
-                          {/* Sacrament Link */}
-                          {event.sacramentRecordId && (
-                            <div className="mt-2 text-sm">
-                              <Button 
-                                variant="link" 
-                                size="sm"
-                                onClick={() => navigate(`/registry?id=${event.sacramentRecordId}`)}
-                                className="text-blue-600 p-0 h-auto"
-                              >
-                                View sacrament record →
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          {/* Recent Activity */}
-          <Card className="border-slate-200 shadow-sm">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">Recent Activity</CardTitle>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  onClick={() => navigate('/reports')}
-                  className="text-slate-500"
-                >
-                  View All <ChevronRight className="ml-1 h-4 w-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <ScrollArea className="h-[250px]">
-                <div className="space-y-3">
-                  {activities.length === 0 ? (
-                    <p className="text-center text-sm text-slate-400 py-8">No recent activity recorded.</p>
-                  ) : (
-                    activities.map(activity => (
-                      <div key={activity.id} className="flex items-start gap-3 p-2 rounded-md hover:bg-slate-50">
-                        <div className="mt-0.5">
-                          {activity.type === 'registry' && <Baby className="h-4 w-4 text-green-500" />}
-                          {activity.type === 'collection' && <DollarSign className="h-4 w-4 text-blue-500" />}
-                          {activity.type === 'approval' && <AlertCircle className="h-4 w-4 text-amber-500" />}
-                          {activity.type === 'directory' && <Users className="h-4 w-4 text-purple-500" />}
-                          {activity.type === 'ssdm' && <HandHelping className="h-4 w-4 text-pink-500" />}
-                          {activity.type === 'event' && <CalendarDays className="h-4 w-4 text-slate-500" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-slate-900">{activity.description}</p>
-                          {activity.detail && (
-                            <p className="text-xs text-slate-500 mt-0.5">{activity.detail}</p>
-                          )}
-                          <p className="text-xs text-slate-400 mt-1">{format(parseISO(activity.date), 'MMM d, h:mm a')}</p>
-                        </div>
+                        {event.sacramentRecordId && (
+                          <div className="mt-2 text-sm">
+                            <Button 
+                              variant="link" 
+                              size="sm"
+                              onClick={() => navigate(`/registry?id=${event.sacramentRecordId}`)}
+                              className="text-blue-600 p-0 h-auto"
+                            >
+                              View sacrament record →
+                            </Button>
+                          </div>
+                        )}
                       </div>
-                    ))
-                  )}
+                    );
+                  })}
                 </div>
               </ScrollArea>
             </CardContent>
           </Card>
+
+          {/* Ministry Schedule Boxes */}
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                <Users className="h-5 w-5 text-amber-600" />
+                Ministry Schedules — {todayDayName}
+              </h2>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => navigate('/ministries')}
+                className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+              >
+                Manage Ministries <ChevronRight className="ml-1 h-4 w-4" />
+              </Button>
+            </div>
+
+            {ministries.length === 0 ? (
+              <Card className="border-dashed border-slate-300 bg-slate-50/50 p-8 text-center">
+                <Users className="mx-auto h-12 w-12 text-slate-300 mb-3" />
+                <p className="text-slate-500 font-medium">No ministries set up yet.</p>
+                <p className="text-sm text-slate-400 mt-1">Create ministries like Choir, Ushers, Lectors to see schedules here.</p>
+                <Button 
+                  onClick={() => navigate('/ministries')}
+                  className="mt-4 bg-amber-600 hover:bg-amber-700 text-white"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Create First Ministry
+                </Button>
+              </Card>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {ministries.map(ministry => (
+                  <MinistryScheduleBox 
+                    key={ministry.id} 
+                    ministry={ministry} 
+                    todayDay={todayDayName}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* RIGHT SIDEBAR: Calendar + Financial Summary (1/3 width) */}
+        {/* RIGHT SIDEBAR: Calendar + Quick Stats (1/3 width) */}
         <div className="space-y-6">
 
           {/* Mini Calendar */}
@@ -529,53 +614,23 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          {/* Financial Summary — Compact */}
-          <Card className="border-slate-200 shadow-sm bg-gradient-to-br from-slate-50 to-white">
-            <CardHeader className="pb-2">
-              <div className="flex items-center gap-2">
-                <DollarSign className="h-4 w-4 text-green-600" />
-                <CardTitle className="text-sm font-semibold">Financial Summary</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0 space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-500">Sunday Collection</span>
-                <span className="text-sm font-semibold text-slate-900">₱{financeSummary.sundayCollection.toLocaleString()}</span>
-              </div>
-              <Separator />
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-500">Pending Approvals</span>
-                <Badge variant={financeSummary.pendingApprovals > 0 ? 'destructive' : 'secondary'} className="text-xs">
-                  {financeSummary.pendingApprovals}
-                </Badge>
-              </div>
-              <Separator />
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-slate-500">YTD Net</span>
-                <span className={`text-sm font-semibold ${financeSummary.ytdIncome - financeSummary.ytdExpenses >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  ₱{(financeSummary.ytdIncome - financeSummary.ytdExpenses).toLocaleString()}
-                </span>
-              </div>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                className="w-full text-xs border-slate-300"
-                onClick={() => navigate('/finance')}
-              >
-                View Finance Details
-              </Button>
-            </CardContent>
-          </Card>
-
           {/* Quick Stats */}
           <div className="grid grid-cols-2 gap-3">
-            <Card className="border-slate-200 p-3">
+            <Card className="border-slate-200 p-3 text-center hover:border-amber-300 transition-colors">
               <div className="text-2xl font-bold text-slate-900">{events.filter(e => e.type === 'Baptism').length}</div>
-              <div className="text-xs text-slate-500">Baptisms This Month</div>
+              <div className="text-xs text-slate-500">Baptisms</div>
             </Card>
-            <Card className="border-slate-200 p-3">
+            <Card className="border-slate-200 p-3 text-center hover:border-amber-300 transition-colors">
               <div className="text-2xl font-bold text-slate-900">{events.filter(e => e.type === 'Wedding').length}</div>
-              <div className="text-xs text-slate-500">Weddings This Month</div>
+              <div className="text-xs text-slate-500">Weddings</div>
+            </Card>
+            <Card className="border-slate-200 p-3 text-center hover:border-amber-300 transition-colors">
+              <div className="text-2xl font-bold text-slate-900">{ministries.length}</div>
+              <div className="text-xs text-slate-500">Ministries</div>
+            </Card>
+            <Card className="border-slate-200 p-3 text-center hover:border-amber-300 transition-colors">
+              <div className="text-2xl font-bold text-slate-900">{events.filter(e => e.type === 'Mass').length}</div>
+              <div className="text-xs text-slate-500">Masses</div>
             </Card>
           </div>
         </div>

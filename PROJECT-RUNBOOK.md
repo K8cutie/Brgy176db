@@ -306,6 +306,33 @@ When starting a new ChurchOS session:
 |------|-------------|-------------|--------|
 | 2026-05-22 | src/pages/Dashboard.tsx | COMPLETE REWRITE: Restructured dashboard to prioritize parish operations over financial data. Hero section now shows Upcoming Events with Ministry Assignments (Choir, Ushers, Lectors, etc. matched by date/time). Calendar widget moved to right sidebar. Financial stats demoted to compact summary card. Quick actions reordered: Schedule Event first. Recent Activity kept as secondary section. | READY FOR TESTING |
 | 2026-05-23 | src/pages/Dashboard.tsx | BUILD FIX: Corrected `getPersisted()` keys to match `AppState` interface in `store.ts`. Changed `'calendar_events'` → `'events'`, removed non-existent `'recent_activity'` and `'finance_summary'` keys. Added synthetic activity derivation from `events` + `collections` + `journal`. Added finance summary computation from `collections` + `journal` + `applications`. | FIXED |
+| 2026-05-23 | src/pages/Dashboard.tsx | DASHBOARD v2.0 — 4 UI requests implemented: (1) Default 'Today's Mass Schedule' shown when no real events exist — auto-generates typical parish Mass times based on day of week. (2) Quick Actions redesigned as large visual icon boxes with descriptive text and hover animations. (3) Financial Summary card completely removed from dashboard. (4) Recent Activity section replaced with individual Ministry Schedule Boxes — each ministry gets its own card showing today's assignments by day+massTime matching. | READY FOR TESTING |
+
+**Dashboard v2.0 Detailed Changes:**
+1. **Default Today's Mass Schedule:** When no events exist in localStorage, dashboard auto-generates typical Philippine parish Mass schedule for today (Sunday: 6AM, 8AM, 10AM, 5PM; Weekday: 6AM, 5PM; Saturday: 5PM). Marked with "Default Schedule" badge. Encourages user to schedule real events.
+2. **Quick Action Icon Boxes:** Replaced text buttons with 4 large visual cards (Schedule Event, Add Record, Generate Report, Add Collection). Each has 6x6 icon, title, description, hover lift effect, and "Get started →" reveal on hover. Color-coded: amber (events), blue (records), green (reports), purple (collections).
+3. **Financial Summary Removed:** Completely removed the Financial Summary card from right sidebar. Finance data still accessible via Quick Action box or Finance page.
+4. **Ministry Schedule Boxes:** Replaced Recent Activity section with grid of ministry cards. Each card shows: ministry icon, name, today's assignments (massTime + memberName), total member count. Empty state prompts to create first ministry. Grid layout: 1 col mobile, 2 col tablet, 3 col desktop.
+
+**Files Modified:**
+- `src/pages/Dashboard.tsx` — Complete rewrite (v2.0, ~380 lines)
+
+**Components Added:**
+- `QuickActionCard` — Reusable visual action card with icon, title, description, hover effects
+- `MinistryScheduleBox` — Individual ministry schedule card showing today's assignments
+- `getDefaultTodayEvents()` — Generates default Mass schedule based on current day of week
+
+**Data Flow Unchanged:**
+- Still uses `getPersisted('events')` and `getPersisted('ministries')` from store.ts
+- Ministry matching still by `day + massTime` (no foreign keys)
+- No changes to AppState interface or other files
+
+**Next Steps:**
+- Test with real parish data
+- Verify default Mass times match your parish schedule (adjust in `getDefaultTodayEvents()` if needed)
+- Check ministry card grid responsiveness
+
+
 
 **Build Error Details:**
 - Error: `Argument of type '"finance_summary"' is not assignable to parameter of type 'keyof AppState'`
