@@ -122,6 +122,22 @@ insert into public.fee_override_audit (parish_id, client_id, data) values
     '{"timestamp":"2026-06-11T16:30:00","sacrament":"Funeral","registryId":"F-2026-008","personName":"(undisclosed)","overrideType":"waived","amount":5000,"reason":"Family hardship","recordedBy":"Fr. Delgado","prevHash":"GENESIS","hash":"h1"}')
 on conflict (parish_id, client_id) do nothing;
 
--- ══════ 8. Quick checks ══════
+-- ══════ 8. Diocese monthly packets (what the desktop sync would push) ══════
+-- So the bishop's cockpit shows data from pure SQL (no desktop sync needed).
+-- Run AFTER churchos-saas-reports.sql. derive_report stamps diocese_id + net.
+insert into public.diocese_reports (parish_id, period, collections_total, expense_total, by_mass_time, by_category, sacrament_counts, flagged_waivers) values
+  ('a1111111-1111-1111-1111-111111111111','2026-06',36200,18500,
+    '{"6:00 AM":9700,"9:00 AM":20500,"6:00 PM":6000}','{"Utilities":12000,"Clergy stipend":6500}',
+    '{"baptisms":1,"marriages":0,"confirmations":0,"deaths":0}','[]'),
+  ('a2222222-2222-2222-2222-222222222222','2026-06',44100,24000,
+    '{"7:00 AM":13000,"10:00 AM":26600,"5:00 PM":4500}','{"Utilities":9000,"Building repairs":15000}',
+    '{"baptisms":1,"marriages":0,"confirmations":0,"deaths":0}',
+    '[{"by":"Fr. Delgado","amount":5000,"person":"(undisclosed)"}]'),
+  -- Sto. Niño (Cubao) — must NOT appear in Bishop Tomas' (Manila) cockpit
+  ('b1111111-1111-1111-1111-111111111111','2026-06',10000,0,
+    '{"8:00 AM":10000}','{}','{"baptisms":0,"marriages":0,"confirmations":0,"deaths":0}','[]')
+on conflict (parish_id, period) do nothing;
+
+-- ══════ 9. Quick checks ══════
 -- select name, role, parish_id, diocese_id from public.profiles join auth.users using (id);
 -- Logins (test only):  bishop.manila@churchos.test / aida@churchos.test / ben@churchos.test  —  pw: Test1234!

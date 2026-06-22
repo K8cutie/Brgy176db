@@ -35,28 +35,36 @@ export default function DioceseCockpit() {
   useEffect(() => {
     (async () => {
       try {
-        // RLS scopes every query to this bishop's diocese.
-        const [{ data: parishes }, { data: cols }, { data: exp }, { data: audit }] = await Promise.all([
+        // RLS scopes this to the bishop's diocese. We read the monthly financial
+        // PACKETS (diocese_reports) parishes push — NOT raw records. Parishioner
+        // PII never reaches the cloud.
+        const [{ data: parishes }, { data: reports }] = await Promise.all([
           supabase.from('parishes').select('id,name'),
-          supabase.from('collections').select('parish_id,mass_time,total'),
-          supabase.from('expense_lines').select('parish_id,account_name,debit'),
-          supabase.from('fee_override_audit').select('parish_id,person_name,amount,reason,recorded_by,override_type'),
+          supabase.from('diocese_reports').select('parish_id,period,collections_total,expense_total,by_mass_time,by_category,flagged_waivers'),
         ]);
 
         const pName: Record<string, string> = {};
         for (const p of (parishes as { id: string; name: string }[]) || []) pName[p.id] = p.name;
 
+        type Report = { parish_id: string; period: string; collections_total: number; expense_total: number; by_mass_time: Record<string, number>; by_category: Record<string, number>; flagged_waivers: { by: string; amount: number; person?: string }[] };
         const colByParish: Record<string, number> = {};
-        const byMass: Record<string, number> = {};
-        for (const c of (cols as { parish_id: string; mass_time: string; total: number }[]) || []) {
-          colByParish[c.parish_id] = (colByParish[c.parish_id] || 0) + (c.total || 0);
-          byMass[c.mass_time] = (byMass[c.mass_time] || 0) + (c.total || 0);
-        }
         const expByParish: Record<string, number> = {};
+        const byMass: Record<string, number> = {};
         const expByCat: Record<string, number> = {};
-        for (const e of (exp as { parish_id: string; account_name: string; debit: number }[]) || []) {
-          expByParish[e.parish_id] = (expByParish[e.parish_id] || 0) + (e.debit || 0);
-          expByCat[e.account_name] = (expByCat[e.account_name] || 0) + (e.debit || 0);
+        const waiverAgg: Record<string, { parish: string; by: string; amount: number; count: number }> = {};
+
+        for (const r of (reports as Report[]) || []) {
+          colByParish[r.parish_id] = (colByParish[r.parish_id] || 0) + (r.collections_total || 0);
+          expByParish[r.parish_id] = (expByParish[r.parish_id] || 0) + (r.expense_total || 0);
+          for (const [mass, amt] of Object.entries(r.by_mass_time || {})) byMass[mass] = (byMass[mass] || 0) + (amt || 0);
+          for (const [cat, amt] of Object.entries(r.by_category || {})) expByCat[cat] = (expByCat[cat] || 0) + (amt || 0);
+          // Aggregate flagged waivers by parish+priest across months (split-evasion safe).
+          for (const w of r.flagged_waivers || []) {
+            const k = r.parish_id + '|' + w.by;
+            waiverAgg[k] ??= { parish: pName[r.parish_id] || '—', by: w.by, amount: 0, count: 0 };
+            waiverAgg[k].amount += w.amount || 0;
+            waiverAgg[k].count += 1;
+          }
         }
 
         const parishRows: ParishRow[] = Object.keys(pName).map((id) => ({
@@ -64,17 +72,6 @@ export default function DioceseCockpit() {
           net: (colByParish[id] || 0) - (expByParish[id] || 0),
         })).sort((a, b) => b.collections - a.collections);
 
-        // Oversight: waivers self-recorded by a priest that TOTAL ≥ ₱3,000 per
-        // priest per parish. Aggregating (not flagging single rows) closes the
-        // split-evasion trick — 2×₱2,500 still trips the flag.
-        const waiverAgg: Record<string, { parish: string; by: string; amount: number; count: number }> = {};
-        for (const a of (audit as { parish_id: string; amount: number; recorded_by: string; override_type: string }[]) || []) {
-          if (a.override_type !== 'waived' || !/^fr\.|father|priest/i.test(a.recorded_by || '')) continue;
-          const k = a.parish_id + '|' + a.recorded_by;
-          waiverAgg[k] ??= { parish: pName[a.parish_id] || '—', by: a.recorded_by, amount: 0, count: 0 };
-          waiverAgg[k].amount += a.amount || 0;
-          waiverAgg[k].count += 1;
-        }
         const flaggedWaivers = Object.values(waiverAgg).filter((w) => w.amount >= 3000).sort((a, b) => b.amount - a.amount);
 
         setData({

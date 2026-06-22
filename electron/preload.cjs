@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld('churchos', {
     export: () => ipcRenderer.invoke('churchos:backup:export'),
     restore: () => ipcRenderer.invoke('churchos:backup:restore'),
   },
+  sync: {
+    status: () => ipcRenderer.invoke('churchos:sync:status'),
+    config: (patch) => ipcRenderer.invoke('churchos:sync:config', patch),
+    now: () => ipcRenderer.invoke('churchos:sync:now'),
+  },
   appVersion: () => ipcRenderer.invoke('churchos:app:version'),
   update: {
     check: () => ipcRenderer.invoke('churchos:update:check'),

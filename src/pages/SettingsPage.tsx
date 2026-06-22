@@ -1936,6 +1936,17 @@ function sysBridge(): SysBridge | null {
   const w = window as unknown as { churchos?: SysBridge & { update?: unknown } };
   return w.churchos?.update ? (w.churchos as unknown as SysBridge) : null;
 }
+interface SyncStatus { configured: boolean; url: string; email: string; lastSyncAt: string | null; state: string; message?: string }
+interface SyncBridge {
+  status(): Promise<SyncStatus>;
+  config(patch: Record<string, string>): Promise<SyncStatus>;
+  now(): Promise<SyncStatus>;
+}
+function syncBridge(): SyncBridge | null {
+  const w = window as unknown as { churchos?: { sync?: SyncBridge } };
+  return w.churchos?.sync ?? null;
+}
+
 const UPDATE_TEXT: Record<string, string> = {
   idle: 'ChurchOS checks for updates automatically.',
   dev: 'Updates run only in the installed app.',
@@ -1969,6 +1980,15 @@ function BackupSection() {
     const off = sys.update.onEvent((d) => setUpd(d));
     return () => { if (off) off(); };
   }, [sys]);
+
+  const sync = useMemo(() => syncBridge(), []);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncForm, setSyncForm] = useState({ url: '', anonKey: '', email: '', password: '' });
+  useEffect(() => {
+    if (!sync) return;
+    sync.status().then((s) => { setSyncStatus(s); setSyncForm((f) => ({ ...f, url: s.url || '', email: s.email || '' })); }).catch(() => {});
+  }, [sync]);
+  const inp = 'h-9 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text';
 
   if (!bridge) {
     return (
@@ -2061,6 +2081,38 @@ function BackupSection() {
           )}
         </div>
       </div>
+
+      {sync && (
+        <div className="cos-card">
+          <h3 className="font-semibold text-sm text-charcoal dark:text-dm-text mb-1">Cloud Sync (Diocese)</h3>
+          <p className="body-sm text-warm-gray mb-3">
+            ChurchOS works fully offline. Connect your diocese cloud account to send this parish’s data up for the diocese roll-up — it syncs whenever you’re online.
+            {syncStatus?.lastSyncAt && <span className="text-success"> Last synced {new Date(syncStatus.lastSyncAt).toLocaleString()}.</span>}
+          </p>
+          {syncStatus?.message && (
+            <div className={cn('rounded-md px-3 py-2 text-sm mb-3', syncStatus.state === 'ok' ? 'bg-success/10 text-success' : syncStatus.state === 'error' ? 'bg-error/10 text-error' : 'bg-gold/10 text-charcoal dark:text-dm-text')}>
+              {syncStatus.message}
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            <input value={syncForm.url} onChange={(e) => setSyncForm((f) => ({ ...f, url: e.target.value }))} placeholder="Cloud URL (https://…supabase.co)" className={inp} />
+            <input value={syncForm.anonKey} onChange={(e) => setSyncForm((f) => ({ ...f, anonKey: e.target.value }))} placeholder="Anon key" className={inp} />
+            <input value={syncForm.email} onChange={(e) => setSyncForm((f) => ({ ...f, email: e.target.value }))} placeholder="Parish cloud email" className={inp} autoCapitalize="none" />
+            <input type="password" value={syncForm.password} onChange={(e) => setSyncForm((f) => ({ ...f, password: e.target.value }))} placeholder="Parish cloud password" className={inp} />
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button onClick={async () => { const s = await sync.config(syncForm); setSyncStatus(s); }} className="cos-btn cos-btn-secondary text-sm">Save Connection</button>
+            <button
+              disabled={!syncStatus?.configured || syncStatus?.state === 'syncing'}
+              onClick={async () => { setSyncStatus((s) => (s ? { ...s, state: 'syncing', message: 'Syncing…' } : s)); setSyncStatus(await sync.now()); }}
+              className="cos-btn cos-btn-primary text-sm"
+            >
+              <Database className="w-4 h-4" /> Sync Now
+            </button>
+          </div>
+          <p className="text-xs text-warm-gray mt-3">Your records stay on this PC. Sync only sends them up — the diocese sees the roll-up and can’t edit your parish’s records.</p>
+        </div>
+      )}
     </div>
   );
 }
