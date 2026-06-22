@@ -23,6 +23,8 @@ import { MINISTRIES, getAccentColor } from '@/lib/ministryData';
 import type { Ministry, MinistryMember, ScheduleAssignment } from '@/lib/ministryData';
 import DataTable from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
 
 type DetailTab = 'roster' | 'schedule' | 'attendance';
 
@@ -38,7 +40,7 @@ const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MASS_TIMES = ['6:00 AM', '8:00 AM', '10:00 AM', '6:00 PM'];
 
 export default function MinistriesPage() {
-  const [ministries, setMinistries] = useState<Ministry[]>(MINISTRIES);
+  const [ministries, setMinistries] = usePersistedState<Ministry[]>(KEYS.ministries, MINISTRIES);
   const [selectedMinistryId, setSelectedMinistryId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>('roster');
   const [memberModalOpen, setMemberModalOpen] = useState(false);

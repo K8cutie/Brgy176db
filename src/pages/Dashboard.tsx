@@ -29,7 +29,8 @@ import {
   Settings,
   Sparkles
 } from 'lucide-react';
-import { getPersisted } from '@/lib/store';
+import * as ns from '@/lib/storageNamespaced';
+import { KEYS } from '@/lib/storageKeys';
 import { format, parseISO, isToday, isTomorrow, isThisWeek, getDay, addDays } from 'date-fns';
 
 // --- Types ---
@@ -293,8 +294,8 @@ export default function Dashboard() {
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).getDay();
 
   useEffect(() => {
-    const persistedEvents = getPersisted<CalendarEvent[]>('events', []);
-    const persistedMinistries = getPersisted<Ministry[]>('ministries', []);
+    const persistedEvents = ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, []);
+    const persistedMinistries = ns.getJSON<Ministry[]>(KEYS.ministries, []);
 
     const now = new Date();
     const upcoming = persistedEvents

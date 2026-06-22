@@ -237,12 +237,24 @@ export function findConflicts(event: CalendarEvent, allEvents: CalendarEvent[]):
   });
 }
 
+/** Minimum minutes between a priest's activities. A full hour — our priests can be
+ *  elderly (some in their 70s), and they need time to rest as well as to travel. */
+export const TRANSITION_BUFFER_MIN = 60;
+
+export type EventConflict = {
+  type: 'priest' | 'location' | 'time' | 'transition';
+  /** 'block' makes the event un-saveable; 'warn' is a caution the user can accept. */
+  severity: 'block' | 'warn';
+  message: string;
+  conflictingEvent: CalendarEvent;
+};
+
 /** Enhanced conflict checker — returns rich conflict objects */
 export function checkEventConflicts(
   events: CalendarEvent[],
   newEvent: Omit<CalendarEvent, 'id'>,
-): Array<{ type: 'priest' | 'location' | 'time'; message: string; conflictingEvent: CalendarEvent }> {
-  const conflicts: Array<{ type: 'priest' | 'location' | 'time'; message: string; conflictingEvent: CalendarEvent }> = [];
+): EventConflict[] {
+  const conflicts: EventConflict[] = [];
   events.forEach(e => {
     if (e.id === (newEvent as Partial<CalendarEvent>).id) return; // skip self
     if (e.date !== newEvent.date) return;
@@ -251,20 +263,39 @@ export function checkEventConflicts(
     const nStart = timeToMinutes(newEvent.startTime);
     const nEnd   = timeToMinutes(newEvent.endTime);
     const overlap = nStart < eEnd && nEnd > eStart;
-    if (!overlap) return;
-    if (newEvent.officiant && e.officiant && newEvent.officiant === e.officiant) {
-      conflicts.push({
-        type: 'priest',
-        message: `${e.officiant} is already booked at this time: "${e.title}" (${e.startTime} – ${e.endTime})`,
-        conflictingEvent: e,
-      });
+
+    if (overlap) {
+      if (newEvent.officiant && e.officiant && newEvent.officiant === e.officiant) {
+        conflicts.push({
+          type: 'priest', severity: 'block',
+          message: `${e.officiant} is already booked at this time: "${e.title}" (${e.startTime} – ${e.endTime})`,
+          conflictingEvent: e,
+        });
+      }
+      if (newEvent.location && e.location && newEvent.location === e.location) {
+        conflicts.push({
+          type: 'location', severity: 'block',
+          message: `${e.location} is already booked at this time: "${e.title}" (${e.startTime} – ${e.endTime})`,
+          conflictingEvent: e,
+        });
+      }
+      return;
     }
-    if (newEvent.location && e.location && newEvent.location === e.location) {
-      conflicts.push({
-        type: 'location',
-        message: `${e.location} is already booked at this time: "${e.title}" (${e.startTime} – ${e.endTime})`,
-        conflictingEvent: e,
-      });
+
+    // No overlap — but is the same priest scheduled too tightly between activities?
+    // Applies whether or not the location changes: an elderly priest needs time to
+    // rest, not only to travel.
+    if (newEvent.officiant && e.officiant && newEvent.officiant === e.officiant) {
+      // gap = minutes between the end of the earlier event and the start of the later one
+      const gap = nStart >= eEnd ? nStart - eEnd : eStart - nEnd;
+      if (gap >= 0 && gap < TRANSITION_BUFFER_MIN) {
+        const [first, second] = nStart >= eEnd ? [e, newEvent] : [newEvent, e];
+        const sameLocation = first.location === second.location;
+        const message = sameLocation
+          ? `Too soon after "${first.title}" (ends ${first.endTime}) — only ${gap} min before "${second.title}" (starts ${second.startTime}). ${newEvent.officiant} needs at least an hour between activities to rest. Please choose a later time.`
+          : `Too soon after "${first.title}" at ${first.location} (ends ${first.endTime}) — only ${gap} min to reach ${second.location} for "${second.title}" (starts ${second.startTime}). ${newEvent.officiant} needs at least an hour to travel and rest. Please choose a later time.`;
+        conflicts.push({ type: 'transition', severity: 'block', message, conflictingEvent: e });
+      }
     }
   });
   return conflicts;

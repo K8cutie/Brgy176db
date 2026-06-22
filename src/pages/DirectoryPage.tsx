@@ -36,6 +36,8 @@ import {
   getSacramentBadges,
 } from '@/lib/directoryData';
 import { celebrateFirstAction } from '@/components/FirstRunDetector';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
 
 /* ------------------------------------------------------------------ */
 /*  Utility helpers                                                    */
@@ -83,7 +85,7 @@ function MemberAvatar({ member, size = 32, showName }: { member: Parishioner; si
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 export default function DirectoryPage() {
-  const [families, setFamilies] = useState<Family[]>(initialFamilies);
+  const [families, setFamilies] = usePersistedState<Family[]>(KEYS.families, initialFamilies);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBarangay, setSelectedBarangay] = useState('All');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');

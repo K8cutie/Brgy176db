@@ -12,6 +12,7 @@ import {
 import { families } from '@/lib/directoryData';
 import { baptismRecords, marriageRecords } from '@/lib/registryData';
 import { SAMPLE_EVENTS } from '@/lib/calendarData';
+import { getCurrentUser, logout } from '@/lib/session';
 
 interface TopBarProps {
   pageTitle: string;
@@ -31,6 +32,13 @@ export default function TopBar({ pageTitle, isDark, onToggleDark }: TopBarProps)
   const [searchQuery, setSearchQuery] = useState('');
   const [showResults, setShowResults] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const currentUser = useMemo(() => getCurrentUser(), []);
+
+  const handleSignOut = () => {
+    logout();
+    navigate('/login');
+    window.location.reload();
+  };
 
   /* ─── Keyboard shortcut: Ctrl+K ─── */
   useEffect(() => {
@@ -258,8 +266,8 @@ export default function TopBar({ pageTitle, isDark, onToggleDark }: TopBarProps)
                   className="absolute right-0 top-full mt-1 w-48 bg-white rounded-xl shadow-modal border border-parchment py-1 z-50 dark:bg-dm-surface dark:border-dm-border"
                 >
                   <div className="px-4 py-3 border-b border-parchment dark:border-dm-border">
-                    <p className="text-sm font-medium text-charcoal dark:text-dm-text">Fr. Jose Reyes</p>
-                    <p className="text-xs text-warm-gray dark:text-dm-text-muted">Parish Priest</p>
+                    <p className="text-sm font-medium text-charcoal dark:text-dm-text">{currentUser?.username ?? 'Guest'}</p>
+                    <p className="text-xs text-warm-gray dark:text-dm-text-muted">{currentUser?.roleLabel ?? 'Not signed in'}</p>
                   </div>
                   <button className="w-full text-left px-4 py-2 text-sm text-charcoal hover:bg-cream-dark transition-colors dark:text-dm-text dark:hover:bg-dm-surface-raised">
                     Profile
@@ -268,7 +276,10 @@ export default function TopBar({ pageTitle, isDark, onToggleDark }: TopBarProps)
                     Settings
                   </button>
                   <div className="border-t border-parchment dark:border-dm-border" />
-                  <button className="w-full text-left px-4 py-2 text-sm text-error hover:bg-cream-dark transition-colors">
+                  <button
+                    onClick={handleSignOut}
+                    className="w-full text-left px-4 py-2 text-sm text-error hover:bg-cream-dark transition-colors"
+                  >
                     Sign Out
                   </button>
                 </motion.div>

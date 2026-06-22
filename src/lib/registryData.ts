@@ -600,18 +600,30 @@ export const certificateTokens = [
   { token: '{{date_today}}', label: 'Date Today', category: 'Date' },
 ];
 
+// Escape HTML special chars so record data (names, officiant, etc.) can't
+// inject markup/script when the certificate is rendered via innerHTML.
+function escapeHtml(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function replaceTokens(template: string, record: BaptismRecord): string {
+  const e = escapeHtml;
   return template
-    .replace(/\{\{child_name\}\}/g, `${record.childFirstName} ${record.childMiddleName} ${record.childLastName}`)
+    .replace(/\{\{child_name\}\}/g, e(`${record.childFirstName} ${record.childMiddleName} ${record.childLastName}`))
     .replace(/\{\{baptism_date\}\}/g, formatPhilippineDate(record.dateOfBaptism))
     .replace(/\{\{birth_date\}\}/g, formatPhilippineDate(record.dateOfBirth))
-    .replace(/\{\{father_name\}\}/g, `${record.fatherFirstName} ${record.fatherMiddleName} ${record.fatherLastName}`)
-    .replace(/\{\{mother_name\}\}/g, `${record.motherFirstName} ${record.motherMiddleName} ${record.motherLastName}` + (record.motherMaidenName ? ` (${record.motherMaidenName})` : ''))
-    .replace(/\{\{godfather\}\}/g, `${record.godfatherFirstName} ${record.godfatherLastName}`)
-    .replace(/\{\{godmother\}\}/g, `${record.godmotherFirstName} ${record.godmotherLastName}`)
-    .replace(/\{\{officiant\}\}/g, record.officiant)
-    .replace(/\{\{book_number\}\}/g, String(record.bookNumber))
-    .replace(/\{\{page_number\}\}/g, String(record.pageNumber))
+    .replace(/\{\{father_name\}\}/g, e(`${record.fatherFirstName} ${record.fatherMiddleName} ${record.fatherLastName}`))
+    .replace(/\{\{mother_name\}\}/g, e(`${record.motherFirstName} ${record.motherMiddleName} ${record.motherLastName}` + (record.motherMaidenName ? ` (${record.motherMaidenName})` : '')))
+    .replace(/\{\{godfather\}\}/g, e(`${record.godfatherFirstName} ${record.godfatherLastName}`))
+    .replace(/\{\{godmother\}\}/g, e(`${record.godmotherFirstName} ${record.godmotherLastName}`))
+    .replace(/\{\{officiant\}\}/g, e(record.officiant))
+    .replace(/\{\{book_number\}\}/g, e(String(record.bookNumber)))
+    .replace(/\{\{page_number\}\}/g, e(String(record.pageNumber)))
     .replace(/\{\{parish_name\}\}/g, 'St. Michael the Archangel Parish')
     .replace(/\{\{parish_address\}\}/g, 'Mabalacat, Pampanga')
     .replace(/\{\{priest_name\}\}/g, 'Fr. Antonio Reyes')

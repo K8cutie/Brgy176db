@@ -5,6 +5,7 @@ import TopBar from './TopBar';
 import Footer from './Footer';
 import PracticeModeBanner from './PracticeModeBanner';
 import { useDarkMode } from '@/hooks/useDarkMode';
+import { Toaster } from 'sonner';
 
 function getPageTitle(pathname: string): string {
   const titles: Record<string, string> = {
@@ -64,6 +65,9 @@ export default function Layout({ children }: LayoutProps) {
         {/* Footer */}
         <Footer />
       </div>
+
+      {/* Global toast outlet (also used for storage-quota warnings) */}
+      <Toaster position="top-right" richColors />
     </div>
   );
 }

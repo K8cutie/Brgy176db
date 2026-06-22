@@ -45,6 +45,8 @@ import {
 import type { CalendarEvent, EventType } from '@/lib/calendarData';
 import { baptismRecords, marriageRecords, confirmationRecords, deathRecords } from '@/lib/registryData';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
 import EmptyState from '@/components/EmptyState';
 import HelpTooltip from '@/components/HelpTooltip';
 import { getLabel } from '@/lib/friendlyLabels';
@@ -79,7 +81,7 @@ export default function CalendarPage() {
   const [showPriestExport, setShowPriestExport] = useState(false);
   const ALL_EVENT_TYPES: EventType[] = [...CALENDAR_EVENT_TYPES, ...SACRAMENT_EVENT_TYPES.map(s => s.type)];
   const [visibleTypes, setVisibleTypes] = useState<Set<EventType>>(new Set(ALL_EVENT_TYPES));
-  const [events, setEvents] = useState<CalendarEvent[]>(SAMPLE_EVENTS);
+  const [events, setEvents] = usePersistedState<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null);
@@ -1178,6 +1180,16 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
     return checkEventConflicts(allEvents, temp);
   }, [title, type, date, startTime, endTime, location, officiant, allEvents, linkSacrament, selectedRecordId, sacramentRecordType, isPublic]);
 
+  // Split: hard-block conflicts (overlaps) prevent saving; transition warnings allow it.
+  const blockConflicts = useMemo(() => conflicts.filter(c => c.severity === 'block'), [conflicts]);
+  const warnConflicts = useMemo(() => conflicts.filter(c => c.severity === 'warn'), [conflicts]);
+
+  // The end time must come after the start time (no backwards or zero-length events).
+  const timeInvalid = useMemo(() => {
+    const toMin = (t: string) => { const [h, m] = (t || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+    return !!startTime && !!endTime && toMin(endTime) <= toMin(startTime);
+  }, [startTime, endTime]);
+
   // Scheduling rules validation
   const ruleKey = eventTypeToRuleKey(type);
   const ruleValidation = useMemo(() => {
@@ -1247,6 +1259,8 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Belt-and-suspenders: never save a blocked or backwards event, even via Enter.
+    if (blockConflicts.length > 0 || timeInvalid) return;
     const evt: CalendarEvent = {
       id: event?.id || `evt-${Date.now()}`,
       title: title || `${type} Event`,
@@ -1393,9 +1407,47 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
           </button>
         </div>
 
+        {/* End-before-start guard (blocks saving) */}
+        {timeInvalid && (
+          <div className="mx-6 mt-4 p-3 rounded-lg border border-error/20 bg-error/5">
+            <p className="text-xs text-error flex items-center gap-1.5">
+              <Ban className="w-3.5 h-3.5 flex-shrink-0" />
+              The end time must be after the start time.
+            </p>
+          </div>
+        )}
+
+        {/* Transition-time caution (does NOT block saving) */}
+        <AnimatePresence>
+          {warnConflicts.length > 0 && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.25 }}
+              className="overflow-hidden"
+            >
+              <div className="mx-6 mt-4 p-3 rounded-lg border border-warning/30 bg-warning/5">
+                <div className="flex items-center gap-2 mb-1">
+                  <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0" />
+                  <span className="text-sm font-semibold text-warning">Tight schedule — please double-check</span>
+                </div>
+                <div className="space-y-1">
+                  {warnConflicts.map((c, i) => (
+                    <p key={i} className="text-xs text-warning flex items-start gap-1.5">
+                      <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                      {c.message}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Conflict Hard Stop Banner */}
         <AnimatePresence>
-          {conflicts.length > 0 && (
+          {blockConflicts.length > 0 && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
@@ -1412,7 +1464,7 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
                   You must resolve the conflicts below before this event can be saved.
                 </p>
                 <div className="space-y-1">
-                  {conflicts.map((c, i) => (
+                  {blockConflicts.map((c, i) => (
                     <p key={i} className="text-xs text-error flex items-start gap-1.5">
                       <XCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
                       {c.message}
@@ -1798,16 +1850,16 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
               </button>
               <button
                 type="submit"
-                disabled={conflicts.length > 0}
+                disabled={blockConflicts.length > 0 || timeInvalid}
                 className={cn(
                   'cos-btn text-sm px-4 py-2 flex items-center gap-2',
-                  conflicts.length > 0
+                  blockConflicts.length > 0 || timeInvalid
                     ? 'bg-parchment-dim text-warm-gray cursor-not-allowed opacity-50'
                     : 'cos-btn-primary'
                 )}
               >
                 <Save className="w-4 h-4" />
-                {conflicts.length > 0 ? 'Resolve Conflicts to Save' : isEditing ? 'Save Changes' : 'Create Event'}
+                {blockConflicts.length > 0 ? 'Resolve Conflicts to Save' : timeInvalid ? 'Fix End Time to Save' : isEditing ? 'Save Changes' : 'Create Event'}
               </button>
             </div>
           </div>
