@@ -5,7 +5,7 @@ import { hasSetupBeenCompleted } from '@/lib/store'
 import { setPersistedWriteErrorHandler } from '@/hooks/usePersistedState'
 import { setCorruptionHandler } from '@/lib/storageNamespaced'
 import { setDesktopWriteErrorHandler } from '@/lib/desktopStore'
-import { setCloudWriteErrorHandler } from '@/lib/cloudStore'
+import { setCloudWriteErrorHandler, isCloud } from '@/lib/cloudStore'
 import { toast } from 'sonner'
 import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
@@ -158,7 +158,9 @@ function AppRoutes() {
   // Send first-time installs through the setup wizard, and require a
   // logged-in user before any parish page is reachable. Without this,
   // navigating directly to a hash route bypassed the login entirely.
-  if (!hasSetupBeenCompleted()) {
+  // The local setup wizard is a desktop/offline concept — in cloud (SaaS) mode
+  // the parish is provisioned server-side, so skip straight to login.
+  if (!isCloud() && !hasSetupBeenCompleted()) {
     return <Navigate to="/setup" replace />;
   }
   if (!isAuthenticated()) {

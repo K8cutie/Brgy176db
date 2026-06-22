@@ -49,18 +49,14 @@ function tableFor(fullKey: string): string | null {
 let onWriteError: (() => void) | null = null;
 export function setCloudWriteErrorHandler(fn: (() => void) | null) { onWriteError = fn; }
 
-// ── lazy Supabase client (only loaded in cloud mode) ──
+// ── shared Supabase client (data + auth share one session) ──
+import { getSupabase } from './supabaseClient';
 type SupabaseLike = {
   from: (t: string) => any;
   auth: { getUser: () => Promise<{ data: { user: { id: string } | null } }> };
 };
-let client: SupabaseLike | null = null;
 async function sb(): Promise<SupabaseLike> {
-  if (!client) {
-    const { createClient } = await import('@supabase/supabase-js');
-    client = createClient(env!.VITE_SUPABASE_URL!, env!.VITE_SUPABASE_ANON_KEY!) as unknown as SupabaseLike;
-  }
-  return client;
+  return (await getSupabase()) as unknown as SupabaseLike;
 }
 
 const cache: Record<string, Item[]> = {};

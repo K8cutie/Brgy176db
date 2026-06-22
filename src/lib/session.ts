@@ -6,7 +6,23 @@
 // audit-trail attribution.
 // ═══════════════════════════════════════════════════════════
 
+import { isCloud } from './cloudStore';
+import { getSupabase } from './supabaseClient';
+import { cloudSignOut } from './cloudAuth';
+
 const USER_KEY = 'churchos_user';
+
+// Cloud roles → display labels (matches the SaaS profiles.role check constraint).
+const ROLE_LABELS: Record<string, string> = {
+  secretary: 'Secretary', priest: 'Parish Priest', finance_council: 'Finance Council',
+  diocese_admin: 'Diocese Admin', bishop: 'Bishop',
+};
+
+// Both desktop (main-process session) and cloud (Supabase session) use the
+// server-verified `verifiedActor` instead of trusting localStorage.
+function usesVerifiedActor(): boolean {
+  return !!desktopAuth() || isCloud();
+}
 
 // On desktop, the MAIN process is the source of truth for who is logged in.
 // reconcileSession() (called once at startup) caches that verified identity
@@ -38,20 +54,20 @@ export function getCurrentUser(): SessionUser | null {
 }
 
 export function isAuthenticated(): boolean {
-  // Desktop: trust the main-verified session, not the (editable) localStorage.
-  if (desktopAuth()) return verifiedActor !== null;
+  // Desktop + cloud: trust the server-verified session, not editable localStorage.
+  if (usesVerifiedActor()) return verifiedActor !== null;
   return getCurrentUser() !== null;
 }
 
 /** Display name for audit trails / "recorded by" fields. */
 export function getCurrentUserName(): string {
-  if (desktopAuth()) return verifiedActor ? verifiedActor.username : 'unknown';
+  if (usesVerifiedActor()) return verifiedActor ? verifiedActor.username : 'unknown';
   const u = getCurrentUser();
   return u ? u.username : 'unknown';
 }
 
 export function getCurrentUserRole(): string {
-  if (desktopAuth()) return verifiedActor?.role ?? 'unknown';
+  if (usesVerifiedActor()) return verifiedActor?.role ?? 'unknown';
   return getCurrentUser()?.role ?? 'unknown';
 }
 
@@ -61,19 +77,44 @@ export function getCurrentUserRole(): string {
 // a login, that claim is forged or stale → clear it so the gate sends to login.
 export async function reconcileSession(): Promise<void> {
   const a = desktopAuth();
-  if (!a) return; // browser/demo: localStorage is the session
-  try {
-    const cur = await a.current();
-    if (cur && cur.username) {
-      verifiedActor = { username: cur.username, role: cur.role, roleLabel: cur.roleLabel || cur.role, loginAt: cur.loginAt || '' };
-      localStorage.setItem(USER_KEY, JSON.stringify(verifiedActor));
-    } else {
-      verifiedActor = null;
-      localStorage.removeItem(USER_KEY);
-    }
-  } catch {
-    /* leave the existing state; the gate still requires *something* */
+  if (a) {
+    try {
+      const cur = await a.current();
+      if (cur && cur.username) {
+        verifiedActor = { username: cur.username, role: cur.role, roleLabel: cur.roleLabel || cur.role, loginAt: cur.loginAt || '' };
+        localStorage.setItem(USER_KEY, JSON.stringify(verifiedActor));
+      } else {
+        verifiedActor = null;
+        localStorage.removeItem(USER_KEY);
+      }
+    } catch { /* leave existing state */ }
+    return;
   }
+
+  // Cloud: derive the verified identity from the Supabase session + profile row.
+  if (isCloud()) {
+    try {
+      const s = await getSupabase();
+      const { data } = await s.auth.getSession();
+      const user = data?.session?.user;
+      if (user) {
+        const prof = await s.from('profiles').select('role, full_name').eq('id', user.id).single();
+        const role = (prof.data?.role as string) || 'secretary';
+        verifiedActor = {
+          username: (prof.data?.full_name as string) || user.email || 'user',
+          role,
+          roleLabel: ROLE_LABELS[role] || role,
+          loginAt: '',
+        };
+        localStorage.setItem(USER_KEY, JSON.stringify(verifiedActor));
+      } else {
+        verifiedActor = null;
+        localStorage.removeItem(USER_KEY);
+      }
+    } catch { verifiedActor = null; }
+    return;
+  }
+  // Plain browser/demo: localStorage is the session.
 }
 
 /** Persist the session AFTER the main process has verified credentials. */
@@ -89,7 +130,9 @@ export function setSession(u: { username: string; role: string; roleLabel?: stri
 
 export function logout(): void {
   localStorage.removeItem(USER_KEY);
+  verifiedActor = null;
   desktopAuth()?.logout();
+  if (isCloud()) void cloudSignOut();
 }
 
 // ── Desktop auth bridge (real local accounts; null in the browser/demo) ──

@@ -12,6 +12,9 @@ import {
 } from 'lucide-react';
 import { getParishConfig } from '@/lib/parishConfig';
 import { setSession, desktopAuth } from '@/lib/session';
+import { isCloud } from '@/lib/cloudStore';
+import { cloudSignIn, cloudResetPassword, cloudSignUp } from '@/lib/cloudAuth';
+import { onboardNewAdmin } from '@/lib/onboarding';
 
 /* ─── Role definitions ─── */
 interface Role {
@@ -148,17 +151,30 @@ export default function LoginPage() {
   const config = useMemo(() => getParishConfig(), []);
   const auth = useMemo(() => desktopAuth(), []);
   const hasBridge = !!auth;
+  const cloud = useMemo(() => isCloud(), []);
 
   const [mode, setMode] = useState<'loading' | 'login' | 'bootstrap'>(hasBridge ? 'loading' : 'login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [cloudSignup, setCloudSignup] = useState(false);
+  const [dioceseName, setDioceseName] = useState('');
+  const [parishName, setParishName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [selectedRole, setSelectedRole] = useState<string>('parish_priest');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [authError, setAuthError] = useState('');
+  const [notice, setNotice] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleForgot = async () => {
+    setAuthError(''); setNotice('');
+    if (!username.trim()) { setAuthError('Enter your email above, then click “Forgot password”.'); return; }
+    const res = await cloudResetPassword(username.trim());
+    if (res.ok) setNotice('If that email has an account, a reset link is on its way.');
+    else setAuthError(res.error || 'Could not send a reset link.');
+  };
 
   const roleLabel = useCallback((id: string) => roles.find((r) => r.id === id)?.label || id, []);
   const isBootstrap = mode === 'bootstrap';
@@ -180,9 +196,15 @@ export default function LoginPage() {
       if (password.length < 8) e.password = 'At least 8 characters';
       if (password !== confirmPassword) e.confirmPassword = 'Passwords do not match';
     }
+    if (cloud && cloudSignup) {
+      if (!fullName.trim()) e.fullName = 'Your name is required';
+      if (!dioceseName.trim()) e.dioceseName = 'Diocese name is required';
+      if (!parishName.trim()) e.parishName = 'Parish name is required';
+      if (password.length < 8) e.password = 'At least 8 characters';
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
-  }, [username, password, confirmPassword, fullName, mode]);
+  }, [username, password, confirmPassword, fullName, mode, cloud, cloudSignup, dioceseName, parishName]);
 
   const finishLogin = (user: { username: string; role: string }) => {
     setSession({ username: user.username, role: user.role, roleLabel: roleLabel(user.role) });
@@ -197,8 +219,33 @@ export default function LoginPage() {
     if (!validate()) return;
     setIsSubmitting(true);
 
-    // Browser/demo build (no desktop bridge): keep the lightweight role entry.
     if (!auth) {
+      // SaaS (cloud) build: real Supabase Auth.
+      if (cloud) {
+        if (cloudSignup) {
+          // Create the account, sign in, then onboard the diocese + first parish.
+          const su = await cloudSignUp(username.trim(), password, fullName.trim());
+          if (!su.ok) { setAuthError(su.error || 'Could not create the account.'); setIsSubmitting(false); return; }
+          const si = await cloudSignIn(username.trim(), password);
+          if (!si.ok) {
+            // Email confirmation is on → no session yet. Finish after they confirm.
+            setNotice('Account created! Please confirm your email, then sign in to finish setting up your diocese.');
+            setCloudSignup(false); setIsSubmitting(false); return;
+          }
+          const ob = await onboardNewAdmin(dioceseName.trim(), parishName.trim());
+          if (!ob.ok) { setAuthError(ob.error || 'Could not set up your diocese.'); setIsSubmitting(false); return; }
+          window.location.hash = '/';
+          window.location.reload();
+          return;
+        }
+        const res = await cloudSignIn(username.trim(), password);
+        if (!res.ok) { setAuthError(res.error || 'Sign in failed.'); setIsSubmitting(false); return; }
+        // Supabase persists the session; reload → reconcileSession picks it up.
+        window.location.hash = '/';
+        window.location.reload();
+        return;
+      }
+      // Plain browser/demo build (no backend): keep the lightweight role entry.
       await new Promise((r) => setTimeout(r, 400));
       const role = roles.find((r) => r.id === selectedRole)!;
       setSession({ username: username.trim() || role.demoUsername, role: role.id, roleLabel: role.label });
@@ -360,7 +407,7 @@ export default function LoginPage() {
             style={{ color: '#3D3A36', lineHeight: 1.2 }}
             variants={itemVariants}
           >
-            {isBootstrap ? 'Create Your Admin Account' : 'Welcome Back'}
+            {isBootstrap ? 'Create Your Admin Account' : (cloud && cloudSignup) ? 'Create Your Diocese' : 'Welcome Back'}
           </motion.h2>
           <motion.p
             className="text-sm mb-8 text-center lg:text-left"
@@ -369,6 +416,8 @@ export default function LoginPage() {
           >
             {isBootstrap
               ? 'Set up the Parish Priest account that secures this install.'
+              : (cloud && cloudSignup)
+              ? 'Start your free trial — create your diocese and first parish.'
               : 'Sign in to your parish management system'}
           </motion.p>
 
@@ -379,9 +428,14 @@ export default function LoginPage() {
                 {authError}
               </div>
             )}
+            {notice && (
+              <div className="mb-5 rounded-md px-3 py-2.5 text-sm" style={{ backgroundColor: 'rgba(45,106,79,0.08)', border: '1px solid rgba(45,106,79,0.35)', color: '#2D6A4F' }}>
+                {notice}
+              </div>
+            )}
 
-            {/* Full name (first-run admin only) */}
-            {isBootstrap && (
+            {/* Full name (desktop first-run admin OR cloud diocese signup) */}
+            {(isBootstrap || (cloud && cloudSignup)) && (
               <motion.div className="mb-5" variants={itemVariants}>
                 <label className="block mb-2" style={{ color: '#8C8374', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
                   Your Full Name
@@ -403,7 +457,7 @@ export default function LoginPage() {
                 className="label block mb-2"
                 style={{ color: '#8C8374', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase' }}
               >
-                Username
+                {cloud ? 'Email' : 'Username'}
               </label>
               <div className="relative">
                 <User
@@ -411,10 +465,12 @@ export default function LoginPage() {
                   style={{ color: '#8C8374' }}
                 />
                 <input
-                  type="text"
+                  type={cloud ? 'email' : 'text'}
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Enter your username"
+                  placeholder={cloud ? 'you@parish.org' : 'Enter your username'}
                   autoFocus
                   className="w-full h-10 rounded-md pl-10 pr-3 text-sm font-inter transition-all duration-150"
                   style={{
@@ -537,8 +593,38 @@ export default function LoginPage() {
               </motion.div>
             )}
 
-            {/* Role Selector — browser/demo entry only; on desktop the role comes from the account */}
-            {!hasBridge && (
+            {/* Diocese + parish (cloud signup only) */}
+            {cloud && cloudSignup && (
+              <>
+                <motion.div className="mb-5" variants={itemVariants}>
+                  <label className="block mb-2" style={{ color: '#8C8374', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Diocese Name
+                  </label>
+                  <input
+                    type="text" value={dioceseName} onChange={(e) => setDioceseName(e.target.value)}
+                    placeholder="e.g. Archdiocese of Manila"
+                    className="w-full h-10 rounded-md px-3 text-sm font-inter"
+                    style={{ backgroundColor: '#FFFFFF', border: errors.dioceseName ? '1px solid #B8322F' : '1px solid #EAE5D9', color: '#3D3A36', outline: 'none' }}
+                  />
+                  {errors.dioceseName && <p className="mt-1.5 text-xs" style={{ color: '#B8322F' }}>{errors.dioceseName}</p>}
+                </motion.div>
+                <motion.div className="mb-6" variants={itemVariants}>
+                  <label className="block mb-2" style={{ color: '#8C8374', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Your First Parish
+                  </label>
+                  <input
+                    type="text" value={parishName} onChange={(e) => setParishName(e.target.value)}
+                    placeholder="e.g. St. Mary Magdalene Parish"
+                    className="w-full h-10 rounded-md px-3 text-sm font-inter"
+                    style={{ backgroundColor: '#FFFFFF', border: errors.parishName ? '1px solid #B8322F' : '1px solid #EAE5D9', color: '#3D3A36', outline: 'none' }}
+                  />
+                  {errors.parishName && <p className="mt-1.5 text-xs" style={{ color: '#B8322F' }}>{errors.parishName}</p>}
+                </motion.div>
+              </>
+            )}
+
+            {/* Role Selector — browser/demo entry only; on desktop/cloud the role comes from the account */}
+            {!hasBridge && !cloud && (
             <motion.div className="mb-6" variants={itemVariants}>
               <label
                 className="block mb-3"
@@ -639,10 +725,10 @@ export default function LoginPage() {
                         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                       />
                     </svg>
-                    <span>{isBootstrap ? 'Creating account…' : 'Signing in…'}</span>
+                    <span>{isBootstrap ? 'Creating account…' : (cloud && cloudSignup) ? 'Creating your diocese…' : 'Signing in…'}</span>
                   </>
                 ) : (
-                  <span>{isBootstrap ? 'Create Admin Account' : 'Sign In'}</span>
+                  <span>{isBootstrap ? 'Create Admin Account' : (cloud && cloudSignup) ? 'Create Diocese & Start Trial' : 'Sign In'}</span>
                 )}
               </button>
             </motion.div>
@@ -655,10 +741,29 @@ export default function LoginPage() {
                 </p>
               </motion.div>
             )}
-            {!hasBridge && (
+            {!hasBridge && !cloudSignup && (
               <motion.div className="mt-4 text-center" variants={itemVariants}>
-                <button type="button" className="text-sm transition-all duration-200 hover:underline" style={{ color: '#C9963B' }}>
+                <button
+                  type="button"
+                  onClick={cloud ? handleForgot : undefined}
+                  className="text-sm transition-all duration-200 hover:underline"
+                  style={{ color: '#C9963B' }}
+                >
                   Forgot password?
+                </button>
+              </motion.div>
+            )}
+
+            {/* Cloud: toggle between signing in and creating a new diocese */}
+            {cloud && (
+              <motion.div className="mt-3 text-center" variants={itemVariants}>
+                <button
+                  type="button"
+                  onClick={() => { setCloudSignup((s) => !s); setAuthError(''); setNotice(''); setErrors({}); }}
+                  className="text-sm transition-all duration-200 hover:underline"
+                  style={{ color: '#5B3A73' }}
+                >
+                  {cloudSignup ? 'Already have an account? Sign in' : 'New diocese? Create an account →'}
                 </button>
               </motion.div>
             )}
