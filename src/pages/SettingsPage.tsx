@@ -1,10 +1,11 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, Church, Clock, FileText, Users, ClipboardList,
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
   X, Check, Search, Lock, Unlock, Printer,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
+  Database, Download, FolderOpen,
 } from 'lucide-react';
 import DataTable, { type Column } from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
@@ -1907,17 +1908,175 @@ function GuidedToursSection() {
 //  MAIN SETTINGS PAGE
 // ═════════════════════════════════════════════════════════════════
 
+// ── Backup & restore (desktop only) ──
+interface BackupFile { name: string; path: string; size: number; mtime: number }
+interface BackupBridge {
+  now(): Promise<{ ok: boolean; path?: string; error?: string }>;
+  list(): Promise<BackupFile[]>;
+  openFolder(): Promise<{ ok: boolean }>;
+  export(): Promise<{ ok: boolean; path?: string; error?: string }>;
+  restore(): Promise<{ ok: boolean; error?: string }>;
+}
+function backupBridge(): BackupBridge | null {
+  const w = window as unknown as { churchos?: { backup?: BackupBridge } };
+  return w.churchos?.backup ?? null;
+}
+
+interface UpdateStatus { state: string; version?: string; percent?: number; message?: string }
+interface SysBridge {
+  appVersion(): Promise<string>;
+  update: {
+    check(): Promise<unknown>;
+    status(): Promise<UpdateStatus>;
+    install(): Promise<unknown>;
+    onEvent(cb: (d: UpdateStatus) => void): () => void;
+  };
+}
+function sysBridge(): SysBridge | null {
+  const w = window as unknown as { churchos?: SysBridge & { update?: unknown } };
+  return w.churchos?.update ? (w.churchos as unknown as SysBridge) : null;
+}
+const UPDATE_TEXT: Record<string, string> = {
+  idle: 'ChurchOS checks for updates automatically.',
+  dev: 'Updates run only in the installed app.',
+  checking: 'Checking for updates…',
+  available: 'Update found — downloading…',
+  downloading: 'Downloading update…',
+  'up-to-date': 'You have the latest version.',
+  downloaded: 'An update is ready — restart to apply it.',
+  error: "Couldn't check for updates (no connection?).",
+  unavailable: 'Auto-update is not available in this build.',
+};
+const fmtSize = (n: number) => (n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+const fmtWhen = (ms: number) => new Date(ms).toLocaleString();
+
+function BackupSection() {
+  const bridge = useMemo(() => backupBridge(), []);
+  const [backups, setBackups] = useState<BackupFile[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const sys = useMemo(() => sysBridge(), []);
+  const [version, setVersion] = useState('');
+  const [upd, setUpd] = useState<UpdateStatus>({ state: 'idle' });
+
+  const refresh = async () => { if (bridge) setBackups(await bridge.list()); };
+  useEffect(() => { void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => {
+    if (!sys) return;
+    sys.appVersion().then(setVersion).catch(() => {});
+    sys.update.status().then(setUpd).catch(() => {});
+    const off = sys.update.onEvent((d) => setUpd(d));
+    return () => { if (off) off(); };
+  }, [sys]);
+
+  if (!bridge) {
+    return (
+      <div className="cos-card">
+        <h2 className="heading-lg text-charcoal dark:text-dm-text mb-2">Data Backup</h2>
+        <p className="body-sm text-warm-gray">Automatic backups are available in the ChurchOS desktop app.</p>
+      </div>
+    );
+  }
+
+  const run = async (fn: () => Promise<{ ok: boolean; error?: string; path?: string }>, okText: string) => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fn();
+      if (r.ok) { setMsg({ kind: 'ok', text: r.path ? `${okText} → ${r.path}` : okText }); await refresh(); }
+      else if (r.error !== 'canceled') setMsg({ kind: 'err', text: `Could not complete: ${r.error}` });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="heading-lg text-charcoal dark:text-dm-text">Data Backup</h2>
+        <p className="body-sm text-warm-gray mt-0.5">
+          Your whole parish is one file. ChurchOS backs it up automatically each day it runs — and you can make a copy any time.
+        </p>
+      </div>
+
+      {msg && (
+        <div className={cn('rounded-md px-3 py-2.5 text-sm', msg.kind === 'ok' ? 'bg-success/10 text-success' : 'bg-error/10 text-error')}>
+          {msg.text}
+        </div>
+      )}
+
+      <div className="cos-card flex flex-wrap gap-3">
+        <button disabled={busy} onClick={() => run(() => bridge.now(), 'Backup saved')} className="cos-btn cos-btn-primary text-sm">
+          <Save className="w-4 h-4" /> Back Up Now
+        </button>
+        <button disabled={busy} onClick={() => run(() => bridge.export(), 'Copy saved')} className="cos-btn cos-btn-secondary text-sm">
+          <Download className="w-4 h-4" /> Save a Copy (USB…)
+        </button>
+        <button disabled={busy} onClick={() => run(() => bridge.restore(), 'Restoring…')} className="cos-btn cos-btn-secondary text-sm">
+          <Upload className="w-4 h-4" /> Restore from Backup…
+        </button>
+        <button disabled={busy} onClick={() => bridge.openFolder()} className="cos-btn cos-btn-secondary text-sm">
+          <FolderOpen className="w-4 h-4" /> Open Backup Folder
+        </button>
+      </div>
+
+      <div className="cos-card">
+        <h3 className="font-semibold text-sm text-charcoal dark:text-dm-text mb-3">
+          Recent backups {backups.length > 0 && <span className="text-warm-gray font-normal">({backups.length})</span>}
+        </h3>
+        {backups.length === 0 ? (
+          <p className="body-sm text-warm-gray">No backups yet — click “Back Up Now”.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {backups.map((b) => (
+              <div key={b.path} className="flex items-center justify-between text-sm border-t border-parchment/40 first:border-0 py-1.5">
+                <span className="text-charcoal dark:text-dm-text">{fmtWhen(b.mtime)}</span>
+                <span className="text-warm-gray font-mono text-xs">{fmtSize(b.size)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-xs text-warm-gray mt-3">
+          Restoring replaces today’s data with the chosen backup. ChurchOS snapshots the current data first, then restarts.
+        </p>
+      </div>
+
+      <div className="cos-card">
+        <h3 className="font-semibold text-sm text-charcoal dark:text-dm-text mb-1">App Version &amp; Updates</h3>
+        <p className="body-sm text-warm-gray mb-3">
+          {version ? `ChurchOS v${version}` : 'ChurchOS'} — {UPDATE_TEXT[upd.state] || ''}
+          {upd.state === 'downloading' && typeof upd.percent === 'number' ? ` ${upd.percent}%` : ''}
+          {(upd.state === 'available' || upd.state === 'downloaded') && upd.version ? ` (v${upd.version})` : ''}
+        </p>
+        <div className="flex flex-wrap gap-3">
+          <button
+            disabled={upd.state === 'checking' || upd.state === 'downloading'}
+            onClick={() => { setUpd({ state: 'checking' }); sys?.update.check(); }}
+            className="cos-btn cos-btn-secondary text-sm"
+          >
+            <RotateCcw className="w-4 h-4" /> Check for Updates
+          </button>
+          {upd.state === 'downloaded' && (
+            <button onClick={() => sys?.update.install()} className="cos-btn cos-btn-primary text-sm">
+              <Download className="w-4 h-4" /> Restart &amp; Update
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const settingsNavItems = [
   { id: 'parish', label: 'Parish Info', icon: Church },
   { id: 'mass', label: 'Mass Schedule', icon: Clock },
   { id: 'fees', label: 'Fee Schedule', icon: DollarSign },
   { id: 'templates', label: 'Certificate Templates', icon: FileText },
   { id: 'users', label: 'Users', icon: Users },
+  { id: 'data', label: 'Backup', icon: Database },
   { id: 'audit', label: 'Audit Log', icon: ClipboardList },
   { id: 'tours', label: 'Guided Tours', icon: HelpCircle },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'users' | 'audit' | 'tours';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'users' | 'data' | 'audit' | 'tours';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -1974,6 +2133,8 @@ export default function SettingsPage() {
         return <CertificateTemplatesSection />;
       case 'users':
         return <UserManagementSection />;
+      case 'data':
+        return <BackupSection />;
       case 'audit':
         return <AuditLogSection />;
       case 'tours':
