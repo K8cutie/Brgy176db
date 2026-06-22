@@ -207,7 +207,10 @@ returns trigger language plpgsql security definer set search_path = public as $$
 begin
   -- Gate on ROLE, not pg_trigger_depth(): a depth check can be sidestepped by an
   -- attacker-influenced cascade (red-team: trigger-depth-bypass).
-  if coalesce(auth.role(), '') is distinct from 'service_role' then
+  -- Freeze only for the PUBLIC API roles. current_user is the real executing
+  -- role (unfakeable by a client), so trusted SECURITY DEFINER onboarding RPCs
+  -- (current_user = owner) and the backend (service_role) can still assign roles.
+  if current_user in ('authenticated', 'anon') then
     new.role       := old.role;
     new.parish_id  := old.parish_id;
     new.diocese_id := old.diocese_id;
@@ -224,7 +227,7 @@ create trigger trg_guard_profile before update on public.profiles
 create or replace function public.force_parish_id()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if coalesce(auth.role(), '') is distinct from 'service_role' then
+  if current_user in ('authenticated', 'anon') then
     new.parish_id := auth_parish_id();
   end if;
   return new;
@@ -235,7 +238,7 @@ end $$;
 create or replace function public.guard_audit_append_only()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if coalesce(auth.role(), '') is distinct from 'service_role' then
+  if current_user in ('authenticated', 'anon') then
     raise exception 'fee_override_audit is append-only';
   end if;
   return null;
@@ -255,7 +258,7 @@ declare tables text[] := array[
 begin
   foreach t in array tables loop
     execute format('drop trigger if exists %I on public.%I', 'trg_force_parish_'||t, t);
-    execute format('create trigger %I before insert on public.%I for each row execute function public.force_parish_id()', 'trg_force_parish_'||t, t);
+    execute format('create trigger %I before insert or update on public.%I for each row execute function public.force_parish_id()', 'trg_force_parish_'||t, t);
   end loop;
 end $$;
 
