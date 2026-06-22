@@ -1,3 +1,14 @@
 node_modules
 dist
+release
 .DS_Store
+
+# Local editor/agent config
+.claude/
+
+# Local databases & stray artifacts (never commit parish data)
+*.db
+*.db-wal
+*.db-shm
+UsersArchie*
+events
