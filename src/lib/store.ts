@@ -1,6 +1,8 @@
 // ChurchOS Persistence Layer
 // All CRUD operations persist to localStorage with fallback to defaults.
 
+import { clearParishData } from './storageNamespaced';
+
 const LS_KEY = 'churchos_v1';
 
 export interface AppState {
@@ -94,6 +96,11 @@ export function resetAllData() {
   localStorage.removeItem('churchos_wizard');
   localStorage.removeItem('churchos_setup_complete');
   localStorage.removeItem('churchos_user');
+  // Also clear the per-parish namespaced data (registry, finance,
+  // directory, ministries, calendar, ssdm, audit trail, etc.)
+  try {
+    clearParishData();
+  } catch { /* ignore */ }
 }
 
 export function hasSetupBeenCompleted(): boolean {

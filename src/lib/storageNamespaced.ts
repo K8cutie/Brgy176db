@@ -1,70 +1,124 @@
 // ═══════════════════════════════════════════════════════════
 // Namespaced Storage — Every parish gets its own storage space
-// This enables multi-parish Docker instances and clean
-// separation for the Lego brick architecture.
+// This enables multi-parish instances and clean separation.
+//
+// Backend:
+//  • Desktop (Electron): a real on-disk SQLite file, accessed
+//    synchronously through an in-memory cache (see desktopStore).
+//  • Browser: localStorage.
+// The public API below is identical for both, so the rest of the
+// app never needs to know which backend is active.
 // ═══════════════════════════════════════════════════════════
 
 import { getParishId } from './parishIdentity';
+import { isDesktop, dsGet, dsSet, dsRemove, dsKeys } from './desktopStore';
+import { isCloud, cloudGet, cloudSet, cloudRemove, cloudKeys } from './cloudStore';
 
 // ── Generate a namespaced key ──
 export function ns(key: string): string {
   return `churchos_parish_${getParishId()}_${key}`;
 }
 
-// ── getItem with namespace ──
-export function getItem(key: string): string | null {
-  return localStorage.getItem(ns(key));
+// ── Backend primitives (full, already-namespaced key) ──
+// Priority: cloud (SaaS) → desktop (SQLite) → localStorage (browser).
+function backendGet(fullKey: string): string | null {
+  if (isCloud()) return cloudGet(fullKey);
+  return isDesktop() ? dsGet(fullKey) : localStorage.getItem(fullKey);
 }
 
-// ── setItem with namespace ──
-export function setItem(key: string, value: string): void {
-  localStorage.setItem(ns(key), value);
+// Returns true on success, false if the write failed (e.g. quota exceeded).
+function backendSet(fullKey: string, value: string): boolean {
+  if (isCloud()) return cloudSet(fullKey, value);
+  if (isDesktop()) {
+    dsSet(fullKey, value);
+    return true;
+  }
+  try {
+    localStorage.setItem(fullKey, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-// ── removeItem with namespace ──
-export function removeItem(key: string): void {
-  localStorage.removeItem(ns(key));
+function backendRemove(fullKey: string): void {
+  if (isCloud()) { cloudRemove(fullKey); return; }
+  if (isDesktop()) dsRemove(fullKey);
+  else localStorage.removeItem(fullKey);
 }
 
-// ── Get all keys for current parish ──
-export function getAllKeys(): string[] {
-  const prefix = ns('');
+function backendKeys(): string[] {
+  if (isCloud()) return cloudKeys();
+  if (isDesktop()) return dsKeys();
   const keys: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
-    if (k?.startsWith(prefix)) {
-      keys.push(k.slice(prefix.length));
-    }
+    if (k !== null) keys.push(k);
   }
   return keys;
 }
 
+// ── getItem with namespace ──
+export function getItem(key: string): string | null {
+  return backendGet(ns(key));
+}
+
+// ── setItem with namespace ──
+export function setItem(key: string, value: string): void {
+  backendSet(ns(key), value);
+}
+
+// ── removeItem with namespace ──
+export function removeItem(key: string): void {
+  backendRemove(ns(key));
+}
+
+// ── Typed JSON get/set with safe fallback ──
+export function getJSON<T>(key: string, fallback: T): T {
+  try {
+    const raw = backendGet(ns(key));
+    return raw !== null ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+// Returns true on success, false if the write failed (e.g. quota exceeded).
+export function setJSON(key: string, value: unknown): boolean {
+  try {
+    return backendSet(ns(key), JSON.stringify(value));
+  } catch {
+    return false;
+  }
+}
+
+// ── Get all (short) keys for current parish ──
+export function getAllKeys(): string[] {
+  const prefix = ns('');
+  return backendKeys()
+    .filter((k) => k.startsWith(prefix))
+    .map((k) => k.slice(prefix.length));
+}
+
 // ── Get storage usage estimate ──
 export function getStorageUsage(): { used: number; total: number; percent: number } {
-  let used = 0;
   const prefix = ns('');
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k?.startsWith(prefix)) {
-      used += (localStorage.getItem(k)?.length || 0) * 2; // UTF-16 = 2 bytes per char
+  let used = 0;
+  for (const k of backendKeys()) {
+    if (k.startsWith(prefix)) {
+      used += (backendGet(k)?.length || 0) * 2; // UTF-16 = 2 bytes per char
     }
   }
-  const total = 5 * 1024 * 1024; // 5MB typical localStorage limit
+  // Desktop SQLite is effectively unbounded; localStorage caps near 5 MB.
+  const total = isDesktop() ? 2 * 1024 * 1024 * 1024 : 5 * 1024 * 1024;
   return { used, total, percent: Math.round((used / total) * 100) };
 }
 
 // ── Clear all data for current parish (DANGER) ──
 export function clearParishData(): void {
   const prefix = ns('');
-  const keysToRemove: string[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k?.startsWith(prefix)) {
-      keysToRemove.push(k);
-    }
-  }
-  for (const k of keysToRemove) {
-    localStorage.removeItem(k);
+  for (const k of backendKeys()) {
+    if (k.startsWith(prefix)) backendRemove(k);
   }
 }
 
@@ -72,14 +126,14 @@ export function clearParishData(): void {
 export function exportParishData(): Record<string, unknown> {
   const prefix = ns('');
   const data: Record<string, unknown> = {};
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k?.startsWith(prefix)) {
+  for (const k of backendKeys()) {
+    if (k.startsWith(prefix)) {
       const shortKey = k.slice(prefix.length);
+      const raw = backendGet(k);
       try {
-        data[shortKey] = JSON.parse(localStorage.getItem(k) || 'null');
+        data[shortKey] = JSON.parse(raw || 'null');
       } catch {
-        data[shortKey] = localStorage.getItem(k);
+        data[shortKey] = raw;
       }
     }
   }
