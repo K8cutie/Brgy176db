@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-react';
 import { getParishConfig } from '@/lib/parishConfig';
+import { setSession, desktopAuth } from '@/lib/session';
 
 /* ─── Role definitions ─── */
 interface Role {
@@ -133,46 +134,94 @@ function CrossWatermark() {
 }
 
 /* ─── Main Component ─── */
+const ERROR_TEXT: Record<string, string> = {
+  invalid_credentials: 'Incorrect username or password.',
+  locked: 'Too many attempts. Please wait a few minutes and try again.',
+  weak_password: 'Password must be at least 8 characters.',
+  username_taken: 'That username is already in use.',
+  username_too_short: 'Username must be at least 3 characters.',
+  first_user_must_be_admin: 'The first account must be the Parish Priest (admin).',
+  not_authorized: 'You are not allowed to do that.',
+};
+
 export default function LoginPage() {
   const config = useMemo(() => getParishConfig(), []);
+  const auth = useMemo(() => desktopAuth(), []);
+  const hasBridge = !!auth;
+
+  const [mode, setMode] = useState<'loading' | 'login' | 'bootstrap'>(hasBridge ? 'loading' : 'login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [fullName, setFullName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [selectedRole, setSelectedRole] = useState<string>('parish_priest');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const roleLabel = useCallback((id: string) => roles.find((r) => r.id === id)?.label || id, []);
+  const isBootstrap = mode === 'bootstrap';
+
+  // First run? If the desktop bridge reports no accounts yet, switch to
+  // "create the first admin" mode instead of asking to sign in.
+  useEffect(() => {
+    if (!auth) return;
+    auth.hasUsers().then((has) => setMode(has ? 'login' : 'bootstrap')).catch(() => setMode('login'));
+  }, [auth]);
 
   /* ── Validation ── */
   const validate = useCallback(() => {
-    const newErrors: Record<string, string> = {};
-    if (!username.trim()) newErrors.username = 'Username is required';
-    if (!password.trim()) newErrors.password = 'Password is required';
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  }, [username, password]);
+    const e: Record<string, string> = {};
+    if (!username.trim()) e.username = 'Username is required';
+    if (!password.trim()) e.password = 'Password is required';
+    if (mode === 'bootstrap') {
+      if (!fullName.trim()) e.fullName = 'Your name is required';
+      if (password.length < 8) e.password = 'At least 8 characters';
+      if (password !== confirmPassword) e.confirmPassword = 'Passwords do not match';
+    }
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }, [username, password, confirmPassword, fullName, mode]);
 
-  /* ── Handle Sign In ── */
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!validate()) return;
-    setIsSubmitting(true);
-
-    // Simulate network delay
-    await new Promise((r) => setTimeout(r, 800));
-
-    const role = roles.find((r) => r.id === selectedRole)!;
-    const mockUser = {
-      username: username.trim() || role.demoUsername,
-      role: role.id,
-      roleLabel: role.label,
-      loginAt: new Date().toISOString(),
-    };
-    localStorage.setItem('churchos_user', JSON.stringify(mockUser));
+  const finishLogin = (user: { username: string; role: string }) => {
+    setSession({ username: user.username, role: user.role, roleLabel: roleLabel(user.role) });
     window.location.hash = '/';
     window.location.reload();
   };
 
-  /* ── Role selection with demo username ── */
+  /* ── Handle Sign In / Create admin ── */
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    if (!validate()) return;
+    setIsSubmitting(true);
+
+    // Browser/demo build (no desktop bridge): keep the lightweight role entry.
+    if (!auth) {
+      await new Promise((r) => setTimeout(r, 400));
+      const role = roles.find((r) => r.id === selectedRole)!;
+      setSession({ username: username.trim() || role.demoUsername, role: role.id, roleLabel: role.label });
+      window.location.hash = '/';
+      window.location.reload();
+      return;
+    }
+
+    try {
+      if (mode === 'bootstrap') {
+        const created = await auth.create({ username: username.trim(), password, role: 'parish_priest', fullName: fullName.trim() });
+        if (!created.ok) { setAuthError(ERROR_TEXT[created.error || ''] || 'Could not create the account.'); setIsSubmitting(false); return; }
+      }
+      const res = await auth.login(username.trim(), password);
+      if (!res.ok || !res.user) { setAuthError(ERROR_TEXT[res.error || ''] || 'Sign in failed.'); setIsSubmitting(false); return; }
+      finishLogin(res.user);
+    } catch {
+      setAuthError('Something went wrong. Please try again.');
+      setIsSubmitting(false);
+    }
+  };
+
+  /* ── Role selection with demo username (browser/demo only) ── */
   const handleRoleSelect = (roleId: string) => {
     setSelectedRole(roleId);
     const role = roles.find((r) => r.id === roleId);
@@ -269,7 +318,7 @@ export default function LoginPage() {
           initial="hidden"
           animate="visible"
         >
-          <span>ChurchOS v1.0</span>
+          <span>ChurchOS v1.1</span>
           <span>&middot;</span>
           <span>{config.parishName}</span>
         </motion.div>
@@ -311,18 +360,43 @@ export default function LoginPage() {
             style={{ color: '#3D3A36', lineHeight: 1.2 }}
             variants={itemVariants}
           >
-            Welcome Back
+            {isBootstrap ? 'Create Your Admin Account' : 'Welcome Back'}
           </motion.h2>
           <motion.p
             className="text-sm mb-8 text-center lg:text-left"
             style={{ color: '#8C8374', lineHeight: 1.55 }}
             variants={itemVariants}
           >
-            Sign in to your parish management system
+            {isBootstrap
+              ? 'Set up the Parish Priest account that secures this install.'
+              : 'Sign in to your parish management system'}
           </motion.p>
 
           {/* Form */}
           <form onSubmit={handleSignIn} noValidate>
+            {authError && (
+              <div className="mb-5 rounded-md px-3 py-2.5 text-sm" style={{ backgroundColor: 'rgba(184,50,47,0.08)', border: '1px solid rgba(184,50,47,0.35)', color: '#B8322F' }}>
+                {authError}
+              </div>
+            )}
+
+            {/* Full name (first-run admin only) */}
+            {isBootstrap && (
+              <motion.div className="mb-5" variants={itemVariants}>
+                <label className="block mb-2" style={{ color: '#8C8374', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Your Full Name
+                </label>
+                <input
+                  type="text"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="e.g. Fr. Juan dela Cruz"
+                  className="w-full h-10 rounded-md px-3 text-sm font-inter"
+                  style={{ backgroundColor: '#FFFFFF', border: errors.fullName ? '1px solid #B8322F' : '1px solid #EAE5D9', color: '#3D3A36', outline: 'none' }}
+                />
+                {errors.fullName && <p className="mt-1.5 text-xs" style={{ color: '#B8322F' }}>{errors.fullName}</p>}
+              </motion.div>
+            )}
             {/* Username */}
             <motion.div className="mb-5" variants={itemVariants}>
               <label
@@ -445,7 +519,26 @@ export default function LoginPage() {
               )}
             </motion.div>
 
-            {/* Role Selector */}
+            {/* Confirm password (first-run admin only) */}
+            {isBootstrap && (
+              <motion.div className="mb-5" variants={itemVariants}>
+                <label className="block mb-2" style={{ color: '#8C8374', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  Confirm Password
+                </label>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Re-enter your password"
+                  className="w-full h-10 rounded-md px-3 text-sm font-inter"
+                  style={{ backgroundColor: '#FFFFFF', border: errors.confirmPassword ? '1px solid #B8322F' : '1px solid #EAE5D9', color: '#3D3A36', outline: 'none' }}
+                />
+                {errors.confirmPassword && <p className="mt-1.5 text-xs" style={{ color: '#B8322F' }}>{errors.confirmPassword}</p>}
+              </motion.div>
+            )}
+
+            {/* Role Selector — browser/demo entry only; on desktop the role comes from the account */}
+            {!hasBridge && (
             <motion.div className="mb-6" variants={itemVariants}>
               <label
                 className="block mb-3"
@@ -493,6 +586,7 @@ export default function LoginPage() {
                 {roles.find((r) => r.id === selectedRole)?.description}
               </p>
             </motion.div>
+            )}
 
             {/* Sign In Button */}
             <motion.div variants={itemVariants}>
@@ -545,27 +639,29 @@ export default function LoginPage() {
                         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                       />
                     </svg>
-                    <span>Signing in...</span>
+                    <span>{isBootstrap ? 'Creating account…' : 'Signing in…'}</span>
                   </>
                 ) : (
-                  <span>Sign In</span>
+                  <span>{isBootstrap ? 'Create Admin Account' : 'Sign In'}</span>
                 )}
               </button>
             </motion.div>
 
-            {/* Forgot password */}
-            <motion.div
-              className="mt-4 text-center"
-              variants={itemVariants}
-            >
-              <button
-                type="button"
-                className="text-sm transition-all duration-200 hover:underline"
-                style={{ color: '#C9963B' }}
-              >
-                Forgot password?
-              </button>
-            </motion.div>
+            {/* Forgot password — an admin resets staff passwords in Settings */}
+            {!isBootstrap && hasBridge && (
+              <motion.div className="mt-4 text-center" variants={itemVariants}>
+                <p className="text-xs" style={{ color: '#8C8374' }}>
+                  Forgot your password? Ask the Parish Priest to reset it in Settings.
+                </p>
+              </motion.div>
+            )}
+            {!hasBridge && (
+              <motion.div className="mt-4 text-center" variants={itemVariants}>
+                <button type="button" className="text-sm transition-all duration-200 hover:underline" style={{ color: '#C9963B' }}>
+                  Forgot password?
+                </button>
+              </motion.div>
+            )}
           </form>
 
           {/* Footer */}
@@ -578,7 +674,7 @@ export default function LoginPage() {
               Need help? Contact your parish administrator
             </p>
             <div className="mt-3 flex justify-center gap-2 text-xs" style={{ color: '#8C8374' }}>
-              <span>ChurchOS v1.0</span>
+              <span>ChurchOS v1.1</span>
               <span>&middot;</span>
               <span>{config.parishName}</span>
             </div>

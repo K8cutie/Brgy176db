@@ -18,6 +18,9 @@ import {
   getAmountApprovalLevel,
 } from '@/lib/financeData';
 import type { Account, JournalEntry, JournalLine, Collection, BudgetItem, ApprovalItem } from '@/lib/financeData';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
+import { getCurrentUserName } from '@/lib/session';
 
 // ============================================
 // Types
@@ -350,17 +353,18 @@ function AccountTreeNode({
 function JournalTab() {
   const [showModal, setShowModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [entries, setEntries] = usePersistedState<JournalEntry[]>(KEYS.journalEntries, journalEntries);
 
   const filteredEntries = useMemo(() => {
-    if (!searchQuery) return journalEntries;
+    if (!searchQuery) return entries;
     const q = searchQuery.toLowerCase();
-    return journalEntries.filter((je) =>
+    return entries.filter((je) =>
       je.id.toLowerCase().includes(q) ||
       je.reference.toLowerCase().includes(q) ||
       je.description.toLowerCase().includes(q) ||
       je.lines.some((l) => l.accountName.toLowerCase().includes(q))
     );
-  }, [searchQuery]);
+  }, [searchQuery, entries]);
 
   // Flatten entries for DataTable
   const tableData = useMemo(() => {
@@ -420,7 +424,12 @@ function JournalTab() {
 
       {/* Add Transaction Modal */}
       <AnimatePresence>
-        {showModal && <TransactionModal onClose={() => setShowModal(false)} />}
+        {showModal && (
+          <TransactionModal
+            onClose={() => setShowModal(false)}
+            onPost={(entry) => setEntries((prev) => [entry, ...prev])}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -513,7 +522,7 @@ function JournalEntryCard({ entry, index }: { entry: JournalEntry; index: number
 }
 
 // Transaction Entry Modal (800px wide)
-function TransactionModal({ onClose }: { onClose: () => void }) {
+function TransactionModal({ onClose, onPost }: { onClose: () => void; onPost: (entry: JournalEntry) => void }) {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [reference, setReference] = useState('');
   const [description, setDescription] = useState('');
@@ -550,6 +559,18 @@ function TransactionModal({ onClose }: { onClose: () => void }) {
       toast.error('Cannot post unbalanced entry');
       return;
     }
+    const entry: JournalEntry = {
+      id: `JE-${Date.now()}`,
+      date,
+      reference: reference.trim() || `REF-${Date.now()}`,
+      description: description.trim(),
+      lines: lines.filter((l) => l.accountCode),
+      status: 'Posted',
+      postedBy: getCurrentUserName(),
+      totalDr,
+      totalCr,
+    };
+    onPost(entry);
     toast.success('Transaction posted to ledger');
     onClose();
   };
@@ -734,6 +755,7 @@ function CollectionsTab() {
   const [checksAmount, setChecksAmount] = useState('');
   const [digitalAmount, setDigitalAmount] = useState('');
   const [showPostDialog, setShowPostDialog] = useState(false);
+  const [collections, setCollections] = usePersistedState<Collection[]>(KEYS.collections, collectionsData);
 
   const total = (parseFloat(cashAmount) || 0) + (parseFloat(checksAmount) || 0) + (parseFloat(digitalAmount) || 0);
 
@@ -746,6 +768,18 @@ function CollectionsTab() {
   };
 
   const confirmPost = () => {
+    const entry: Collection = {
+      id: `COL-${Date.now()}`,
+      date: collectionDate,
+      massTime,
+      cash: parseFloat(cashAmount) || 0,
+      checks: parseFloat(checksAmount) || 0,
+      digital: parseFloat(digitalAmount) || 0,
+      total,
+      postedBy: getCurrentUserName(),
+      status: 'Posted',
+    };
+    setCollections((prev) => [entry, ...prev]);
     toast.success('Collection posted successfully');
     setCashAmount('');
     setChecksAmount('');
@@ -756,7 +790,7 @@ function CollectionsTab() {
   // Group collections by month for display
   const groupedCollections = useMemo(() => {
     const groups: { month: string; year: string; items: Collection[] }[] = [];
-    for (const c of collectionsData) {
+    for (const c of collections) {
       const [year] = c.date.split('-');
       const monthName = new Date(c.date).toLocaleString('en-US', { month: 'long' });
       const existing = groups.find((g) => g.month === monthName && g.year === year);
@@ -767,7 +801,7 @@ function CollectionsTab() {
       }
     }
     return groups;
-  }, []);
+  }, [collections]);
 
   return (
     <div className="space-y-6">
@@ -933,13 +967,24 @@ function CollectionsTab() {
 function BudgetTab() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editAccount, setEditAccount] = useState<BudgetItem | null>(null);
+  const [items, setItems] = usePersistedState<BudgetItem[]>(KEYS.budgetItems, budgetData);
 
-  const incomeItems = budgetData.filter((b) => b.category === 'Income');
-  const expenseItems = budgetData.filter((b) => b.category === 'Expense');
+  const incomeItems = items.filter((b) => b.category === 'Income');
+  const expenseItems = items.filter((b) => b.category === 'Expense');
 
-  const totalBudget = budgetData.reduce((s, b) => s + b.budgetYTD, 0);
-  const totalActual = budgetData.reduce((s, b) => s + b.actualYTD, 0);
+  const totalBudget = items.reduce((s, b) => s + b.budgetYTD, 0);
+  const totalActual = items.reduce((s, b) => s + b.actualYTD, 0);
   const totalVariance = totalBudget - totalActual;
+
+  const handleSaveBudget = (accountCode: string, budgetYTD: number) => {
+    setItems((prev) =>
+      prev.map((b) =>
+        b.accountCode === accountCode
+          ? { ...b, budgetYTD, variance: budgetYTD - b.actualYTD, variancePercent: budgetYTD > 0 ? ((budgetYTD - b.actualYTD) / budgetYTD) * 100 : 0 }
+          : b,
+      ),
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -1018,7 +1063,7 @@ function BudgetTab() {
       {/* Edit Budget Modal */}
       <AnimatePresence>
         {showEditModal && (
-          <BudgetEditModal account={editAccount} onClose={() => { setShowEditModal(false); setEditAccount(null); }} />
+          <BudgetEditModal account={editAccount} onSave={handleSaveBudget} onClose={() => { setShowEditModal(false); setEditAccount(null); }} />
         )}
       </AnimatePresence>
     </div>
@@ -1073,12 +1118,17 @@ function BudgetRow({ item, index, onEdit }: { item: BudgetItem; index: number; o
   );
 }
 
-function BudgetEditModal({ account, onClose }: { account: BudgetItem | null; onClose: () => void }) {
+function BudgetEditModal({ account, onClose, onSave }: { account: BudgetItem | null; onClose: () => void; onSave: (accountCode: string, budgetYTD: number) => void }) {
   const [budgetAmount, setBudgetAmount] = useState(account ? String(account.budgetYTD) : '');
   const leafAccounts = useMemo(() => getLeafAccounts(), []);
 
   const handleSave = () => {
-    toast.success(`Budget ${account ? 'updated' : 'added'} successfully`);
+    if (account) {
+      onSave(account.accountCode, parseFloat(budgetAmount) || 0);
+      toast.success('Budget updated successfully');
+    } else {
+      toast.info('Select an existing budget line to edit its amount.');
+    }
     onClose();
   };
 

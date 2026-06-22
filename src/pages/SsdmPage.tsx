@@ -26,9 +26,9 @@ import { getLabel } from '@/lib/friendlyLabels';
 import DataTable from '@/components/DataTable';
 import {
   programs,
-  applications,
-  beneficiaries,
-  disbursements,
+  applications as initialApplications,
+  beneficiaries as initialBeneficiaries,
+  disbursements as initialDisbursements,
   getStatusBadgeClasses,
 } from '@/lib/ssdmData';
 import type {
@@ -36,7 +36,11 @@ import type {
   Application,
   Beneficiary,
   ReviewerVote,
+  DisbursementRecord,
 } from '@/lib/ssdmData';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
+import { getCurrentUserName } from '@/lib/session';
 
 /* ─── Program Icons Map ─── */
 const programIcons: Record<ProgramType, typeof GraduationCap> = {
@@ -60,6 +64,11 @@ function VoteBadge({ vote }: { vote: ReviewerVote['vote'] }) {
 
 /* ─── Main Component ─── */
 export default function SsdmPage() {
+  /* Persisted data lists */
+  const [applications, setApplications] = usePersistedState<Application[]>(KEYS.ssdmApplications, initialApplications);
+  const [beneficiaries] = usePersistedState<Beneficiary[]>(KEYS.ssdmBeneficiaries, initialBeneficiaries);
+  const [disbursements, setDisbursements] = usePersistedState<DisbursementRecord[]>(KEYS.ssdmDisbursements, initialDisbursements);
+
   const [activeTab, setActiveTab] = useState<'Programs' | 'Applications' | 'Beneficiaries' | 'Disbursements'>('Programs');
   const [selectedProgram, setSelectedProgram] = useState<ProgramType | null>(null);
   const [detailTab, setDetailTab] = useState<'Applications' | 'Beneficiaries' | 'Disbursements'>('Applications');
@@ -116,7 +125,7 @@ export default function SsdmPage() {
       }
       return true;
     });
-  }, [appStatusFilter, appProgramFilter, searchQuery]);
+  }, [appStatusFilter, appProgramFilter, searchQuery, applications]);
 
   /* Filtered beneficiaries */
   const filteredBeneficiaries = useMemo(() => {
@@ -128,7 +137,7 @@ export default function SsdmPage() {
         b.program.toLowerCase().includes(q) ||
         b.id.toLowerCase().includes(q)
     );
-  }, [searchQuery]);
+  }, [searchQuery, beneficiaries]);
 
   /* Filtered disbursements */
   const filteredDisbursements = useMemo(() => {
@@ -140,23 +149,23 @@ export default function SsdmPage() {
         d.program.toLowerCase().includes(q) ||
         d.reference.toLowerCase().includes(q)
     );
-  }, [searchQuery]);
+  }, [searchQuery, disbursements]);
 
   /* Program-specific filtered data */
   const programApplications = useMemo(() => {
     if (!selectedProgram) return [];
     return applications.filter((a) => a.programType === selectedProgram);
-  }, [selectedProgram]);
+  }, [selectedProgram, applications]);
 
   const programBeneficiaries = useMemo(() => {
     if (!selectedProgram) return [];
     return beneficiaries.filter((b) => b.program === selectedProgram);
-  }, [selectedProgram]);
+  }, [selectedProgram, beneficiaries]);
 
   const programDisbursements = useMemo(() => {
     if (!selectedProgram) return [];
     return disbursements.filter((d) => d.program === selectedProgram);
-  }, [selectedProgram]);
+  }, [selectedProgram, disbursements]);
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
   /* Application columns */
@@ -223,6 +232,38 @@ export default function SsdmPage() {
   ];
 
   const handleNewAppSubmit = () => {
+    if (!newAppName.trim()) {
+      setShowNewApp(false);
+      return;
+    }
+    const newApp: Application = {
+      id: `APP-${Date.now()}`,
+      applicantName: newAppName.trim(),
+      age: 0,
+      address: newAppAddress.trim(),
+      contact: newAppContact.trim(),
+      familySize: Number(newAppFamilySize) || 0,
+      monthlyIncome: Number(newAppIncome) || 0,
+      dateApplied: new Date().toISOString().split('T')[0],
+      programType: newAppProgram,
+      status: 'Pending Review',
+      assignedReviewer: 'Unassigned',
+      amountRequested: Number(newAppAmount) || 0,
+      notes: newAppNotes.trim(),
+      school: newAppSchool.trim() || undefined,
+      gradeLevel: newAppGrade.trim() || undefined,
+      gpa: newAppGPA.trim() || undefined,
+      course: newAppCourse.trim() || undefined,
+      diagnosis: newAppDiagnosis.trim() || undefined,
+      hospital: newAppHospital.trim() || undefined,
+      estimatedCost: newAppEstCost ? Number(newAppEstCost) || 0 : undefined,
+      businessProposal: newAppBusiness.trim() || undefined,
+      emergencyType: newAppEmergency.trim() || undefined,
+      documents: [],
+      reviewers: [],
+      overallStatus: 'Pending Review',
+    };
+    setApplications((prev) => [newApp, ...prev]);
     setShowNewApp(false);
     resetNewAppForm();
   };
@@ -247,6 +288,25 @@ export default function SsdmPage() {
   };
 
   const handleNewDisbSubmit = () => {
+    if (!newDisbBeneficiary.trim()) {
+      setShowNewDisbursement(false);
+      return;
+    }
+    const matched = beneficiaries.find(
+      (b) => b.name === newDisbBeneficiary || b.id === newDisbBeneficiary,
+    );
+    const newDisb: DisbursementRecord = {
+      id: `DSB-${Date.now()}`,
+      date: new Date().toISOString().split('T')[0],
+      beneficiary: matched?.name || newDisbBeneficiary.trim(),
+      program: matched?.program || selectedProgram || 'Emergency',
+      amount: Number(newDisbAmount) || 0,
+      type: newDisbType,
+      reference: `REF-${Date.now()}`,
+      approvedBy: getCurrentUserName(),
+      notes: newDisbNotes.trim(),
+    };
+    setDisbursements((prev) => [newDisb, ...prev]);
     setShowNewDisbursement(false);
     setNewDisbBeneficiary('');
     setNewDisbAmount('');

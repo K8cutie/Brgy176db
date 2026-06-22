@@ -70,6 +70,10 @@ import {
 import type { FeeScheduleItem } from '@/lib/feeSchedule';
 import { getFeeForSacrament } from '@/lib/feeSchedule';
 import { celebrateFirstAction, celebrateMilestone } from '@/components/FirstRunDetector';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
+import * as ns from '@/lib/storageNamespaced';
+import { getCurrentUserName } from '@/lib/session';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -215,28 +219,19 @@ function useToasts() {
 /* ------------------------------------------------------------------ */
 /*  GL / Journal helpers                                               */
 /* ------------------------------------------------------------------ */
-const JOURNAL_KEY = 'churchos_journal';
-
 function addToJournal(entry: JournalEntry) {
-  try {
-    const existing = JSON.parse(localStorage.getItem(JOURNAL_KEY) || '[]') as JournalEntry[];
-    existing.push(entry);
-    localStorage.setItem(JOURNAL_KEY, JSON.stringify(existing));
-  } catch { /* ignore */ }
+  const existing = ns.getJSON<JournalEntry[]>(KEYS.journalEntries, []);
+  existing.push(entry);
+  ns.setJSON(KEYS.journalEntries, existing);
 }
 
 function addToAccountsReceivable(entry: AccountsReceivableEntry) {
-  try {
-    const AR_KEY = 'churchos_accounts_receivable';
-    const existing = JSON.parse(localStorage.getItem(AR_KEY) || '[]') as (AccountsReceivableEntry & { id: string; createdAt: string })[];
-    existing.push({ ...entry, id: `ar-${Date.now()}`, createdAt: new Date().toISOString() });
-    localStorage.setItem(AR_KEY, JSON.stringify(existing));
-  } catch { /* ignore */ }
+  const existing = ns.getJSON<(AccountsReceivableEntry & { id: string; createdAt: string })[]>(KEYS.accountsReceivable, []);
+  existing.push({ ...entry, id: `ar-${Date.now()}`, createdAt: new Date().toISOString() });
+  ns.setJSON(KEYS.accountsReceivable, existing);
 }
 
-/* ── Fee Override Audit Log ── */
-const FEE_OVERRIDE_AUDIT_KEY = 'churchos_fee_override_audit';
-
+/* ── Fee Override Audit Log (tamper-evident hash chain) ── */
 interface FeeOverrideAuditEntry {
   id: string;
   timestamp: string;
@@ -247,24 +242,54 @@ interface FeeOverrideAuditEntry {
   amount: number;
   reason: string;
   recordedBy: string;
+  prevHash: string;
+  hash: string;
 }
 
-function logFeeOverride(entry: Omit<FeeOverrideAuditEntry, 'id' | 'timestamp'>) {
-  try {
-    const existing = JSON.parse(localStorage.getItem(FEE_OVERRIDE_AUDIT_KEY) || '[]') as FeeOverrideAuditEntry[];
-    existing.push({
-      ...entry,
-      id: `foa-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-    });
-    localStorage.setItem(FEE_OVERRIDE_AUDIT_KEY, JSON.stringify(existing));
-  } catch { /* ignore */ }
+// Lightweight non-cryptographic hash — enough to make silent edits/
+// deletions of the audit trail detectable when the chain is verified.
+function auditHash(input: string): string {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) - hash) + input.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function logFeeOverride(entry: Omit<FeeOverrideAuditEntry, 'id' | 'timestamp' | 'prevHash' | 'hash'>) {
+  const existing = ns.getJSON<FeeOverrideAuditEntry[]>(KEYS.feeOverrideAudit, []);
+  const prevHash = existing.length ? existing[existing.length - 1].hash : 'genesis';
+  const base = {
+    ...entry,
+    recordedBy: entry.recordedBy || getCurrentUserName(),
+    id: `foa-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    prevHash,
+  };
+  const hash = auditHash(prevHash + JSON.stringify(base));
+  existing.push({ ...base, hash });
+  ns.setJSON(KEYS.feeOverrideAudit, existing);
 }
 
 export function getFeeOverrideAudit(): FeeOverrideAuditEntry[] {
-  try {
-    return JSON.parse(localStorage.getItem(FEE_OVERRIDE_AUDIT_KEY) || '[]') as FeeOverrideAuditEntry[];
-  } catch { return []; }
+  return ns.getJSON<FeeOverrideAuditEntry[]>(KEYS.feeOverrideAudit, []);
+}
+
+// Verify the audit chain. Returns the index of the first tampered/removed
+// entry, or -1 if the trail is intact. A broken chain means someone edited
+// or deleted history outside the app.
+export function verifyFeeOverrideAudit(): { intact: boolean; brokenAt: number } {
+  const entries = getFeeOverrideAudit();
+  let prevHash = 'genesis';
+  for (let i = 0; i < entries.length; i++) {
+    const { hash, ...rest } = entries[i];
+    if (rest.prevHash !== prevHash) return { intact: false, brokenAt: i };
+    const expected = auditHash(prevHash + JSON.stringify(rest));
+    if (expected !== hash) return { intact: false, brokenAt: i };
+    prevHash = hash;
+  }
+  return { intact: true, brokenAt: -1 };
 }
 
 function getPersonName(record: BaptismRecord | MarriageRecord | ConfirmationRecord | DeathRecord, sacrament: SacramentTab): string {
@@ -305,11 +330,11 @@ export default function RegistryPage() {
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; id: string }>({ open: false, id: '' });
   const { toasts, addToast, removeToast } = useToasts();
 
-  /* data state */
-  const [bData, setBData] = useState<BaptismRecord[]>(baptismRecords);
-  const [mData, setMData] = useState<MarriageRecord[]>(marriageRecords);
-  const [cData, setCData] = useState<ConfirmationRecord[]>(confirmationRecords);
-  const [dData, setDData] = useState<DeathRecord[]>(deathRecords);
+  /* data state (persisted per parish) */
+  const [bData, setBData] = usePersistedState<BaptismRecord[]>(KEYS.baptismRecords, baptismRecords);
+  const [mData, setMData] = usePersistedState<MarriageRecord[]>(KEYS.marriageRecords, marriageRecords);
+  const [cData, setCData] = usePersistedState<ConfirmationRecord[]>(KEYS.confirmationRecords, confirmationRecords);
+  const [dData, setDData] = usePersistedState<DeathRecord[]>(KEYS.deathRecords, deathRecords);
 
   const tabConfigs = useMemo(() => tabs(bData.length, mData.length, cData.length, dData.length), [bData.length, mData.length, cData.length, dData.length]);
   const activeConfig = tabConfigs.find((t) => t.key === activeTab)!;
@@ -1751,7 +1776,7 @@ function RecordModal({
         overrideType: 'bill_later',
         amount: paymentInfo.amount,
         reason: `[Bill Later] ${paymentInfo.overrideReason} | Due: ${paymentInfo.dueDate || 'N/A'}`,
-        recordedBy: paymentInfo.receivedBy,
+        recordedBy: getCurrentUserName(),
       });
       onToast(`${currency}${paymentInfo.amount.toLocaleString()} added to Accounts Receivable (due ${paymentInfo.dueDate || 'N/A'})`, 'info');
     } else if (paymentInfo.status === 'waived') {
@@ -1763,7 +1788,7 @@ function RecordModal({
         overrideType: 'waived',
         amount: paymentInfo.amount,
         reason: `[Waived — ${paymentInfo.waiveReason}, approved by ${paymentInfo.waiveApprovedBy}] ${paymentInfo.overrideReason}`,
-        recordedBy: paymentInfo.receivedBy,
+        recordedBy: getCurrentUserName(),
       });
       onToast(`Fee waived — ${paymentInfo.waiveReason}. Approved by ${paymentInfo.waiveApprovedBy}`, 'info');
     } else if (paymentInfo.status === 'collected') {
@@ -1775,7 +1800,7 @@ function RecordModal({
         overrideType: 'collected',
         amount: paymentInfo.amount,
         reason: `[Already Collected] ${paymentInfo.overrideReason}`,
-        recordedBy: paymentInfo.receivedBy,
+        recordedBy: getCurrentUserName(),
       });
       onToast('Record saved with fee marked as already collected. Override logged for audit.', 'info');
     }

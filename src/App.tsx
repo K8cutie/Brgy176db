@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom'
+import { Routes, Route, useLocation, Navigate } from 'react-router-dom'
+import { isAuthenticated } from '@/lib/session'
+import { hasSetupBeenCompleted } from '@/lib/store'
+import { setPersistedWriteErrorHandler } from '@/hooks/usePersistedState'
+import { setDesktopWriteErrorHandler } from '@/lib/desktopStore'
+import { setCloudWriteErrorHandler } from '@/lib/cloudStore'
+import { toast } from 'sonner'
 import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import LoginPage from '@/pages/LoginPage'
@@ -16,6 +22,7 @@ import ImportPage from '@/pages/ImportPage'
 import TourGuide from '@/components/TourGuide';
 import FirstRunDetector from '@/components/FirstRunDetector';
 import CelebrationToast from '@/components/CelebrationToast';
+import AiAssistant from '@/components/AiAssistant';
 import {
   shouldRunFirstLogin,
   firstLoginTour,
@@ -113,6 +120,24 @@ function AppRoutes() {
     return () => { delete (window as any).__startChurchOSTour; };
   }, []);
 
+  // Warn the user if a save fails (e.g. localStorage quota exceeded)
+  // instead of silently losing their data.
+  useEffect(() => {
+    const warn = () => {
+      toast.error('Could not save — the database may be full, locked, or on a read-only drive. Check storage and try again.', {
+        duration: 8000,
+      });
+    };
+    setPersistedWriteErrorHandler(warn);
+    setDesktopWriteErrorHandler(warn);
+    setCloudWriteErrorHandler(warn);
+    return () => {
+      setPersistedWriteErrorHandler(null);
+      setDesktopWriteErrorHandler(null);
+      setCloudWriteErrorHandler(null);
+    };
+  }, []);
+
   if (isStandalone) {
     return (
       <Routes>
@@ -120,6 +145,17 @@ function AppRoutes() {
         <Route path="/setup" element={<WizardPage />} />
       </Routes>
     );
+  }
+
+  // ── Auth gate ──
+  // Send first-time installs through the setup wizard, and require a
+  // logged-in user before any parish page is reachable. Without this,
+  // navigating directly to a hash route bypassed the login entirely.
+  if (!hasSetupBeenCompleted()) {
+    return <Navigate to="/setup" replace />;
+  }
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" replace />;
   }
 
   return (
@@ -158,6 +194,9 @@ function AppRoutes() {
 
       {/* First-run detector (for practice mode) */}
       <FirstRunDetector />
+
+      {/* AI assistant (desktop only; renders nothing without the bridge) */}
+      <AiAssistant />
     </>
   );
 }
