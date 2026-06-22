@@ -259,6 +259,116 @@ begin
   end loop;
 end $$;
 
+-- ══════ 5c. Structural integrity — no flat/jsonb drift, no ghost rows, balanced books ══════
+-- The flat analytics columns are a DENORMALIZED copy of `data` jsonb. Without
+-- this, a crafted PostgREST write could set them independently — e.g. data.total
+-- = 50000 but the flat total = 0 — so the diocese cockpit and the parish app
+-- would show different numbers. These triggers make the flat columns a DERIVED
+-- PROJECTION of `data` (recomputed server-side on every write), so they cannot
+-- drift, and they enforce the cross-field invariants `data` alone can't.
+
+-- Make journal_entries + fee_override_audit uniform with the other domain tables:
+-- give them a `data` jsonb holding the full record. (Bug fix: cloudStore writes
+-- `data: i` for EVERY table, so without this, cloud writes to these two fail.)
+alter table public.journal_entries   add column if not exists data jsonb default '{}'::jsonb;
+alter table public.fee_override_audit add column if not exists data jsonb default '{}'::jsonb;
+
+-- client_id must exist so unique(parish_id, client_id) actually dedupes (NULLs are
+-- all distinct in Postgres → upsert can't match → unbounded ghost/duplicate rows).
+do $$
+declare t text;
+declare tables text[] := array[
+  'collections','journal_entries','fee_override_audit',
+  'baptism_records','marriage_records','confirmation_records','death_records',
+  'families','ministries','ssdm_applications','ssdm_beneficiaries',
+  'ssdm_disbursements','calendar_events','budget_items'
+];
+begin
+  foreach t in array tables loop
+    -- backfill any legacy NULLs, then require it
+    execute format('update public.%I set client_id = id::text where client_id is null', t);
+    begin execute format('alter table public.%I alter column client_id set not null', t); exception when others then null; end;
+    -- `data` must be a JSON object, never a scalar/array/null (app reads data.x)
+    begin execute format('alter table public.%I add constraint %I check (jsonb_typeof(data) = ''object'')', t, 'chk_'||t||'_data_obj'); exception when duplicate_object then null; end;
+  end loop;
+end $$;
+
+-- Collections: flat columns derived from data; total is the TRUE sum of its parts
+-- (kills the inflated-total and null-flat-underreport attacks), written back so
+-- the app and analytics always agree. Bad/missing date → cast error → rejected.
+create or replace function public.derive_collections()
+returns trigger language plpgsql as $$
+begin
+  if jsonb_typeof(new.data) is distinct from 'object' then raise exception 'collections.data must be a JSON object'; end if;
+  new.cash     := coalesce((new.data->>'cash')::numeric, 0);
+  new.checks   := coalesce((new.data->>'checks')::numeric, 0);
+  new.digital  := coalesce((new.data->>'digital')::numeric, 0);
+  new.total    := new.cash + new.checks + new.digital;          -- derived, not trusted
+  new.date     := nullif(new.data->>'date','')::date;
+  new.mass_time:= new.data->>'massTime';
+  new.posted_by:= new.data->>'postedBy';
+  new.status   := coalesce(new.data->>'status','Posted');
+  -- one guard catches negatives, NaN (NaN >= 0 is false), and overflow/garbage
+  if not (new.cash >= 0 and new.checks >= 0 and new.digital >= 0 and new.total <= 100000000) then
+    raise exception 'collection amounts must be finite, >= 0, and within range';
+  end if;
+  new.data := jsonb_set(new.data, '{total}', to_jsonb(new.total));  -- keep data.total == flat total
+  return new;
+end $$;
+drop trigger if exists trg_derive_collections on public.collections;
+create trigger trg_derive_collections before insert or update on public.collections
+  for each row execute function public.derive_collections();
+
+-- Journal entries: flat derived from data; double-entry must balance; lines must
+-- be an array (else expense_lines' jsonb_array_elements errors for the whole view).
+create or replace function public.derive_journal()
+returns trigger language plpgsql as $$
+begin
+  if jsonb_typeof(new.data) is distinct from 'object' then raise exception 'journal.data must be a JSON object'; end if;
+  if new.data ? 'lines' and jsonb_typeof(new.data->'lines') is distinct from 'array' then raise exception 'journal lines must be an array'; end if;
+  new.lines    := coalesce(new.data->'lines', '[]'::jsonb);
+  new.total_dr := coalesce((new.data->>'totalDr')::numeric, 0);
+  new.total_cr := coalesce((new.data->>'totalCr')::numeric, 0);
+  new.date     := nullif(new.data->>'date','')::date;
+  new.reference:= new.data->>'reference';
+  new.description := new.data->>'description';
+  new.status   := new.data->>'status';
+  new.posted_by:= new.data->>'postedBy';
+  if new.total_dr <> new.total_cr then raise exception 'journal entry is not balanced (dr % <> cr %)', new.total_dr, new.total_cr; end if;
+  return new;
+end $$;
+drop trigger if exists trg_derive_journal on public.journal_entries;
+create trigger trg_derive_journal before insert or update on public.journal_entries
+  for each row execute function public.derive_journal();
+
+-- Fee-override audit: flat derived from data; chain may not FORK (one successor
+-- per prev_hash) so an auditor walking the chain can't be sent down a side branch.
+create or replace function public.derive_audit()
+returns trigger language plpgsql as $$
+begin
+  if jsonb_typeof(new.data) is distinct from 'object' then raise exception 'audit.data must be a JSON object'; end if;
+  new.ts           := nullif(new.data->>'timestamp','')::timestamptz;
+  new.sacrament    := new.data->>'sacrament';
+  new.registry_id  := new.data->>'registryId';
+  new.person_name  := new.data->>'personName';
+  new.override_type:= new.data->>'overrideType';
+  new.amount       := coalesce((new.data->>'amount')::numeric, 0);
+  new.reason       := new.data->>'reason';
+  new.recorded_by  := new.data->>'recordedBy';
+  new.prev_hash    := new.data->>'prevHash';
+  new.hash         := new.data->>'hash';
+  if not (new.amount >= 0 and new.amount <= 100000000) then raise exception 'waiver amount must be finite, >= 0, and within range'; end if;
+  return new;
+end $$;
+drop trigger if exists trg_derive_audit on public.fee_override_audit;
+create trigger trg_derive_audit before insert or update on public.fee_override_audit
+  for each row execute function public.derive_audit();
+-- One successor per prev_hash → no chain forks (GENESIS roots are exempt via the partial index predicate).
+create unique index if not exists uq_audit_no_fork on public.fee_override_audit (parish_id, prev_hash) where prev_hash is not null and prev_hash <> 'GENESIS';
+-- NOTE: the hash itself is still a client-computed djb2 (advisory). True
+-- tamper-evidence needs a SECURITY DEFINER trigger computing an HMAC with a
+-- server-side key — tracked as a follow-up (see SAAS-GOLIVE.md).
+
 -- ══════ 6. Diocese-wide expense view (for cross-parish Pareto in the cockpit) ══════
 create or replace view public.expense_lines as
   select je.parish_id, je.date,
@@ -266,7 +376,7 @@ create or replace view public.expense_lines as
          l->>'accountName' as account_name,
          coalesce((l->>'debit')::numeric, 0) as debit
   from public.journal_entries je,
-       lateral jsonb_array_elements(je.lines) as l
+       lateral jsonb_array_elements(case when jsonb_typeof(je.lines) = 'array' then je.lines else '[]'::jsonb end) as l
   where coalesce((l->>'debit')::numeric,0) > 0;
 -- A view runs with its OWNER's rights by default, bypassing RLS on the tables it
 -- reads — so without this a member could read every parish's expenses through the

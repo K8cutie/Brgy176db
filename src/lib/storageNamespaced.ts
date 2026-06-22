@@ -73,12 +73,31 @@ export function removeItem(key: string): void {
   backendRemove(ns(key));
 }
 
-// ── Typed JSON get/set with safe fallback ──
+// ── Corruption handling ──
+// A value that is PRESENT but unparseable (or the wrong shape) must not be
+// silently replaced by the fallback — the write-through would then persist that
+// fallback over real data (a single corrupt read could blank a whole dataset).
+// Instead we preserve the raw bytes to a quarantine key and warn; the app keeps
+// running on the fallback, and the original is recoverable (also see auto-backup).
+let onCorruption: ((key: string) => void) | null = null;
+export function setCorruptionHandler(fn: ((key: string) => void) | null) { onCorruption = fn; }
+const quarantined = new Set<string>();
+
+// ── Typed JSON get/set with fail-safe fallback ──
 export function getJSON<T>(key: string, fallback: T): T {
+  const raw = backendGet(ns(key));
+  if (raw === null) return fallback; // genuinely absent — fine to seed/persist the default
   try {
-    const raw = backendGet(ns(key));
-    return raw !== null ? (JSON.parse(raw) as T) : fallback;
+    const parsed = JSON.parse(raw) as T;
+    // Shape guard: an array-typed dataset that parsed to a non-array is corrupt.
+    if (Array.isArray(fallback) && !Array.isArray(parsed)) throw new Error('shape-mismatch');
+    return parsed;
   } catch {
+    if (!quarantined.has(key)) {
+      quarantined.add(key);
+      try { backendSet(ns(key + '__corrupt'), raw); } catch { /* best effort */ }
+      if (onCorruption) onCorruption(key);
+    }
     return fallback;
   }
 }

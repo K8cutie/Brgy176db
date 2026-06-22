@@ -10,6 +10,13 @@
 
 create extension if not exists "pgcrypto";
 
+-- Present as service_role for this session so the guard triggers (force_parish_id,
+-- profile column-freeze, append-only audit) step aside while we load + assign data.
+-- The derive_* triggers still run, normalizing flat columns from `data`. Without
+-- this, force_parish_id would null the parish_id and the freeze would revert the
+-- profile role assignments below — and the seed would fail.
+set request.jwt.claims = '{"role":"service_role"}';
+
 -- ── Fixed UUIDs so the seed is re-runnable & referenceable ──
 -- dioceses
 --   Manila  = 11111111-…   Cubao = 22222222-…
@@ -73,25 +80,29 @@ update public.profiles set parish_id=null, diocese_id='11111111-1111-1111-1111-1
 update public.profiles set parish_id=null, diocese_id='22222222-2222-2222-2222-222222222222', role='bishop', full_name='Bishop Cruz'  where id='d4444444-4444-4444-4444-444444444444';
 
 -- ══════ 4. Per-parish collections (note the clear "lowest Mass") ══════
-insert into public.collections (parish_id, client_id, date, mass_time, cash, checks, digital, total, posted_by, status, data) values
+-- Values live in `data` (the app's camelCase keys); the derive_collections
+-- trigger projects the flat columns and computes total = cash+checks+digital.
+insert into public.collections (parish_id, client_id, data) values
   -- St. Mary Magdalene
-  ('a1111111-1111-1111-1111-111111111111','SM-C001','2026-06-07','6:00 AM',  8200,0,1500, 9700,'Aida','Posted','{}'),
-  ('a1111111-1111-1111-1111-111111111111','SM-C002','2026-06-07','9:00 AM', 15400,2000,3100,20500,'Aida','Posted','{}'),
-  ('a1111111-1111-1111-1111-111111111111','SM-C003','2026-06-07','6:00 PM',  5100,0,900,  6000,'Aida','Posted','{}'),
+  ('a1111111-1111-1111-1111-111111111111','SM-C001','{"date":"2026-06-07","massTime":"6:00 AM","cash":8200,"checks":0,"digital":1500,"postedBy":"Aida","status":"Posted"}'),
+  ('a1111111-1111-1111-1111-111111111111','SM-C002','{"date":"2026-06-07","massTime":"9:00 AM","cash":15400,"checks":2000,"digital":3100,"postedBy":"Aida","status":"Posted"}'),
+  ('a1111111-1111-1111-1111-111111111111','SM-C003','{"date":"2026-06-07","massTime":"6:00 PM","cash":5100,"checks":0,"digital":900,"postedBy":"Aida","status":"Posted"}'),
   -- San Roque
-  ('a2222222-2222-2222-2222-222222222222','SR-C001','2026-06-07','7:00 AM', 11200,0,1800,13000,'Ben','Posted','{}'),
-  ('a2222222-2222-2222-2222-222222222222','SR-C002','2026-06-07','10:00 AM',18900,3500,4200,26600,'Ben','Posted','{}'),
-  ('a2222222-2222-2222-2222-222222222222','SR-C003','2026-06-07','5:00 PM',  3900,0,600,  4500,'Ben','Posted','{}'),
+  ('a2222222-2222-2222-2222-222222222222','SR-C001','{"date":"2026-06-07","massTime":"7:00 AM","cash":11200,"checks":0,"digital":1800,"postedBy":"Ben","status":"Posted"}'),
+  ('a2222222-2222-2222-2222-222222222222','SR-C002','{"date":"2026-06-07","massTime":"10:00 AM","cash":18900,"checks":3500,"digital":4200,"postedBy":"Ben","status":"Posted"}'),
+  ('a2222222-2222-2222-2222-222222222222','SR-C003','{"date":"2026-06-07","massTime":"5:00 PM","cash":3900,"checks":0,"digital":600,"postedBy":"Ben","status":"Posted"}'),
   -- Sto. Niño (different diocese — must NEVER appear in Bp. Tomas' cockpit)
-  ('b1111111-1111-1111-1111-111111111111','SN-C001','2026-06-07','8:00 AM',  9000,0,1000,10000,'Cubao Sec','Posted','{}')
+  ('b1111111-1111-1111-1111-111111111111','SN-C001','{"date":"2026-06-07","massTime":"8:00 AM","cash":9000,"checks":0,"digital":1000,"postedBy":"Cubao Sec","status":"Posted"}')
 on conflict (parish_id, client_id) do nothing;
 
 -- ══════ 5. Journal entries (expense lines → Pareto) ══════
-insert into public.journal_entries (parish_id, client_id, date, reference, description, status, total_dr, total_cr, posted_by, lines) values
-  ('a1111111-1111-1111-1111-111111111111','SM-J001','2026-06-10','JE-1001','June utilities & stipends','Posted',18500,18500,'Aida',
-    '[{"accountCode":"5100","accountName":"Utilities","debit":12000,"credit":0},{"accountCode":"5200","accountName":"Clergy stipend","debit":6500,"credit":0}]'),
-  ('a2222222-2222-2222-2222-222222222222','SR-J001','2026-06-10','JE-2001','June utilities & repairs','Posted',24000,24000,'Ben',
-    '[{"accountCode":"5100","accountName":"Utilities","debit":9000,"credit":0},{"accountCode":"5300","accountName":"Building repairs","debit":15000,"credit":0}]')
+-- Values live in `data`; derive_journal projects the flat columns, enforces
+-- total_dr = total_cr, and requires lines to be a JSON array.
+insert into public.journal_entries (parish_id, client_id, data) values
+  ('a1111111-1111-1111-1111-111111111111','SM-J001',
+    '{"date":"2026-06-10","reference":"JE-1001","description":"June utilities & stipends","status":"Posted","totalDr":18500,"totalCr":18500,"postedBy":"Aida","lines":[{"accountCode":"5100","accountName":"Utilities","debit":12000,"credit":0},{"accountCode":"5200","accountName":"Clergy stipend","debit":6500,"credit":0}]}'),
+  ('a2222222-2222-2222-2222-222222222222','SR-J001',
+    '{"date":"2026-06-10","reference":"JE-2001","description":"June utilities & repairs","status":"Posted","totalDr":24000,"totalCr":24000,"postedBy":"Ben","lines":[{"accountCode":"5100","accountName":"Utilities","debit":9000,"credit":0},{"accountCode":"5300","accountName":"Building repairs","debit":15000,"credit":0}]}')
 on conflict (parish_id, client_id) do nothing;
 
 -- ══════ 6. Sacraments (counts) ══════
@@ -103,9 +114,12 @@ on conflict (parish_id, client_id) do nothing;
 -- ══════ 7. Fee-override audit — ONE planted suspicious waiver (San Roque) ══════
 -- A small, reasonable waiver at St. Mary (should NOT be flagged), and a large
 -- ₱5,000 funeral waiver at San Roque self-recorded by the priest (SHOULD flag).
-insert into public.fee_override_audit (parish_id, client_id, ts, sacrament, registry_id, person_name, override_type, amount, reason, recorded_by, prev_hash, hash) values
-  ('a1111111-1111-1111-1111-111111111111','SM-A001','2026-06-09 10:00','Baptism','B-2026-014','Maria Santos','waived', 300,'Indigent family, parish charity','Aida','GENESIS','h1'),
-  ('a2222222-2222-2222-2222-222222222222','SR-A001','2026-06-11 16:30','Funeral','F-2026-008','(undisclosed)','waived',5000,'Family hardship','Fr. Delgado','GENESIS','h1')
+-- Values live in `data`; derive_audit projects the flat columns.
+insert into public.fee_override_audit (parish_id, client_id, data) values
+  ('a1111111-1111-1111-1111-111111111111','SM-A001',
+    '{"timestamp":"2026-06-09T10:00:00","sacrament":"Baptism","registryId":"B-2026-014","personName":"Maria Santos","overrideType":"waived","amount":300,"reason":"Indigent family, parish charity","recordedBy":"Aida","prevHash":"GENESIS","hash":"h1"}'),
+  ('a2222222-2222-2222-2222-222222222222','SR-A001',
+    '{"timestamp":"2026-06-11T16:30:00","sacrament":"Funeral","registryId":"F-2026-008","personName":"(undisclosed)","overrideType":"waived","amount":5000,"reason":"Family hardship","recordedBy":"Fr. Delgado","prevHash":"GENESIS","hash":"h1"}')
 on conflict (parish_id, client_id) do nothing;
 
 -- ══════ 8. Quick checks ══════
