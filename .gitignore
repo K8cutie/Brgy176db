@@ -12,3 +12,8 @@ release
 *.db-shm
 UsersArchie*
 events
+
+# Environment files / secrets — never commit (.env.example templates are fine)
+.env
+.env.*
+!.env.example
