@@ -11,6 +11,7 @@ import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import LoginPage from '@/pages/LoginPage'
 import WizardPage from '@/pages/WizardPage'
+import PublicPortal from '@/pages/PublicPortal'
 import RegistryPage from '@/pages/RegistryPage'
 import DirectoryPage from '@/pages/DirectoryPage'
 import CalendarPage from '@/pages/CalendarPage'
@@ -19,6 +20,7 @@ import MinistriesPage from '@/pages/MinistriesPage'
 import SsdmPage from '@/pages/SsdmPage'
 import ReportsPage from '@/pages/ReportsPage'
 import SettingsPage from '@/pages/SettingsPage'
+import RequestsPage from '@/pages/RequestsPage'
 import ImportPage from '@/pages/ImportPage'
 import TourGuide from '@/components/TourGuide';
 import FirstRunDetector from '@/components/FirstRunDetector';
@@ -41,7 +43,9 @@ interface ActiveTour {
 
 function AppRoutes() {
   const location = useLocation();
-  const isStandalone = location.pathname === '/login' || location.pathname === '/setup';
+  // The public parishioner portal is a standalone, no-auth route (anon access).
+  const isPortal = location.pathname.startsWith('/portal');
+  const isStandalone = location.pathname === '/login' || location.pathname === '/setup' || isPortal;
 
   // ── Tour State ──
   const [activeTour, setActiveTour] = useState<ActiveTour | null>(null);
@@ -150,6 +154,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/setup" element={<WizardPage />} />
+        <Route path="/portal/:slug" element={<PublicPortal />} />
       </Routes>
     );
   }
@@ -175,6 +180,7 @@ function AppRoutes() {
           <Route path="/registry" element={<RegistryPage />} />
           <Route path="/directory" element={<DirectoryPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/requests" element={<RequestsPage />} />
           <Route path="/finance" element={<FinancePage />} />
           <Route path="/ministries" element={<MinistriesPage />} />
           <Route path="/ssdm" element={<SsdmPage />} />

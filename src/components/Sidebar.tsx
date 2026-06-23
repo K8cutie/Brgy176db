@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Church,
   Upload,
+  Inbox,
 } from 'lucide-react';
 
 interface NavItem {
@@ -36,6 +37,7 @@ const navSections: NavSection[] = [
       { label: 'Registry', icon: BookOpen, path: '/registry' },
       { label: 'Directory', icon: Users, path: '/directory' },
       { label: 'Calendar', icon: Calendar, path: '/calendar' },
+      { label: 'Requests', icon: Inbox, path: '/requests' },
     ],
   },
   {

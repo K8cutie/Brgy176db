@@ -8,9 +8,19 @@ into a live, tested one.
 Supabase dashboard → **New project**. Note the **Project URL** and **anon key**
 (Settings → API). Keep the **service_role** key secret — it bypasses all security.
 
-## 2. Run the schema (SQL Editor, in order)
+## 2. Run the schema (SQL Editor, in this order)
 1. `churchos-saas-setup.sql` — tables, RLS, guard triggers, the verification query.
-2. `churchos-saas-seed.sql` — 2 dioceses, 3 parishes, 4 logins, planted data.
+2. `churchos-saas-onboarding.sql` — self-service diocese onboarding + invites.
+3. `churchos-saas-reports.sql` — monthly diocese financial packets.
+4. `churchos-saas-portal.sql` — parishioner self-service intake queue.
+5. `churchos-saas-security-prep.sql` — audit HMAC + rate limiting.
+6. `churchos-saas-billing.sql` — per-parish subscriptions (Xendit-ready).
+7. `churchos-saas-seed.sql` — 2 dioceses, 3 parishes, 4 logins, demo data, portal slugs.
+
+After (1), the verification query at the bottom must show **every** table with
+`rls_enabled = true` and `policies ≥ 1`. A `false` is a release blocker.
+
+The **public parishioner portal** is then at `…/#/portal/st-mary` (mobile-first).
 
 After (1), the verification query at the bottom must show **every** table with
 `rls_enabled = true` and `policies ≥ 1`. A `false` is a release blocker.

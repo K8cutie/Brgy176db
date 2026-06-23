@@ -112,6 +112,50 @@ async function pushPackets(c, token, packets) {
   return packets.length;
 }
 
+// ── Parishioner requests "inbox" (ticketing) — read + fulfill ──
+// The queue lives in the cloud (always on). The secretary lists their parish's
+// tickets and moves each through its lifecycle. RLS scopes everything to the
+// parish's own rows via its cloud account.
+async function requestsList() {
+  const c = getConfig();
+  if (!c.url || !c.anonKey || !c.email || !c.password) return { ok: false, error: 'Cloud sync is not configured.' };
+  try {
+    const token = await authToken(c);
+    const cols = 'id,type,status,requester_name,requester_email,requester_phone,requested_date,details,amount,payment_status,created_at';
+    const res = await fetch(`${c.url}/rest/v1/service_requests?select=${cols}&order=created_at.desc`, {
+      headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token },
+    });
+    if (!res.ok) throw new Error('list failed (' + res.status + ')');
+    return { ok: true, requests: await res.json() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+// Move a ticket through its lifecycle / set fee / mark paid. Only the allowed
+// fields are sent; RLS + WITH CHECK keep it to the parish's own rows.
+const REQ_STATES = ['submitted', 'in_review', 'scheduled', 'confirmed', 'completed', 'rejected', 'cancelled'];
+async function requestUpdate(id, patch) {
+  const c = getConfig();
+  if (!c.url || !c.anonKey || !c.email || !c.password) return { ok: false, error: 'Cloud sync is not configured.' };
+  const body = {};
+  if (patch && typeof patch.status === 'string' && REQ_STATES.includes(patch.status)) body.status = patch.status;
+  if (patch && patch.amount != null && Number.isFinite(Number(patch.amount))) body.amount = Number(patch.amount);
+  if (patch && (patch.payment_status === 'paid' || patch.payment_status === 'unpaid' || patch.payment_status === 'waived')) body.payment_status = patch.payment_status;
+  if (!Object.keys(body).length) return { ok: false, error: 'nothing to update' };
+  try {
+    const token = await authToken(c);
+    const res = await fetch(`${c.url}/rest/v1/service_requests?id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token, 'content-type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('update failed (' + res.status + '): ' + (await res.text()).slice(0, 160));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 async function syncNow() {
   const c = getConfig();
   if (!c.url || !c.anonKey || !c.email || !c.password) { lastResult = { state: 'error', message: 'Cloud sync is not configured yet.' }; return getStatus(); }
@@ -129,4 +173,4 @@ async function syncNow() {
   return getStatus();
 }
 
-module.exports = { getStatus, setConfig, syncNow, buildPackets, localRecords, __setStore };
+module.exports = { getStatus, setConfig, syncNow, buildPackets, localRecords, requestsList, requestUpdate, __setStore };

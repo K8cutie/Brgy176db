@@ -180,6 +180,8 @@ ipcMain.handle('churchos:backup:restore', async () => {
 ipcMain.handle('churchos:sync:status', () => sync.getStatus());
 ipcMain.handle('churchos:sync:config', (_e, patch) => sync.setConfig(patch));
 ipcMain.handle('churchos:sync:now', () => sync.syncNow());
+ipcMain.handle('churchos:requests:list', () => sync.requestsList());
+ipcMain.handle('churchos:requests:update', (_e, id, patch) => sync.requestUpdate(id, patch));
 
 // ── Auto-update IPC ──
 ipcMain.handle('churchos:update:check', () => updater.check());

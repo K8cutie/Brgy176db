@@ -75,7 +75,10 @@ begin
     if length(coalesce(new.details, '{}'::jsonb)::text) > 8000 then raise exception 'request details too large'; end if;
 
     new.status := 'submitted'; new.payment_status := 'unpaid'; new.payment_ref := null;
-    new.public_token := gen_random_uuid();
+    -- public_token is client-supplied (a random UUID the parishioner keeps to track
+    -- status) — anon has no SELECT, so it can't read a server-generated one back.
+    -- It's only a PII-free status key, so a client-chosen value is harmless.
+    new.public_token := coalesce(new.public_token, gen_random_uuid());
     -- (#3) donation amount must be a JSON number, then clamped; else 0
     if new.type = 'donation' then
       amt := new.details -> 'amount';

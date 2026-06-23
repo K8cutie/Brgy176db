@@ -66,6 +66,13 @@ const MODULE_REGISTRY: ChurchOSModule[] = [
     category: 'pastoral', icon: 'Heart', route: '/ssdm', version: '1.0',
     enabled: true, dioceseRecommended: false, dependencies: [], dioceseData: false,
   },
+
+  // ── Administrative ──
+  {
+    id: 'requests', name: 'Requests', description: 'Online parishioner requests (mass intentions, certificates, donations)',
+    category: 'administrative', icon: 'Inbox', route: '/requests', version: '1.0',
+    enabled: true, dioceseRecommended: true, dependencies: [], dioceseData: false,
+  },
 ];
 
 // ── Get registry ──

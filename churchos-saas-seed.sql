@@ -37,6 +37,15 @@ insert into public.parishes (id, diocese_id, name, billing_status) values
   ('b1111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'Sto. Niño Parish', 'active')
 on conflict (id) do nothing;
 
+-- Public portal slug + intake config (requires churchos-saas-portal.sql).
+-- After seeding, the public site is at  …/#/portal/st-mary
+update public.parishes set slug = 'st-mary',
+  public_config = '{"intake_enabled":true,"services":["mass_intention","certificate","donation","event_booking"],"fees":{"mass_intention":200,"certificate":150},"contact":{"phone":"(02) 8xxx","email":"office@stmary.test"}}'::jsonb
+  where id = 'a1111111-1111-1111-1111-111111111111';
+update public.parishes set slug = 'san-roque',
+  public_config = '{"intake_enabled":true,"fees":{"mass_intention":250,"certificate":150}}'::jsonb
+  where id = 'a2222222-2222-2222-2222-222222222222';
+
 -- ══════ 2. Auth users (email login) ══════
 -- handle_new_user() will auto-create a profile shell for each; we UPDATE the
 -- shells with parish/diocese/role in step 3.
