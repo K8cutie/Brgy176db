@@ -13,6 +13,7 @@
 // `npm run build`. It is a deploy artifact.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createLogger } from '../_shared/log.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -106,6 +107,8 @@ async function callClaude(key: string, body: unknown) {
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
+  // Request-scoped structured logger; its request_id is echoed in error responses.
+  const log = createLogger('ai');
   try {
     const key = Deno.env.get('ANTHROPIC_API_KEY');
     if (!key) return json({ ok: false, error: 'no_key' });
@@ -145,12 +148,8 @@ Deno.serve(async (req: Request) => {
     // Log the real detail server-side only; never return it to the client (it can
     // leak upstream API errors, keys in URLs, or internal structure). request_id
     // lets us correlate this client-facing response with the server log line.
-    const requestId = crypto.randomUUID();
-    console.error(JSON.stringify({
-      level: 'error', fn: 'ai', request_id: requestId,
-      message: String((e as Error)?.message ?? e),
-    }));
-    return json({ ok: false, error: 'server_error', request_id: requestId });
+    log.error('unhandled_error', { detail: String((e as Error)?.message ?? e) });
+    return json({ ok: false, error: 'server_error', request_id: log.requestId });
   }
 });
 
