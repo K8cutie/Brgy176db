@@ -1,0 +1,269 @@
+{
+  "counts": {
+    "families": 50,
+    "service_requests": 40,
+    "availability_slots": 72,
+    "event_booking_requests": 9,
+    "baptism_records": 16,
+    "marriage_records": 4,
+    "confirmation_records": 3,
+    "death_records": 4,
+    "calendar_events": 34,
+    "collections": 24,
+    "budget_items": 5,
+    "journal_entries": 8,
+    "fee_override_audit": 3
+  },
+  "findings": [
+    {
+      "n": 1,
+      "persona": "Parishioners",
+      "action": "seed 50 families",
+      "expected": "inserted",
+      "actual": "inserted",
+      "pass": true,
+      "severity": "high",
+      "evidence": ""
+    },
+    {
+      "n": 2,
+      "persona": "Parishioners",
+      "action": "submit service_requests via anon portal",
+      "expected": "~40 accepted",
+      "actual": "40 accepted",
+      "pass": true,
+      "severity": "high",
+      "evidence": "only 40/40"
+    },
+    {
+      "n": 3,
+      "persona": "Verifier/RLS",
+      "action": "anon SELECT service_requests",
+      "expected": "0 rows (no read policy)",
+      "actual": "0 rows",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "[]"
+    },
+    {
+      "n": 4,
+      "persona": "Parishioners (malicious)",
+      "action": "anon submit pre-paid/completed request",
+      "expected": "rejected",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "self-priced request slipped through"
+    },
+    {
+      "n": 5,
+      "persona": "Secretary",
+      "action": "publish 72 availability slots",
+      "expected": "inserted",
+      "actual": "inserted",
+      "pass": true,
+      "severity": "medium",
+      "evidence": ""
+    },
+    {
+      "n": 6,
+      "persona": "Parishioners",
+      "action": "reserve_slot via anon RPC",
+      "expected": ">=1 reserved (atomic)",
+      "actual": "8 reserved",
+      "pass": true,
+      "severity": "high",
+      "evidence": "reserve_slot produced no bookings"
+    },
+    {
+      "n": 7,
+      "persona": "Verifier",
+      "action": "double-reserve same slot",
+      "expected": "1st ok, 2nd blocked",
+      "actual": "1st=ok 2nd=blocked",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "slot double-booked"
+    },
+    {
+      "n": 8,
+      "persona": "Clumsy secretary",
+      "action": "duplicate baptism (same client_id)",
+      "expected": "rejected by unique idx",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "high",
+      "evidence": "duplicate key value violates unique constraint \"uq_baptism_records_client\""
+    },
+    {
+      "n": 9,
+      "persona": "Clumsy secretary",
+      "action": "collection with negative cash",
+      "expected": "rejected (>=0 guard)",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "collection amounts must be finite, >= 0, and within range"
+    },
+    {
+      "n": 10,
+      "persona": "Clumsy secretary",
+      "action": "collection with typo (non-numeric) cash",
+      "expected": "rejected (cast error)",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "high",
+      "evidence": "invalid input syntax for type numeric: \"12oo0\""
+    },
+    {
+      "n": 11,
+      "persona": "Clumsy secretary",
+      "action": "collection with impossible date 2026-13-45",
+      "expected": "rejected (date cast)",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "medium",
+      "evidence": "date/time field value out of range: \"2026-13-45\""
+    },
+    {
+      "n": 12,
+      "persona": "Clumsy secretary",
+      "action": "unbalanced journal (dr 10000 != cr 9000)",
+      "expected": "rejected (balance guard)",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "journal entry is not balanced (dr 10000 <> cr 9000)"
+    },
+    {
+      "n": 13,
+      "persona": "Clumsy secretary",
+      "action": "journal lines as object (not array)",
+      "expected": "rejected (array guard)",
+      "actual": "rejected",
+      "pass": true,
+      "severity": "medium",
+      "evidence": "journal lines must be an array"
+    },
+    {
+      "n": 14,
+      "persona": "Priest",
+      "action": "create two fully-overlapping calendar_events",
+      "expected": "conflict detected/blocked OR flagged",
+      "actual": "BOTH PERSISTED silently",
+      "pass": false,
+      "severity": "medium",
+      "evidence": "No DB-level conflict detection on calendar_events; double-booking persists silently. App layer must guard."
+    },
+    {
+      "n": 15,
+      "persona": "Finance officer",
+      "action": "record 3 fee waivers (chained)",
+      "expected": "3 inserted",
+      "actual": "3 inserted",
+      "pass": true,
+      "severity": "high",
+      "evidence": "waiver insert failed"
+    },
+    {
+      "n": 16,
+      "persona": "Verifier",
+      "action": "authenticated UPDATE/DELETE fee_override_audit (tamper)",
+      "expected": "blocked, row unchanged",
+      "actual": "unchanged (good)",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "upd.err=undefined del.err=undefined"
+    },
+    {
+      "n": 17,
+      "persona": "Verifier",
+      "action": "verify_audit HMAC chain (St. Mary)",
+      "expected": "all rows ok=true",
+      "actual": "4/4 ok",
+      "pass": true,
+      "severity": "high",
+      "evidence": "[{\"client_id\":\"SM-A001\",\"ok\":true},{\"client_id\":\"SM-WV-0\",\"ok\":true},{\"client_id\":\"SM-WV-1\",\"ok\":true},{\"client_id\":\"SM-WV-2\",\"ok\":true}]"
+    },
+    {
+      "n": 18,
+      "persona": "Verifier",
+      "action": "detect suspicious large self-approved waiver",
+      "expected": ">=1 flagged (>=5000, priest)",
+      "actual": "1 flagged",
+      "pass": true,
+      "severity": "medium",
+      "evidence": "[{\"amount\":8000,\"recorded_by\":\"Fr. Delgado\",\"person_name\":\"Jose Domingo\"}]"
+    },
+    {
+      "n": 19,
+      "persona": "Verifier/RLS",
+      "action": "Aida reads collections",
+      "expected": "only St. Mary parish_id",
+      "actual": "27 rows, all St. Mary",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "a1111111-1111-1111-1111-111111111111"
+    },
+    {
+      "n": 20,
+      "persona": "Verifier/RLS",
+      "action": "Aida reads San Roque collections (cross-parish)",
+      "expected": "0 rows",
+      "actual": "0 rows",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "[]"
+    },
+    {
+      "n": 21,
+      "persona": "Verifier/RLS",
+      "action": "Aida writes into San Roque (forged parish_id)",
+      "expected": "blocked or forced to own parish",
+      "actual": "blocked: new row violates row-level security policy for table \"collections\"",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "{\"success\":false,\"error\":{\"code\":\"42501\",\"details\":null,\"hint\":null,\"message\":\"new row violates row-level security policy for table \\\"collections\\\"\"},\"data\":null,\"count\":null,\"status\":403,\"statusText\":\"Forbidden\"}"
+    },
+    {
+      "n": 22,
+      "persona": "Verifier/RLS",
+      "action": "Aida self-promotes to bishop",
+      "expected": "role stays secretary",
+      "actual": "bishop",
+      "pass": false,
+      "severity": "critical",
+      "evidence": "role=bishop updErr=undefined"
+    },
+    {
+      "n": 23,
+      "persona": "Verifier/RLS",
+      "action": "Bishop Tomas reads diocese_reports",
+      "expected": "Manila parishes only, NOT Sto.Niño",
+      "actual": "2 reports, Manila only",
+      "pass": true,
+      "severity": "critical",
+      "evidence": "a1111111-1111-1111-1111-111111111111,a2222222-2222-2222-2222-222222222222"
+    },
+    {
+      "n": 24,
+      "persona": "Verifier",
+      "action": "collections.total == cash+checks+digital (derived)",
+      "expected": "0 mismatches",
+      "actual": "0 mismatches of 27",
+      "pass": true,
+      "severity": "high",
+      "evidence": "[]"
+    },
+    {
+      "n": 25,
+      "persona": "Diocese report",
+      "action": "derive_report net = collections - expense",
+      "expected": "net=90150",
+      "actual": "net=90150",
+      "pass": true,
+      "severity": "high",
+      "evidence": "{\"net\":90150,\"collections_total\":177100,\"expense_total\":86950}"
+    }
+  ]
+}
