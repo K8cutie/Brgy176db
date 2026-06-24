@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // `dist` is build output. `supabase/functions` is Deno runtime code (Deno/Web
+  // globals, remote URL imports) — the browser-targeted config below mis-flags it,
+  // so it's excluded here and linted/type-checked in its own (Deno) toolchain.
+  globalIgnores(['dist', 'supabase/functions']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

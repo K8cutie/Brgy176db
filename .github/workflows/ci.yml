@@ -1,0 +1,96 @@
+# ChurchOS — CI (lint + type-check + tests + coverage + security scans)
+#
+# Owner: Platform / on-call.  Last reviewed: 2026-06-24.
+# Runs on PRs and pushes to main/master. The existing GitHub Pages deploy
+# (deploy.yml) is untouched and remains the deploy path.
+#
+# Notes:
+#  - `lint` is currently NON-BLOCKING (continue-on-error) because the repo carries
+#    pre-existing eslint debt (~100 findings across app code). It still runs and
+#    surfaces results so the debt can be burned down; flip to a hard gate once green.
+#  - SQL is at the REPO ROOT (`*.sql`), not supabase/migrations — squawk is scoped
+#    accordingly.
+#  - Semgrep + squawk + npm-audit run on PRs; treat their findings as review signal.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Lint, type-check, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (non-blocking — pre-existing debt)
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Unit tests + coverage
+        run: npx vitest run --coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: npm audit (high+)
+        run: npm audit --audit-level=high
+
+  semgrep:
+    name: Semgrep (SAST)
+    runs-on: ubuntu-latest
+    # Semgrep's own action image; uses the default rulesets via `semgrep ci`.
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan
+        run: semgrep ci
+        env:
+          # Optional: set SEMGREP_APP_TOKEN as a repo secret to use a managed
+          # ruleset/policy. Without it, semgrep ci runs the bundled default rules.
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  sql-lint:
+    name: squawk (SQL lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install squawk
+        run: npm install -g squawk-cli
+      - name: Lint root SQL files
+        # ChurchOS SQL lives at the repo root as *.sql (NOT supabase/migrations).
+        # Non-blocking for now: these are full-schema setup scripts, not the
+        # incremental migrations squawk is tuned for, so expect advisory findings.
+        run: |
+          shopt -s nullglob
+          files=( *.sql )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No root SQL files found."; exit 0
+          fi
+          echo "Linting: ${files[*]}"
+          squawk "${files[@]}"
+        continue-on-error: true

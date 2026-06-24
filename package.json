@@ -10,6 +10,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "preview": "vite preview",
     "electron:start": "electron .",
     "electron:dev": "concurrently -k \"cross-env BROWSER=none vite\" \"wait-on tcp:127.0.0.1:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
@@ -126,6 +129,7 @@
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/coverage-v8": "^4.1.9",
     "autoprefixer": "^10.4.23",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
@@ -135,6 +139,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "jsdom": "^29.1.1",
     "plugin-inspect-react-code": "^1.0.3",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
@@ -143,6 +148,7 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
+    "vitest": "^4.1.9",
     "wait-on": "^8.0.1"
   }
 }
