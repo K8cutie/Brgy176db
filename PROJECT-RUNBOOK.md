@@ -1,4 +1,7 @@
 # ChurchOS Project Runbook
+
+> Owner: Platform / on-call &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 ## Technical Reference — Read at the start of every session
 
 ---

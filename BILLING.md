@@ -1,5 +1,7 @@
 # ChurchOS billing — per-parish subscription (Xendit) — PREP
 
+> Owner: Billing / Platform &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 "SaaS" for ChurchOS means a **paid recurring subscription per parish**, over an
 offline-first product. This documents the model + the Xendit wiring to switch on
 when you're ready. Nothing here is live yet.

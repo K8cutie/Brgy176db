@@ -1,0 +1,144 @@
+# ChurchOS — Edge Function API
+# Owner: Platform / on-call. Last reviewed: 2026-06-24.
+#
+# Describes the two Supabase Edge Functions (Deno). These are deploy artifacts, not
+# part of the Vite build. Base URL is the Supabase Functions host for the project:
+#   https://<project-ref>.functions.supabase.co
+openapi: 3.0.3
+info:
+  title: ChurchOS Edge Functions
+  version: 1.1.0
+  description: >
+    Server-side functions that hold secrets the browser must never see.
+    `ai` runs the assistant tool-loop under the caller's RLS; `xendit-webhook`
+    receives billing callbacks and updates subscription status with the service role.
+
+servers:
+  - url: https://{projectRef}.functions.supabase.co
+    variables:
+      projectRef:
+        default: your-project-ref
+
+paths:
+  /ai:
+    post:
+      summary: ChurchOS assistant (RLS-scoped tool loop)
+      description: >
+        Runs the Claude tool-call loop server-side using ANTHROPIC_API_KEY (env only).
+        Queries run under the caller's Supabase JWT, so the assistant can only read
+        the caller's own parish data. The outbound Anthropic call is bounded by a 10s
+        timeout. On error, returns only a generic code plus a request_id for log
+        correlation (no internal detail).
+      security:
+        - supabaseJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  description: Anthropic-format message array (role + content).
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum: [user, assistant]
+                      content: {}
+      responses:
+        '200':
+          description: >
+            Always HTTP 200; success/failure is in the body's `ok` field.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AiSuccess'
+                  - $ref: '#/components/schemas/AiError'
+      x-cors:
+        note: Responds to OPTIONS preflight; Access-Control-Allow-Origin is '*'.
+
+  /xendit-webhook:
+    post:
+      summary: Xendit billing callback (PREP / inert until configured)
+      description: >
+        Receives Xendit invoice/recurring events and maps them to a subscription
+        status, written with the service role. Authenticated by a static
+        x-callback-token header. Inert (503) until XENDIT_CALLBACK_TOKEN is set.
+        Errors return a generic 'error' string only (detail logged server-side).
+      parameters:
+        - in: header
+          name: x-callback-token
+          required: true
+          schema:
+            type: string
+          description: Static token issued by Xendit; compared to XENDIT_CALLBACK_TOKEN.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/XenditCallback'
+      responses:
+        '200':
+          description: Processed or intentionally ignored (unmapped event/missing ref).
+          content:
+            text/plain:
+              schema: { type: string, enum: [ok, ignored] }
+        '401':
+          description: Bad or missing x-callback-token.
+          content:
+            text/plain: { schema: { type: string, example: unauthorized } }
+        '500':
+          description: Server error (generic; correlate via server logs).
+          content:
+            text/plain: { schema: { type: string, example: error } }
+        '503':
+          description: Billing not configured (XENDIT_CALLBACK_TOKEN unset).
+          content:
+            text/plain: { schema: { type: string, example: xendit billing not configured } }
+
+components:
+  securitySchemes:
+    supabaseJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The caller's Supabase auth JWT, forwarded as Authorization.
+  schemas:
+    AiSuccess:
+      type: object
+      properties:
+        ok: { type: boolean, enum: [true] }
+        text: { type: string, description: Assistant reply text. }
+        navigate:
+          type: object
+          nullable: true
+          properties:
+            page: { type: string }
+    AiError:
+      type: object
+      properties:
+        ok: { type: boolean, enum: [false] }
+        error:
+          type: string
+          enum: [no_key, too_many_steps, server_error]
+        request_id:
+          type: string
+          description: Present on server_error; correlate with edge logs.
+    XenditCallback:
+      type: object
+      description: Subset of fields ChurchOS reads from a Xendit callback.
+      properties:
+        event: { type: string, example: recurring.cycle.succeeded }
+        status: { type: string }
+        recurring_id: { type: string }
+        customer_id: { type: string }
+        data:
+          type: object
+          properties:
+            reference_id: { type: string }

@@ -1,5 +1,7 @@
 # ChurchOS — 5-church closed beta runbook
 
+> Owner: Product / on-call &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 The beta is the **offline desktop ChurchOS** — the full product, used by real
 parish secretaries. No cloud needed: each church runs locally. Your job is a
 controlled rollout where you can push fixes and collect feedback.

@@ -1,5 +1,7 @@
 # Auto-update (ChurchOS desktop)
 
+> Owner: Platform / Release &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 ChurchOS ships fixes to every parish PC without a manual reinstall, using
 `electron-updater`. The behaviour is deliberately gentle:
 

@@ -1,5 +1,7 @@
 # ChurchOS SaaS — first live run (≈30 min)
 
+> Owner: Platform / on-call &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 Everything is paste-and-run. I can't create the Supabase project for you (it needs
 your account), but these are the exact steps to turn the verified-on-paper SaaS
 into a live, tested one.
