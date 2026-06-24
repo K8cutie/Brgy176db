@@ -10,6 +10,7 @@
 // is separate, so daily work never depends on the network.
 
 const db = require('./db.cjs');
+const scheduling = require('./scheduling.cjs');
 
 const SYNC_KEY = 'sync_config'; // app_meta
 
@@ -156,6 +157,46 @@ async function requestUpdate(id, patch) {
   }
 }
 
+// ── Publish available sacrament slots (Calendly-for-sacraments) ──
+// Computes open slots locally (calendar stays on the desktop) and reconciles them
+// to the cloud WITHOUT clobbering live holds/bookings: new slots insert with DO
+// NOTHING, and only stale OPEN slots are removed.
+const slotKey = (t, at) => t + '|' + String(at).slice(0, 16); // type + YYYY-MM-DDTHH:MM
+async function publishSlots(opts) {
+  const c = getConfig();
+  if (!c.url || !c.anonKey || !c.email || !c.password) return { ok: false, error: 'Cloud sync is not configured.' };
+  try {
+    const token = await authToken(c);
+    const parishId = await resolveParishId(c, token);
+    const H = { apikey: c.anonKey, Authorization: 'Bearer ' + token };
+    await fetch(`${c.url}/rest/v1/rpc/release_expired_holds`, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{}' });
+
+    const computed = scheduling.openSlots(opts);
+    const exRes = await fetch(`${c.url}/rest/v1/availability_slots?select=id,type,slot_at&status=eq.open`, { headers: H });
+    const existing = exRes.ok ? await exRes.json() : [];
+    const existingKeys = new Set(existing.map((e) => slotKey(e.type, e.slot_at)));
+    const computedKeys = new Set(computed.map((s) => slotKey(s.type, s.slot_at)));
+
+    const toInsert = computed.filter((s) => !existingKeys.has(slotKey(s.type, s.slot_at)))
+      .map((s) => ({ parish_id: parishId, type: s.type, slot_at: s.slot_at, duration_min: s.duration_min }));
+    if (toInsert.length) {
+      const r = await fetch(`${c.url}/rest/v1/availability_slots?on_conflict=parish_id,type,slot_at`, {
+        method: 'POST', headers: { ...H, 'content-type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' },
+        body: JSON.stringify(toInsert),
+      });
+      if (!r.ok) throw new Error('publish insert: ' + r.status + ' ' + (await r.text()).slice(0, 160));
+    }
+    // remove ONLY open slots we no longer generate (rule changed / booked locally)
+    const toDelete = existing.filter((e) => !computedKeys.has(slotKey(e.type, e.slot_at))).map((e) => e.id);
+    if (toDelete.length) {
+      await fetch(`${c.url}/rest/v1/availability_slots?status=eq.open&id=in.(${toDelete.join(',')})`, { method: 'DELETE', headers: H });
+    }
+    return { ok: true, published: toInsert.length, removed: toDelete.length };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 async function syncNow() {
   const c = getConfig();
   if (!c.url || !c.anonKey || !c.email || !c.password) { lastResult = { state: 'error', message: 'Cloud sync is not configured yet.' }; return getStatus(); }
@@ -173,4 +214,4 @@ async function syncNow() {
   return getStatus();
 }
 
-module.exports = { getStatus, setConfig, syncNow, buildPackets, localRecords, requestsList, requestUpdate, __setStore };
+module.exports = { getStatus, setConfig, syncNow, buildPackets, localRecords, requestsList, requestUpdate, publishSlots, __setStore };

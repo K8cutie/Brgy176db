@@ -11,6 +11,7 @@ const auth = require('./auth.cjs');
 const backup = require('./backup.cjs');
 const updater = require('./updater.cjs');
 const sync = require('./sync.cjs');
+const scheduling = require('./scheduling.cjs');
 
 // Old parish PCs (and Windows 7) often have flaky GPU drivers — software
 // rendering is slower but far more reliable across the hardware we target.
@@ -182,6 +183,9 @@ ipcMain.handle('churchos:sync:config', (_e, patch) => sync.setConfig(patch));
 ipcMain.handle('churchos:sync:now', () => sync.syncNow());
 ipcMain.handle('churchos:requests:list', () => sync.requestsList());
 ipcMain.handle('churchos:requests:update', (_e, id, patch) => sync.requestUpdate(id, patch));
+ipcMain.handle('churchos:slots:publish', () => sync.publishSlots());
+ipcMain.handle('churchos:slots:rules:get', () => scheduling.getRules());
+ipcMain.handle('churchos:slots:rules:set', (_e, rules) => { scheduling.setRules(rules); return { ok: true }; });
 
 // ── Auto-update IPC ──
 ipcMain.handle('churchos:update:check', () => updater.check());

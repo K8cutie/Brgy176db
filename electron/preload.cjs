@@ -41,6 +41,11 @@ contextBridge.exposeInMainWorld('churchos', {
     list: () => ipcRenderer.invoke('churchos:requests:list'),
     update: (id, patch) => ipcRenderer.invoke('churchos:requests:update', id, patch),
   },
+  slots: {
+    publish: () => ipcRenderer.invoke('churchos:slots:publish'),
+    getRules: () => ipcRenderer.invoke('churchos:slots:rules:get'),
+    setRules: (rules) => ipcRenderer.invoke('churchos:slots:rules:set', rules),
+  },
   appVersion: () => ipcRenderer.invoke('churchos:app:version'),
   update: {
     check: () => ipcRenderer.invoke('churchos:update:check'),
