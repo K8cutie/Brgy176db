@@ -277,6 +277,89 @@ drop trigger if exists trg_calendar_overlap on public.calendar_events;
 create trigger trg_calendar_overlap before insert or update on public.calendar_events
   for each row execute function public.guard_calendar_overlap();
 
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-1e — portal intake guard (added after the original fix). Same dead-
+-- `current_user` bug: normalize_request is SECURITY DEFINER, so its
+-- `current_user in ('anon','authenticated')` gate NEVER fired → the public
+-- intake's opt-in / rate-limit / size / CRLF / fee-set guards were all dead.
+-- Re-gate on is_untrusted_client_write(). (Trigger already created in portal.sql.)
+-- ════════════════════════════════════════════════════════════════════════
+create or replace function public.normalize_request()
+returns trigger language plpgsql security definer set search_path = public, auth as $$
+declare ip text; amt jsonb;
+begin
+  if public.is_untrusted_client_write() then
+    if not exists (select 1 from public.parishes where id = new.parish_id and (public_config->>'intake_enabled') = 'true') then
+      raise exception 'this parish is not accepting online requests';
+    end if;
+    ip := coalesce(split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1), 'unknown');
+    perform public.rate_check('intake:' || ip || ':' || new.parish_id::text, 10, '1 minute');
+    if length(coalesce(new.details, '{}'::jsonb)::text) > 8000 then raise exception 'request details too large'; end if;
+    new.status := 'submitted'; new.payment_status := 'unpaid'; new.payment_ref := null;
+    new.public_token := coalesce(new.public_token, gen_random_uuid());
+    if new.type = 'donation' then
+      amt := new.details -> 'amount';
+      new.amount := case when jsonb_typeof(amt) = 'number' then least(greatest((amt)::text::numeric, 0), 1000000) else 0 end;
+    else
+      new.amount := coalesce((select (public_config->'fees'->>new.type)::numeric from public.parishes where id = new.parish_id), 0);
+    end if;
+    new.requester_name  := left(regexp_replace(coalesce(new.requester_name, ''),  '[\r\n]', ' ', 'g'), 120);
+    new.requester_email := left(regexp_replace(coalesce(new.requester_email, ''), '[\r\n]', '',  'g'), 200);
+    new.requester_phone := left(regexp_replace(coalesce(new.requester_phone, ''), '[\r\n]', '',  'g'), 40);
+    if new.requested_date is not null and (new.requested_date < current_date - interval '1 year'
+         or new.requested_date > current_date + interval '2 years') then
+      raise exception 'requested date is out of range';
+    end if;
+  end if;
+  return new;
+end $$;
+
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-1f — reserve_slot is the sanctioned booking path; it sets the request
+-- fields itself, so it must BYPASS normalize_request (whose intake_enabled check
+-- would otherwise wrongly block a slot booking on a parish that publishes slots
+-- without enabling the generic intake form). Opt in to privileged write around
+-- the insert (txn-local, secret-gated — same mechanism as the onboarding RPCs).
+-- ════════════════════════════════════════════════════════════════════════
+create or replace function public.reserve_slot(p_slot uuid, p_name text, p_email text, p_phone text, p_details jsonb)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare v_pid uuid; v_type text; v_at timestamptz; v_token uuid := gen_random_uuid(); v_req uuid; v_fee numeric; ip text;
+begin
+  ip := coalesce(split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1), 'unknown');
+  perform public.rate_check('reserve:ip:' || ip, 10, '1 minute');
+  if length(coalesce(p_details::text, '{}')) > 8000 then raise exception 'details too large'; end if;
+  if coalesce(btrim(p_email), '') <> '' then
+    perform public.rate_check('reserve:email:' || lower(btrim(p_email)), 5, '1 hour');
+    if (select count(*) from public.availability_slots s join public.service_requests r on r.id = s.request_id
+        where s.status = 'held' and lower(r.requester_email) = lower(btrim(p_email))) >= 3 then
+      raise exception 'you already have pending bookings — please wait for the parish to confirm';
+    end if;
+  end if;
+
+  update public.availability_slots
+    set status = 'held', held_until = now() + interval '30 minutes', updated_at = now()
+    where id = p_slot and status = 'open' and slot_at > now()
+    returning parish_id, type, slot_at into v_pid, v_type, v_at;
+  if v_pid is null then raise exception 'that time is no longer available — please pick another'; end if;
+
+  v_fee := coalesce((select (public_config->'fees'->>'event_booking')::numeric from public.parishes where id = v_pid), 0);
+  perform public.grant_privileged_write(true);   -- sanctioned: reserve_slot sets the request fields itself
+  insert into public.service_requests
+    (parish_id, public_token, type, status, requester_name, requester_email, requester_phone, requested_date, details, amount, payment_status)
+  values
+    (v_pid, v_token, 'event_booking', 'submitted',
+     left(regexp_replace(coalesce(p_name, ''),  '[\r\n]', ' ', 'g'), 120),
+     left(regexp_replace(coalesce(p_email, ''), '[\r\n]', '',  'g'), 200),
+     left(regexp_replace(coalesce(p_phone, ''), '[\r\n]', '',  'g'), 40),
+     v_at::date,
+     coalesce(p_details, '{}'::jsonb) || jsonb_build_object('event_type', v_type, 'slot_at', v_at),
+     v_fee, 'unpaid')
+  returning id into v_req;
+  perform public.grant_privileged_write(false);
+  update public.availability_slots set request_id = v_req where id = p_slot;
+  return v_token;
+end $$;
+
 -- ── Verify (manual):
 --   select public.is_untrusted_client_write();                 -- false as owner
 --   -- a self-elevation UPDATE by an authenticated session must leave role unchanged

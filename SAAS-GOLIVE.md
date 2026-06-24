@@ -15,12 +15,22 @@ Supabase dashboard → **New project**. Note the **Project URL** and **anon key*
 2. `churchos-saas-onboarding.sql` — self-service diocese onboarding + invites.
 3. `churchos-saas-reports.sql` — monthly diocese financial packets.
 4. `churchos-saas-portal.sql` — parishioner self-service intake queue.
-5. `churchos-saas-security-prep.sql` — audit HMAC + rate limiting.
-6. `churchos-saas-billing.sql` — per-parish subscriptions (Xendit-ready).
-7. `churchos-saas-seed.sql` — 2 dioceses, 3 parishes, 4 logins, demo data, portal slugs.
+5. `churchos-saas-scheduling.sql` — self-service sacrament slot booking.
+6. `churchos-saas-security-prep.sql` — audit HMAC + rate limiting.
+7. `churchos-saas-billing.sql` — per-parish subscriptions (Xendit-ready).
+8. `churchos-saas-seed.sql` — 2 dioceses, 3 parishes, 4 logins, demo data, portal slugs.
+9. **`churchos-saas-authz-fix.sql`** — ⚠ **LAUNCH-BLOCKER, MUST RUN LAST.** The guard
+   triggers in (1)/(4)/(5) gate on `current_user`, which is dead inside their
+   `SECURITY DEFINER` bodies (it's always `postgres`) — so without this fix a parish
+   user can self-elevate to bishop and hop tenants. This re-gates them on
+   `auth.role()` + a secret-nonce capability. Re-runnable; verified locally.
 
 After (1), the verification query at the bottom must show **every** table with
 `rls_enabled = true` and `policies ≥ 1`. A `false` is a release blocker.
+
+**Prove the fix** (after step 9): run the self-elevation probe — an `authenticated`
+session doing `update profiles set role='bishop' where id=auth.uid()` must leave
+`role` unchanged. `churchos-saas-rls-probe.sql` includes this check (`c1`).
 
 The **public parishioner portal** is then at `…/#/portal/st-mary` (mobile-first).
 

@@ -38,10 +38,17 @@ begin;
   set local role authenticated;
   set local request.jwt.claims = '{"sub":"d2222222-2222-2222-2222-222222222222","role":"authenticated"}';
 
-  -- the guard trigger freezes role on update → she stays a secretary
-  update public.profiles set role = 'bishop' where id = auth.uid();
+  -- The guard trigger freezes role/parish/diocese on update → she stays a
+  -- secretary in her own parish. (This is the BUG-1 regression: with the dead
+  -- current_user gate these would CHANGE; with the authz-fix they're frozen.)
+  update public.profiles set role = 'bishop',
+         parish_id = 'a2222222-2222-2222-2222-222222222222',
+         diocese_id = '22222222-2222-2222-2222-222222222222'
+    where id = auth.uid();
   select 'c1 aida cannot self-promote to bishop' as check,
          (select role from public.profiles where id = auth.uid()) = 'secretary' as pass;
+  select 'c1b aida cannot tenant-hop (parish frozen)' as check,
+         (select parish_id from public.profiles where id = auth.uid()) = 'a1111111-1111-1111-1111-111111111111' as pass;
 
   -- force_parish_id rewrites a forged parish_id back to her own (values via `data`)
   insert into public.collections (parish_id, client_id, data)
