@@ -91,10 +91,14 @@ async function executeTool(supa: any, name: string, input: any) {
 }
 
 async function callClaude(key: string, body: unknown) {
+  // Bound the outbound call so a hung upstream can't pin an edge invocation open.
+  // On timeout fetch rejects (AbortError) → caught by the Deno.serve try/catch →
+  // generic server_error to the client, real detail logged server-side.
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify({ model: MODEL, max_tokens: 1500, system: SYSTEM, tools: TOOLS, ...(body as object) }),
+    signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error('Anthropic ' + res.status + ': ' + (await res.text()).slice(0, 300));
   return res.json();
@@ -138,7 +142,15 @@ Deno.serve(async (req: Request) => {
     }
     return json({ ok: false, error: 'too_many_steps' });
   } catch (e) {
-    return json({ ok: false, error: 'server_error', message: String((e as Error).message) });
+    // Log the real detail server-side only; never return it to the client (it can
+    // leak upstream API errors, keys in URLs, or internal structure). request_id
+    // lets us correlate this client-facing response with the server log line.
+    const requestId = crypto.randomUUID();
+    console.error(JSON.stringify({
+      level: 'error', fn: 'ai', request_id: requestId,
+      message: String((e as Error)?.message ?? e),
+    }));
+    return json({ ok: false, error: 'server_error', request_id: requestId });
   }
 });
 

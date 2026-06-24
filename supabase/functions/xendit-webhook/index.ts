@@ -54,6 +54,13 @@ Deno.serve(async (req: Request) => {
     if (error) throw error;
     return new Response('ok', { status: 200 });
   } catch (e) {
-    return new Response('error: ' + String((e as Error).message), { status: 500 });
+    // Log the real error server-side only; return a generic message so the webhook
+    // caller (and anyone who can reach this endpoint) never sees internal detail.
+    const requestId = crypto.randomUUID();
+    console.error(JSON.stringify({
+      level: 'error', fn: 'xendit-webhook', request_id: requestId,
+      message: String((e as Error)?.message ?? e),
+    }));
+    return new Response('error', { status: 500 });
   }
 });
