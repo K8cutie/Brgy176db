@@ -1,5 +1,7 @@
 # ChurchOS — local-first cloud sync
 
+> Owner: Platform / on-call &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 ChurchOS is **local-first**: the secretary works fully **offline** on the desktop
 app (local scrypt login + local SQLite + backups). When online, the app **pushes**
 the parish's data up to the cloud so the **diocese cockpit** can roll it up. Daily

@@ -13,6 +13,7 @@
 // `npm run build`. It is a deploy artifact.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createLogger } from '../_shared/log.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -91,10 +92,14 @@ async function executeTool(supa: any, name: string, input: any) {
 }
 
 async function callClaude(key: string, body: unknown) {
+  // Bound the outbound call so a hung upstream can't pin an edge invocation open.
+  // On timeout fetch rejects (AbortError) → caught by the Deno.serve try/catch →
+  // generic server_error to the client, real detail logged server-side.
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify({ model: MODEL, max_tokens: 1500, system: SYSTEM, tools: TOOLS, ...(body as object) }),
+    signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error('Anthropic ' + res.status + ': ' + (await res.text()).slice(0, 300));
   return res.json();
@@ -102,6 +107,8 @@ async function callClaude(key: string, body: unknown) {
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
+  // Request-scoped structured logger; its request_id is echoed in error responses.
+  const log = createLogger('ai');
   try {
     const key = Deno.env.get('ANTHROPIC_API_KEY');
     if (!key) return json({ ok: false, error: 'no_key' });
@@ -138,7 +145,11 @@ Deno.serve(async (req: Request) => {
     }
     return json({ ok: false, error: 'too_many_steps' });
   } catch (e) {
-    return json({ ok: false, error: 'server_error', message: String((e as Error).message) });
+    // Log the real detail server-side only; never return it to the client (it can
+    // leak upstream API errors, keys in URLs, or internal structure). request_id
+    // lets us correlate this client-facing response with the server log line.
+    log.error('unhandled_error', { detail: String((e as Error)?.message ?? e) });
+    return json({ ok: false, error: 'server_error', request_id: log.requestId });
   }
 });
 

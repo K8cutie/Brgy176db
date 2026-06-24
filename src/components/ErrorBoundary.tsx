@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { captureError } from '../lib/monitoring';
 
 interface Props {
   children: ReactNode;
@@ -22,6 +23,9 @@ export default class ErrorBoundary extends Component<Props, State> {
     // Surface in the console for support; the app keeps its data intact
     // in localStorage so a reload recovers.
     console.error('ChurchOS crashed:', error, info);
+    // Route through monitoring (no-op unless VITE_SENTRY_DSN is set). We pass only
+    // the React component stack — no parish data or user identity.
+    captureError(error, { componentStack: info.componentStack });
   }
 
   handleReload = () => {

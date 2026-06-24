@@ -3,6 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Security headers (defense-in-depth). These <meta http-equiv> directives are
+      honored by browsers when serving the SPA; they harden the renderer in both the
+      Vercel-hosted SaaS build and the Electron shell.
+
+      NOTE: `frame-ancestors`, `Strict-Transport-Security` (HSTS), and
+      `X-Frame-Options` CANNOT be set via <meta> — they are ignored unless sent as
+      real HTTP response headers. Configure those at the host (Vercel headers / a
+      reverse proxy / Electron's session.webRequest). See docs/observability.md.
+
+      CSP notes:
+        - 'unsafe-inline' / 'unsafe-eval' in script-src/style-src are required by the
+          current Vite + Tailwind + Radix runtime. Tighten to nonces/hashes later.
+        - connect-src allows Supabase (*.supabase.co) + the Anthropic-backed edge fn.
+          Adjust the allowlist if endpoints change.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co https://*.ingest.sentry.io; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <title>ChurchOS</title>
   </head>
   <body>

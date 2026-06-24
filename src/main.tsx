@@ -6,6 +6,11 @@ import ErrorBoundary from './components/ErrorBoundary.tsx'
 import { hydrateDesktopStore } from './lib/desktopStore'
 import { hydrateCloudStore } from './lib/cloudStore'
 import { reconcileSession } from './lib/session'
+import { initMonitoring } from './lib/monitoring'
+
+// Initialize error monitoring first so any startup error is captured. No-op
+// unless VITE_SENTRY_DSN is set (desktop/local stay fully offline).
+initMonitoring()
 
 // Hydrate whichever backend is active (desktop SQLite or cloud Supabase) into
 // the in-memory cache before the first render, so all synchronous storage reads

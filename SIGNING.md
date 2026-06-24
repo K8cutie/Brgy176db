@@ -1,5 +1,7 @@
 # Code-signing ChurchOS (Windows)
 
+> Owner: Platform / Release &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 The installer is built by `npm run dist:win` (electron-builder → NSIS + portable).
 Until it is **code-signed**, Windows SmartScreen shows non-technical parish staff a
 scary *"Windows protected your PC — unknown publisher"* dialog on first launch. Signing

@@ -1,4 +1,7 @@
 # ChurchOS — Full-SaaS Architecture Blueprint
+
+> Owner: Architecture / Platform &nbsp;|&nbsp; Last reviewed: 2026-06-24
+
 ### Urban / Metro Manila edition (online-first, no sync engine)
 
 > **Guiding principle:** ONE React codebase, a swappable storage backend.
