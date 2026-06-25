@@ -55,6 +55,40 @@ export async function submitRequest(
   }
 }
 
+export interface Slot { id: string; type: string; slot_at: string; duration_min: number }
+
+// Open sacrament slots a parish has published (RLS shows only open + future).
+export async function getSlots(parishId: string, type: string): Promise<Slot[]> {
+  try {
+    const s = await getSupabase();
+    const { data, error } = await s.from('availability_slots')
+      .select('id,type,slot_at,duration_min')
+      .eq('parish_id', parishId).eq('type', type).eq('status', 'open')
+      .order('slot_at');
+    if (error || !data) return [];
+    return data as Slot[];
+  } catch { return []; }
+}
+
+// Atomically reserve a slot → returns the tracking token. Server forces all
+// trust fields (status/payment/amount); we only send the requester's details.
+export async function reserveSlot(
+  slotId: string,
+  payload: { name?: string; email?: string; phone?: string; details?: Record<string, unknown> },
+): Promise<SubmitResult> {
+  try {
+    const s = await getSupabase();
+    const { data, error } = await s.rpc('reserve_slot', {
+      p_slot: slotId, p_name: payload.name || null, p_email: payload.email || null,
+      p_phone: payload.phone || null, p_details: payload.details || {},
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, token: data as string };
+  } catch (e) {
+    return { ok: false, error: String((e as Error).message) };
+  }
+}
+
 export async function checkStatus(token: string): Promise<RequestStatus | null> {
   try {
     const s = await getSupabase();

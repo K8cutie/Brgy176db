@@ -3,7 +3,10 @@
 // fills a short form, and submits (payment optional / later). No login.
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { getParishBySlug, submitRequest, checkStatus, type ParishPublic, type RequestStatus } from '@/lib/portal';
+import { getParishBySlug, submitRequest, reserveSlot, getSlots, checkStatus, type ParishPublic, type RequestStatus, type Slot } from '@/lib/portal';
+
+// Event types that book a real calendar slot (vs. a free-form inquiry).
+const SLOT_TYPE: Record<string, string> = { Baptism: 'baptism', Wedding: 'wedding', Funeral: 'funeral' };
 
 const C = { bg: '#FAF8F3', card: '#FFFFFF', ink: '#3D3A36', sub: '#8C8374', gold: '#C9963B', line: '#EAE5D9', green: '#2D6A4F' };
 const peso = (n: number) => '₱' + Math.round(n).toLocaleString();
@@ -28,8 +31,20 @@ export default function PublicPortal() {
   const [error, setError] = useState('');
   const [statusToken, setStatusToken] = useState('');
   const [statusRes, setStatusRes] = useState<RequestStatus | null | undefined>(undefined);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  const [loadingSlots, setLoadingSlots] = useState(false);
 
   useEffect(() => { if (slug) getParishBySlug(slug).then(setParish); }, [slug]);
+
+  // For an event booking, load the parish's open slots for the chosen sacrament.
+  const slotType = service === 'event_booking' ? SLOT_TYPE[form.event_type || ''] : undefined;
+  useEffect(() => {
+    setSelectedSlot(null); setSlots([]);
+    if (!parish || !slotType) return;
+    setLoadingSlots(true);
+    getSlots(parish.id, slotType).then((s) => setSlots(s)).finally(() => setLoadingSlots(false));
+  }, [parish, slotType]);
 
   const fees = parish?.public_config?.fees || {};
   const services = useMemo(() => {
@@ -61,15 +76,18 @@ export default function PublicPortal() {
   // ── a service form ──
   if (service) {
     const fee = fees[service];
+    const needSlot = service === 'event_booking' && !!slotType && slots.length > 0;
     const submit = async () => {
       setError(''); setSubmitting(true);
       const details: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(form)) if (!['name', 'email', 'phone', 'date'].includes(k)) details[k] = v;
       if (service === 'donation') details.amount = Number(form.amount || 0);
-      const res = await submitRequest(parish.id, service, {
-        requester_name: form.name, requester_email: form.email, requester_phone: form.phone,
-        requested_date: form.date || null, details,
-      });
+      const res = selectedSlot
+        ? await reserveSlot(selectedSlot, { name: form.name, email: form.email, phone: form.phone, details })
+        : await submitRequest(parish.id, service, {
+            requester_name: form.name, requester_email: form.email, requester_phone: form.phone,
+            requested_date: form.date || null, details,
+          });
       setSubmitting(false);
       if (res.ok && res.token) setDone(res.token);
       else setError(res.error || 'Could not submit. Please try again.');
@@ -83,6 +101,35 @@ export default function PublicPortal() {
 
         <ServiceFields service={service} form={form} set={set} />
 
+        {service === 'event_booking' && slotType && (
+          <>
+            <label style={label}>Choose an Available Date</label>
+            {loadingSlots ? (
+              <p style={{ color: C.sub, fontSize: 13 }}>Loading open dates…</p>
+            ) : slots.length === 0 ? (
+              <p style={{ color: C.sub, fontSize: 13 }}>No open dates posted right now — submit below and the parish will reach out.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {slots.map((s) => {
+                  const dt = new Date(s.slot_at); const sel = selectedSlot === s.id;
+                  return (
+                    <button key={s.id} type="button" onClick={() => setSelectedSlot(sel ? null : s.id)}
+                      style={{ textAlign: 'left', padding: '11px 12px', borderRadius: 10, border: sel ? `2px solid ${C.gold}` : `1px solid ${C.line}`, background: sel ? 'rgba(201,150,59,0.06)' : '#FFF', color: C.ink, fontSize: 14, cursor: 'pointer' }}>
+                      {dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} · {dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+        {service === 'event_booking' && !slotType && form.event_type && (
+          <>
+            <label style={label}>Preferred Date</label>
+            <input style={input} type="date" value={form.date || ''} onChange={(e) => set('date', e.target.value)} />
+          </>
+        )}
+
         <label style={label}>Your Name</label>
         <input style={input} value={form.name || ''} onChange={(e) => set('name', e.target.value)} placeholder="Full name" />
         <label style={label}>Email or Phone</label>
@@ -90,8 +137,12 @@ export default function PublicPortal() {
         <input style={{ ...input, marginTop: 8 }} value={form.phone || ''} onChange={(e) => set('phone', e.target.value)} placeholder="Mobile number (optional)" inputMode="tel" />
 
         {error && <p style={{ color: '#B8322F', marginTop: 12 }}>{error}</p>}
-        <button style={btn(submitting)} disabled={submitting || !form.name} onClick={submit}>{submitting ? 'Submitting…' : 'Submit Request'}</button>
-        <p style={{ color: C.sub, fontSize: 12, marginTop: 10, textAlign: 'center' }}>You can pay at the parish office, or online when they confirm.</p>
+        <button style={btn(submitting)} disabled={submitting || !form.name || (needSlot && !selectedSlot)} onClick={submit}>
+          {submitting ? 'Submitting…' : selectedSlot ? 'Reserve This Date' : 'Submit Request'}
+        </button>
+        <p style={{ color: C.sub, fontSize: 12, marginTop: 10, textAlign: 'center' }}>
+          {selectedSlot ? 'Your date is held while the parish confirms eligibility.' : 'You can pay at the parish office, or online when they confirm.'}
+        </p>
       </Shell>
     );
   }
@@ -158,8 +209,6 @@ function ServiceFields({ service, form, set }: { service: string; form: Record<s
     <select style={input} value={form.event_type || ''} onChange={(e) => set('event_type', e.target.value)}>
       <option value="">Choose…</option><option>Baptism</option><option>Wedding</option><option>Funeral</option><option>Blessing</option><option>Other</option>
     </select>
-    <label style={label}>Preferred Date</label>
-    <input style={input} type="date" value={form.date || ''} onChange={(e) => set('date', e.target.value)} />
     <label style={label}>Notes</label>
     <textarea style={{ ...input, minHeight: 70 }} value={form.notes || ''} onChange={(e) => set('notes', e.target.value)} placeholder="Anything the parish should know" />
   </>);

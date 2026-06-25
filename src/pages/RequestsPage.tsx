@@ -20,6 +20,64 @@ function requestsBridge(): RequestsBridge | null {
   return w.churchos?.requests ?? null;
 }
 
+interface AvailabilityRule { type: string; weekday: number; time: string; durationMin: number }
+interface SlotsBridge {
+  getRules(): Promise<AvailabilityRule[]>;
+  setRules(rules: AvailabilityRule[]): Promise<{ ok: boolean }>;
+  publish(): Promise<{ ok: boolean; published?: number; removed?: number; error?: string }>;
+}
+function slotsBridge(): SlotsBridge | null {
+  const w = window as unknown as { churchos?: { slots?: SlotsBridge } };
+  return w.churchos?.slots ?? null;
+}
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function AvailabilityConfig() {
+  const bridge = useMemo(() => slotsBridge(), []);
+  const [rules, setRules] = useState<AvailabilityRule[]>([]);
+  const [open, setOpen] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { bridge?.getRules().then((r) => setRules(r || [])).catch(() => {}); }, [bridge]);
+  if (!bridge) return null;
+
+  const update = (i: number, patch: Partial<AvailabilityRule>) => setRules((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const inp = 'h-9 px-2 rounded-md border border-parchment bg-white text-sm text-charcoal dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text';
+
+  return (
+    <div className="cos-card">
+      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between">
+        <span className="font-semibold text-sm text-charcoal dark:text-dm-text">Booking availability</span>
+        <span className="text-xs text-warm-gray">{rules.length} rule{rules.length === 1 ? '' : 's'} · {open ? 'hide' : 'edit'}</span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-warm-gray">When can parishioners book each sacrament? Open slots are your calendar minus a 1-hour buffer.</p>
+          {rules.map((r, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2">
+              <select value={r.type} onChange={(e) => update(i, { type: e.target.value })} className={inp}>
+                <option value="baptism">Baptism</option><option value="wedding">Wedding</option><option value="funeral">Funeral</option>
+              </select>
+              <select value={r.weekday} onChange={(e) => update(i, { weekday: Number(e.target.value) })} className={inp}>
+                {WEEKDAYS.map((d, n) => <option key={n} value={n}>{d}</option>)}
+              </select>
+              <input type="time" value={r.time} onChange={(e) => update(i, { time: e.target.value })} className={inp} />
+              <input type="number" value={r.durationMin} onChange={(e) => update(i, { durationMin: Number(e.target.value) })} className={`${inp} w-20`} title="minutes" />
+              <button onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))} className="text-error text-sm">Remove</button>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button onClick={() => setRules((rs) => [...rs, { type: 'baptism', weekday: 0, time: '11:00', durationMin: 60 }])} className="cos-btn cos-btn-secondary text-sm">Add rule</button>
+            <button disabled={busy} onClick={async () => { setBusy(true); await bridge.setRules(rules); setMsg('Saved.'); setBusy(false); }} className="cos-btn cos-btn-secondary text-sm">Save</button>
+            <button disabled={busy} onClick={async () => { setBusy(true); setMsg('Publishing…'); const r = await bridge.publish(); setMsg(r.ok ? `Published ${r.published ?? 0} open slot(s).` : `Could not publish: ${r.error}`); setBusy(false); }} className="cos-btn cos-btn-primary text-sm">Publish availability</button>
+            {msg && <span className="text-sm text-warm-gray self-center">{msg}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TYPE_LABEL: Record<string, string> = {
   mass_intention: 'Mass Intention', certificate: 'Certificate', donation: 'Donation', event_booking: 'Event Booking',
 };
@@ -84,6 +142,8 @@ export default function RequestsPage() {
           <button onClick={load} className="cos-btn cos-btn-secondary text-sm">Refresh</button>
         </div>
       </div>
+
+      <AvailabilityConfig />
 
       {error && <div className="cos-card text-error text-sm">{error}</div>}
       {loading ? (
