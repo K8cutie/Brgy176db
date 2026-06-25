@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { HashRouter } from 'react-router-dom'
+import { HashRouter, BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import ErrorBoundary from './components/ErrorBoundary.tsx'
@@ -17,12 +17,19 @@ initMonitoring()
 // see real data. reconcileSession() aligns the renderer with the main-process
 // verified login (so an edited localStorage can't fake a session). Each no-ops
 // when it isn't the active mode; in the plain browser all resolve immediately.
+// Desktop (Electron) loads over file:// → must use HashRouter. The web build
+// (Vercel) uses BrowserRouter so URLs are clean + shareable, e.g.
+// your-domain/portal/st-mary (the SPA rewrite in vercel.json serves index.html
+// for every path). Picked at startup from the preload-exposed bridge flag.
+const isDesktop = !!(window as unknown as { churchos?: { isDesktop?: boolean } }).churchos?.isDesktop
+const Router = isDesktop ? HashRouter : BrowserRouter
+
 Promise.all([hydrateDesktopStore(), hydrateCloudStore(), reconcileSession()]).finally(() => {
   createRoot(document.getElementById('root')!).render(
     <ErrorBoundary>
-      <HashRouter>
+      <Router>
         <App />
-      </HashRouter>
+      </Router>
     </ErrorBoundary>,
   )
 })
