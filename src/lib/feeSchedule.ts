@@ -37,6 +37,11 @@ export function getFeeForSacrament(type: 'Baptism' | 'Marriage' | 'Confirmation'
 export function canEditFeeSchedule(): boolean {
   try {
     const user = JSON.parse(localStorage.getItem('churchos_user') || '{}');
-    return user.role === 'Parish Priest' || user.role === 'Bookkeeper';
+    // `role` holds the role CODE that setSession stores (e.g. 'parish_priest'); the
+    // display label ('Parish Priest') lives in `roleLabel`. The old check compared the
+    // code field against the LABEL, so it never matched → no one could edit. Match the
+    // codes — and accept the labels defensively for any legacy session.
+    const PRIVILEGED = ['parish_priest', 'bookkeeper', 'Parish Priest', 'Bookkeeper'];
+    return PRIVILEGED.includes(user.role) || PRIVILEGED.includes(user.roleLabel);
   } catch { return false; }
 }

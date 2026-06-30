@@ -63,28 +63,37 @@ const inP = (d: string, months: string[] | null) => !months || months.includes((
 async function executeTool(supa: any, name: string, input: any) {
   const months = monthsFor(input?.period);
   if (name === 'get_financial_summary') {
-    const { data: cols } = await supa.from('collections').select('total,date');
-    const { data: jrnl } = await supa.from('journal_entries').select('lines,date');
+    const { data: cols, error: e1 } = await supa.from('collections').select('total,date');
+    const { data: jrnl, error: e2 } = await supa.from('journal_entries').select('lines,date');
+    // Never report ₱0 as a fact when a query errored — throw so the caller returns an
+    // error to the priest instead of a confidently-wrong zero.
+    if (e1 || e2) throw new Error('financial summary query failed: ' + ((e1 || e2) as any).message);
     const income = (cols || []).filter((c: any) => inP(c.date, months)).reduce((s: number, c: any) => s + (c.total || 0), 0);
     let expenses = 0;
     for (const j of (jrnl || []).filter((j: any) => inP(j.date, months))) for (const l of j.lines || []) if (l.debit > 0 && String(l.accountCode).startsWith('5')) expenses += l.debit;
     return { period: input?.period || 'all', currency: 'PHP', income, expenses, net: income - expenses };
   }
   if (name === 'get_expense_breakdown') {
-    const { data: jrnl } = await supa.from('journal_entries').select('lines,date');
+    const { data: jrnl, error: ej } = await supa.from('journal_entries').select('lines,date');
+    if (ej) throw new Error('expense breakdown query failed: ' + (ej as any).message);
     const exp: Record<string, number> = {};
     for (const j of (jrnl || []).filter((j: any) => inP(j.date, months))) for (const l of j.lines || []) if (l.debit > 0 && String(l.accountCode).startsWith('5')) exp[l.accountName] = (exp[l.accountName] || 0) + l.debit;
     return { period: input?.period || 'all', expenses: Object.entries(exp).sort((a, b) => b[1] - a[1]).map(([name, amount]) => ({ name, amount })) };
   }
   if (name === 'get_collections') {
-    const { data: cols } = await supa.from('collections').select('total,mass_time,date');
+    const { data: cols, error: ec } = await supa.from('collections').select('total,mass_time,date');
+    if (ec) throw new Error('collections query failed: ' + (ec as any).message);
     const rows = (cols || []).filter((c: any) => inP(c.date, months));
     const byMassTime: Record<string, number> = {};
     for (const c of rows) byMassTime[c.mass_time] = (byMassTime[c.mass_time] || 0) + (c.total || 0);
     return { period: input?.period || 'all', total: rows.reduce((s: number, c: any) => s + (c.total || 0), 0), byMassTime };
   }
   if (name === 'get_sacrament_counts') {
-    const count = async (t: string) => (await supa.from(t).select('id', { count: 'exact', head: true })).count || 0;
+    const count = async (t: string) => {
+      const { count: ct, error } = await supa.from(t).select('id', { count: 'exact', head: true });
+      if (error) throw new Error('count(' + t + ') failed: ' + (error as any).message);
+      return ct || 0;
+    };
     return { baptisms: await count('baptism_records'), marriages: await count('marriage_records'), confirmations: await count('confirmation_records'), deaths: await count('death_records') };
   }
   if (name === 'navigate') return { ok: true, page: input?.page };

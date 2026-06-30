@@ -77,6 +77,16 @@ describe("canEditFeeSchedule", () => {
     localStorage.setItem("churchos_user", JSON.stringify({ role: "Bookkeeper" }))
     expect(canEditFeeSchedule()).toBe(true)
   })
+  it("is true for the real role CODES setSession stores (parish_priest / bookkeeper) — the actual bug", () => {
+    localStorage.setItem("churchos_user", JSON.stringify({ role: "parish_priest", roleLabel: "Parish Priest" }))
+    expect(canEditFeeSchedule()).toBe(true)
+    localStorage.setItem("churchos_user", JSON.stringify({ role: "bookkeeper", roleLabel: "Bookkeeper" }))
+    expect(canEditFeeSchedule()).toBe(true)
+  })
+  it("is false for a non-privileged code (secretary)", () => {
+    localStorage.setItem("churchos_user", JSON.stringify({ role: "secretary", roleLabel: "Secretary" }))
+    expect(canEditFeeSchedule()).toBe(false)
+  })
   it("is false for other roles and when no user is set", () => {
     localStorage.setItem("churchos_user", JSON.stringify({ role: "Volunteer" }))
     expect(canEditFeeSchedule()).toBe(false)

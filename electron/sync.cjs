@@ -20,6 +20,21 @@ function __setStore(s) { store = s; }
 
 let lastResult = { state: 'idle' };
 
+// Bound every cloud call: a bare fetch has no timeout, so a stalled connection pins
+// sync in 'syncing' forever. AbortController aborts after SYNC_TIMEOUT_MS → fetch
+// rejects (AbortError) → the surrounding try/catch surfaces an error instead of hanging.
+const SYNC_TIMEOUT_MS = 20000;
+async function fetchT(url, opts = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), SYNC_TIMEOUT_MS);
+  try {
+    const res = fetch(url, { ...opts, signal: ctl.signal });
+    return await res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getConfig() { try { return JSON.parse(store.metaGet(SYNC_KEY) || '{}'); } catch { return {}; } }
 function setConfig(patch) { const c = { ...getConfig(), ...patch }; store.metaSet(SYNC_KEY, JSON.stringify(c)); return getStatus(); }
 function getStatus() {
@@ -85,7 +100,7 @@ function buildPackets(parishId, get) {
 
 // ── network ──
 async function authToken(c) {
-  const res = await fetch(`${c.url}/auth/v1/token?grant_type=password`, {
+  const res = await fetchT(`${c.url}/auth/v1/token?grant_type=password`, {
     method: 'POST', headers: { apikey: c.anonKey, 'content-type': 'application/json' },
     body: JSON.stringify({ email: c.email, password: c.password }),
   });
@@ -95,7 +110,7 @@ async function authToken(c) {
   return j.access_token;
 }
 async function resolveParishId(c, token) {
-  const res = await fetch(`${c.url}/rest/v1/profiles?select=parish_id`, { headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token } });
+  const res = await fetchT(`${c.url}/rest/v1/profiles?select=parish_id`, { headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token } });
   if (!res.ok) throw new Error('could not read your cloud profile (' + res.status + ')');
   const rows = await res.json();
   const pid = rows && rows[0] && rows[0].parish_id;
@@ -104,7 +119,7 @@ async function resolveParishId(c, token) {
 }
 async function pushPackets(c, token, packets) {
   if (!packets.length) return 0;
-  const res = await fetch(`${c.url}/rest/v1/diocese_reports?on_conflict=parish_id,period`, {
+  const res = await fetchT(`${c.url}/rest/v1/diocese_reports?on_conflict=parish_id,period`, {
     method: 'POST',
     headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token, 'content-type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify(packets),
@@ -123,7 +138,7 @@ async function requestsList() {
   try {
     const token = await authToken(c);
     const cols = 'id,type,status,requester_name,requester_email,requester_phone,requested_date,details,amount,payment_status,created_at';
-    const res = await fetch(`${c.url}/rest/v1/service_requests?select=${cols}&order=created_at.desc`, {
+    const res = await fetchT(`${c.url}/rest/v1/service_requests?select=${cols}&order=created_at.desc`, {
       headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token },
     });
     if (!res.ok) throw new Error('list failed (' + res.status + ')');
@@ -145,7 +160,7 @@ async function requestUpdate(id, patch) {
   if (!Object.keys(body).length) return { ok: false, error: 'nothing to update' };
   try {
     const token = await authToken(c);
-    const res = await fetch(`${c.url}/rest/v1/service_requests?id=eq.${encodeURIComponent(id)}`, {
+    const res = await fetchT(`${c.url}/rest/v1/service_requests?id=eq.${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { apikey: c.anonKey, Authorization: 'Bearer ' + token, 'content-type': 'application/json', Prefer: 'return=minimal' },
       body: JSON.stringify(body),
@@ -169,10 +184,10 @@ async function publishSlots(opts) {
     const token = await authToken(c);
     const parishId = await resolveParishId(c, token);
     const H = { apikey: c.anonKey, Authorization: 'Bearer ' + token };
-    await fetch(`${c.url}/rest/v1/rpc/release_expired_holds`, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{}' });
+    await fetchT(`${c.url}/rest/v1/rpc/release_expired_holds`, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{}' });
 
     const computed = scheduling.openSlots(opts);
-    const exRes = await fetch(`${c.url}/rest/v1/availability_slots?select=id,type,slot_at&status=eq.open`, { headers: H });
+    const exRes = await fetchT(`${c.url}/rest/v1/availability_slots?select=id,type,slot_at&status=eq.open`, { headers: H });
     const existing = exRes.ok ? await exRes.json() : [];
     const existingKeys = new Set(existing.map((e) => slotKey(e.type, e.slot_at)));
     const computedKeys = new Set(computed.map((s) => slotKey(s.type, s.slot_at)));
@@ -180,7 +195,7 @@ async function publishSlots(opts) {
     const toInsert = computed.filter((s) => !existingKeys.has(slotKey(s.type, s.slot_at)))
       .map((s) => ({ parish_id: parishId, type: s.type, slot_at: s.slot_at, duration_min: s.duration_min }));
     if (toInsert.length) {
-      const r = await fetch(`${c.url}/rest/v1/availability_slots?on_conflict=parish_id,type,slot_at`, {
+      const r = await fetchT(`${c.url}/rest/v1/availability_slots?on_conflict=parish_id,type,slot_at`, {
         method: 'POST', headers: { ...H, 'content-type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' },
         body: JSON.stringify(toInsert),
       });
@@ -189,7 +204,7 @@ async function publishSlots(opts) {
     // remove ONLY open slots we no longer generate (rule changed / booked locally)
     const toDelete = existing.filter((e) => !computedKeys.has(slotKey(e.type, e.slot_at))).map((e) => e.id);
     if (toDelete.length) {
-      await fetch(`${c.url}/rest/v1/availability_slots?status=eq.open&id=in.(${toDelete.join(',')})`, { method: 'DELETE', headers: H });
+      await fetchT(`${c.url}/rest/v1/availability_slots?status=eq.open&id=in.(${toDelete.join(',')})`, { method: 'DELETE', headers: H });
     }
     return { ok: true, published: toInsert.length, removed: toDelete.length };
   } catch (e) {
