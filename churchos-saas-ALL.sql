@@ -776,7 +776,10 @@ drop policy if exists req_public_submit on public.service_requests;
 -- anon-ONLY: an authenticated staffer inserts via req_parish_all (their own parish),
 -- so this loose public policy can't be used to plant rows in ANOTHER parish (#5).
 create policy req_public_submit on public.service_requests for insert to anon
-  with check (status = 'submitted' and payment_status = 'unpaid' and amount is null and payment_ref is null);
+  -- amount is SERVER-FORCED by normalize_request() (the fee/donation), so it is NOT
+  -- checked here. (Was `and amount is null`, which the BEFORE trigger contradicted →
+  -- rejected 100% of anon intake. See FIX BUG-1g below.)
+  with check (status = 'submitted' and payment_status = 'unpaid' and payment_ref is null);
 
 -- (2) Parish staff read + manage their own parish's requests (the inbox).
 drop policy if exists req_parish_all on public.service_requests;

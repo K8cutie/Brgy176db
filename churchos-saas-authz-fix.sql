@@ -315,6 +315,20 @@ begin
 end $$;
 
 -- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-1g — align the public-intake RLS with BUG-1e's trigger. normalize_request
+-- now SERVER-FORCES new.amount (the fee/donation) for untrusted writes, but the
+-- req_public_submit policy still required `amount is null` in its WITH CHECK. BEFORE
+-- triggers run first, so the post-trigger amount is non-null → the policy rejected
+-- 100% of anon submissions (mass intentions, certificates, donations). The trigger is
+-- the authoritative amount-forcer, so the policy must NOT constrain amount. Proven via
+-- pglite: old policy → RLS reject, fixed policy → accept. (Re-created here so the
+-- runs-last fixes file is authoritative; portal.sql + ALL.sql are fixed at source too.)
+-- ════════════════════════════════════════════════════════════════════════
+drop policy if exists req_public_submit on public.service_requests;
+create policy req_public_submit on public.service_requests for insert to anon
+  with check (status = 'submitted' and payment_status = 'unpaid' and payment_ref is null);
+
+-- ════════════════════════════════════════════════════════════════════════
 -- FIX BUG-1f — reserve_slot is the sanctioned booking path; it sets the request
 -- fields itself, so it must BYPASS normalize_request (whose intake_enabled check
 -- would otherwise wrongly block a slot booking on a parish that publishes slots
