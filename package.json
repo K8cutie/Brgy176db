@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:cloud": "cross-env VITE_CHURCHOS_MODE=cloud VITE_SUPABASE_URL=http://localhost VITE_SUPABASE_ANON_KEY=anon vitest run src/lib/cloudStore.test.ts",
     "preview": "vite preview",
     "electron:start": "electron .",
     "electron:dev": "concurrently -k \"cross-env BROWSER=none vite\" \"wait-on tcp:127.0.0.1:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",

@@ -62,28 +62,48 @@ async function sb(): Promise<SupabaseLike> {
 const cache: Record<string, Item[]> = {};
 let parishId: string | null = null;
 let hydrated = false;
+// hydrationOk is true ONLY when EVERY read succeeded — i.e. the cache is a FAITHFUL
+// copy of the parish's data. A failed read (RLS/JWT/network blip) leaves it FALSE,
+// which fail-closes every write-through below, so a load failure can never be mistaken
+// for an empty parish and delete real rows. (THE data-loss bug: `error` was ignored on
+// the reads, the cache went empty, and the first mount write-through reconciled [] →
+// a full DELETE of the parish's records, with no user action.)
+let hydrationOk = false;
 
 /** Load this parish's data from Supabase into the cache. Call once before render. */
 export async function hydrateCloudStore(): Promise<void> {
   if (!isCloud()) return;
+  let ok = true;
   try {
     const supa = await sb();
     const { data: userData } = await supa.auth.getUser();
     const uid = userData.user?.id;
-    if (uid) {
+    if (!uid) {
+      ok = false; // not signed in → cannot have loaded this parish's data
+    } else {
       const prof = await supa.from('profiles').select('parish_id').eq('id', uid).single();
-      parishId = (prof.data?.parish_id as string) ?? null;
+      if (prof.error || !prof.data?.parish_id) {
+        ok = false;
+      } else {
+        parishId = prof.data.parish_id as string;
+      }
     }
-    for (const key of TABLE_KEYS) {
-      const { data } = await supa.from(key).select('*');
-      cache[key] = ((data as Row[]) || []).map((row) => ({ ...(row.data as Item), id: (row.client_id as string) ?? (row.id as string) }));
+    if (ok) {
+      for (const key of TABLE_KEYS) {
+        const { data, error } = await supa.from(key).select('*');
+        if (error) { ok = false; break; } // a FAILED read must NOT look like an empty table
+        cache[key] = ((data as Row[]) || []).map((row) => ({ ...(row.data as Item), id: (row.client_id as string) ?? (row.id as string) }));
+      }
     }
   } catch {
-    // Leave the cache empty — pages fall back to their seed defaults.
+    ok = false;
   }
-  hydrated = true;
+  hydrated = true;     // hydration was ATTEMPTED → the app may render
+  hydrationOk = ok;    // …but writes only persist if it actually SUCCEEDED (fail-closed)
+  if (!ok && onWriteError) onWriteError(); // surface the degraded / read-only state to the UI
 }
 export function isCloudHydrated(): boolean { return hydrated; }
+export function isCloudHydrationOk(): boolean { return hydrationOk; }
 
 export function cloudGet(fullKey: string): string | null {
   const key = tableFor(fullKey);
@@ -113,6 +133,15 @@ export function cloudKeys(): string[] { return Object.keys(cache); }
 // Write-through: upsert the array's rows by (parish_id, client_id), and delete
 // any rows that are no longer present.
 async function reconcile(key: string, arr: Item[]): Promise<void> {
+  // FAIL-CLOSED: never write through — and ABOVE ALL never DELETE — unless hydration
+  // actually succeeded and the parish is known. If the cache is not a faithful copy,
+  // reconciling it would delete real rows that merely failed to load. Refuse and surface
+  // the failure rather than destroy data. (Closes the data-loss bug: a failed hydrate
+  // could otherwise reconcile [] and wipe the parish.)
+  if (!hydrationOk || !parishId) {
+    if (onWriteError) onWriteError();
+    return;
+  }
   try {
     const supa = await sb();
     const rows = arr.map((i) => ({ parish_id: parishId, client_id: i.id, data: i, ...FLAT[key](i) }));
