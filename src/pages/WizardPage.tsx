@@ -1451,14 +1451,13 @@ export default function WizardPage() {
               </div>
 
               {/* Step Content */}
-              <AnimatePresence mode="wait" custom={direction}>
+              <AnimatePresence mode="popLayout" custom={direction}>
                 <motion.div
                   key={step}
                   custom={direction}
                   variants={slideVariants}
                   initial="enter"
                   animate="center"
-                  exit="exit"
                 >
                   {step === 0 && (
                     <Step1ParishInfo
