@@ -60,11 +60,25 @@ export default function DataTable<T extends Record<string, any>>({
     const q = searchQuery.toLowerCase();
     return data.filter((row) =>
       columns.some((col) => {
-        // A render column's JSX can't be matched as text, so search its
-        // underlying key value (or an explicit searchValue accessor). Previously
-        // render columns were skipped entirely, making name/status/date columns
-        // silently unsearchable — searches returned "0 records" for on-screen text.
-        const val = col.searchValue ? col.searchValue(row) : row[col.key];
+        // Search the text the user actually SEES. Previously render columns were
+        // skipped entirely, so name/parents/date columns (composed in render, e.g.
+        // `${firstName} ${lastName}`) returned "0 records" for on-screen text.
+        // Order: explicit searchValue → the render output when it's a string/number
+        // → the raw key value. JSX-returning renders (e.g. a status badge) fall back
+        // to row[key], which holds the value for those cases.
+        let val: unknown;
+        if (col.searchValue) {
+          val = col.searchValue(row);
+        } else if (col.render) {
+          try {
+            const out = col.render(row);
+            val = typeof out === 'string' || typeof out === 'number' ? out : row[col.key];
+          } catch {
+            val = row[col.key];
+          }
+        } else {
+          val = row[col.key];
+        }
         return val != null && String(val).toLowerCase().includes(q);
       })
     );
