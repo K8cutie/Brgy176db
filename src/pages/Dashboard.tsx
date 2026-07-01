@@ -61,6 +61,28 @@ interface Ministry {
 // --- Helpers ---
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+// Ministry schedule data may store day names in either full ("Sunday") or
+// abbreviated ("Sun") form. Normalize to the full lowercase name so event days
+// and assignment days compare reliably regardless of source format.
+const DAY_ALIASES: Record<string, string> = {
+  sun: 'sunday', sunday: 'sunday',
+  mon: 'monday', monday: 'monday',
+  tue: 'tuesday', tues: 'tuesday', tuesday: 'tuesday',
+  wed: 'wednesday', weds: 'wednesday', wednesday: 'wednesday',
+  thu: 'thursday', thur: 'thursday', thurs: 'thursday', thursday: 'thursday',
+  fri: 'friday', friday: 'friday',
+  sat: 'saturday', saturday: 'saturday',
+};
+
+function normalizeDay(dayStr: string): string {
+  const key = dayStr.trim().toLowerCase();
+  return DAY_ALIASES[key] ?? key;
+}
+
+function sameDay(a: string, b: string): boolean {
+  return normalizeDay(a) === normalizeDay(b);
+}
+
 function getEventDayName(dateStr: string): string {
   const d = parseISO(dateStr);
   return DAY_NAMES[getDay(d)];
@@ -77,7 +99,7 @@ function getMinistryAssignmentsForEvent(event: CalendarEvent, ministries: Minist
   const assignments: Record<string, string[]> = {};
   ministries.forEach(ministry => {
     const matched = ministry.scheduleAssignments.filter(
-      sa => sa.day === eventDay && normalizeTime(sa.massTime) === eventTime
+      sa => sameDay(sa.day, eventDay) && normalizeTime(sa.massTime) === eventTime
     );
     if (matched.length > 0) {
       assignments[ministry.name] = matched.map(m => m.memberName);
@@ -244,7 +266,7 @@ function QuickActionCard({
 
 // Ministry Schedule Box Component
 function MinistryScheduleBox({ ministry, todayDay }: { ministry: Ministry; todayDay: string }) {
-  const todayAssignments = ministry.scheduleAssignments.filter(sa => sa.day === todayDay);
+  const todayAssignments = ministry.scheduleAssignments.filter(sa => sameDay(sa.day, todayDay));
 
   return (
     <Card className="border-slate-200 hover:border-amber-300 transition-colors">

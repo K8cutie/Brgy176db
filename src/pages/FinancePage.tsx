@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   DollarSign, ChevronRight, ChevronDown, Plus, X, Upload,
@@ -30,10 +31,46 @@ type TabId = 'coa' | 'journal' | 'collections' | 'budget' | 'analytics' | 'appro
 interface ExpandedState { [key: string]: boolean }
 
 // ============================================
+// CSV export helper — builds and downloads a real .csv file client-side.
+// ============================================
+function escapeCsv(value: string | number): string {
+  const s = String(value ?? '');
+  if (/[",\n]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]): void {
+  const lines = [headers, ...rows].map((r) => r.map(escapeCsv).join(','));
+  const csv = lines.join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ============================================
 // FinancePage — Main Component
 // ============================================
+const VALID_TABS: TabId[] = ['coa', 'journal', 'collections', 'budget', 'analytics', 'approvals'];
+
 export default function FinancePage() {
+  const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabId>('coa');
+
+  // Honor an inbound ?tab=<name> (e.g. ?tab=collections) on mount / when it changes.
+  useEffect(() => {
+    const requested = searchParams.get('tab');
+    if (requested && (VALID_TABS as string[]).includes(requested)) {
+      setActiveTab(requested as TabId);
+    }
+  }, [searchParams]);
 
   // KPI Card data
   const kpiCards = [
@@ -200,6 +237,13 @@ function ChartOfAccountsTab() {
               onToggle={toggle} onSelect={setSelectedAccount}
             />
           ))}
+          {filteredAccounts.length === 0 && (
+            <div className="py-12 text-center">
+              <Search className="w-10 h-10 text-warm-gray/30 mx-auto mb-3" />
+              <p className="body-md text-warm-gray">No accounts found</p>
+              <p className="text-sm text-warm-gray/70 mt-1">No accounts match "{searchQuery}". Try a different code or name.</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -354,6 +398,22 @@ function JournalTab() {
   const [showModal, setShowModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [entries, setEntries] = usePersistedState<JournalEntry[]>(KEYS.journalEntries, journalEntries);
+  // Draft entries persist separately so an interrupted "Save as Draft" is not lost.
+  const [drafts, setDrafts] = usePersistedState<JournalEntry[]>('finance_journal_drafts', []);
+  const [viewEntry, setViewEntry] = useState<JournalEntry | null>(null);
+
+  const handleExport = () => {
+    const headers = ['Entry ID', 'Date', 'Reference', 'Description', 'Total Debits', 'Total Credits', 'Status', 'Posted By'];
+    const rows = filteredEntries.map((je) => [
+      je.id, je.date, je.reference, je.description, je.totalDr, je.totalCr, je.status, je.postedBy,
+    ]);
+    if (rows.length === 0) {
+      toast.error('No journal entries to export');
+      return;
+    }
+    downloadCsv(`journal-entries-${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
+    toast.success(`Exported ${rows.length} journal ${rows.length === 1 ? 'entry' : 'entries'}`);
+  };
 
   const filteredEntries = useMemo(() => {
     if (!searchQuery) return entries;
@@ -398,16 +458,45 @@ function JournalTab() {
           <button onClick={() => setShowModal(true)} className="cos-btn cos-btn-primary text-sm flex items-center gap-1.5">
             <Plus className="w-4 h-4" /> New Entry
           </button>
-          <button className="cos-btn cos-btn-secondary text-sm flex items-center gap-1.5">
+          <button onClick={handleExport} className="cos-btn cos-btn-secondary text-sm flex items-center gap-1.5">
             <Download className="w-4 h-4" /> Export
           </button>
         </div>
       </div>
 
+      {/* Saved Drafts */}
+      {drafts.length > 0 && (
+        <div className="space-y-2">
+          <p className="label text-warm-gray">Saved Drafts</p>
+          {drafts.map((d) => (
+            <div key={d.id} className="cos-card p-0 overflow-hidden border-l-4 border-l-warning">
+              <div className="flex flex-wrap items-center justify-between px-5 py-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="font-mono text-sm text-gold font-medium">{d.id}</span>
+                  <span className="text-sm text-warm-gray">{d.date}</span>
+                  <span className="body-sm text-charcoal dark:text-dm-text font-medium">{d.reference || d.description || 'Untitled draft'}</span>
+                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">Draft</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm text-charcoal dark:text-dm-text">{formatPeso(d.totalDr)}</span>
+                  <button
+                    onClick={() => setDrafts((prev) => prev.filter((x) => x.id !== d.id))}
+                    className="p-1 rounded text-warm-gray hover:text-error transition-colors"
+                    aria-label="Discard draft"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Journal Entries List */}
       <div className="space-y-3">
         {tableData.map((row, i) => (
-          <JournalEntryCard key={row.id} entry={row.raw} index={i} />
+          <JournalEntryCard key={row.id} entry={row.raw} index={i} onView={() => setViewEntry(row.raw)} />
         ))}
         {tableData.length === 0 && (
           <EmptyState
@@ -428,14 +517,109 @@ function JournalTab() {
           <TransactionModal
             onClose={() => setShowModal(false)}
             onPost={(entry) => setEntries((prev) => [entry, ...prev])}
+            onSaveDraft={(draft) => setDrafts((prev) => [draft, ...prev])}
           />
+        )}
+      </AnimatePresence>
+
+      {/* View Entry Detail Modal */}
+      <AnimatePresence>
+        {viewEntry && (
+          <JournalViewModal entry={viewEntry} onClose={() => setViewEntry(null)} />
         )}
       </AnimatePresence>
     </div>
   );
 }
 
-function JournalEntryCard({ entry, index }: { entry: JournalEntry; index: number }) {
+// Read-only detail view of a posted journal entry.
+function JournalViewModal({ entry, onClose }: { entry: JournalEntry; onClose: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+        className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full overflow-hidden flex flex-col"
+        style={{ maxWidth: 700, maxHeight: '90vh' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border shrink-0">
+          <div>
+            <span className="font-mono text-sm text-gold font-medium">{entry.id}</span>
+            <h2 className="heading-md text-charcoal dark:text-dm-text">{entry.reference}</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:text-dm-text-muted dark:hover:text-dm-text">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="px-6 py-5 overflow-y-auto space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="label text-warm-gray mb-1">Date</p>
+              <p className="body-md text-charcoal dark:text-dm-text">{entry.date}</p>
+            </div>
+            <div>
+              <p className="label text-warm-gray mb-1">Status</p>
+              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">{entry.status}</span>
+            </div>
+            <div>
+              <p className="label text-warm-gray mb-1">Posted By</p>
+              <p className="body-md text-charcoal dark:text-dm-text">{entry.postedBy}</p>
+            </div>
+            <div>
+              <p className="label text-warm-gray mb-1">Reference</p>
+              <p className="body-md text-charcoal dark:text-dm-text">{entry.reference}</p>
+            </div>
+          </div>
+          {entry.description && (
+            <div>
+              <p className="label text-warm-gray mb-1">Description</p>
+              <p className="body-md text-charcoal dark:text-dm-text">{entry.description}</p>
+            </div>
+          )}
+          <div className="border border-parchment rounded-lg overflow-hidden dark:border-dm-border">
+            <table className="w-full text-sm">
+              <thead className="bg-cream-dark dark:bg-dm-surface-raised">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium text-warm-gray text-xs">Account</th>
+                  <th className="text-right px-3 py-2 font-medium text-warm-gray text-xs">Debit</th>
+                  <th className="text-right px-3 py-2 font-medium text-warm-gray text-xs">Credit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entry.lines.map((line, li) => (
+                  <tr key={li} className="border-b border-parchment/40 last:border-0">
+                    <td className="px-3 py-2 text-charcoal dark:text-dm-text">{line.accountCode} — {line.accountName}</td>
+                    <td className="px-3 py-2 text-right font-mono">{line.debit > 0 ? formatPeso(line.debit) : ''}</td>
+                    <td className="px-3 py-2 text-right font-mono">{line.credit > 0 ? formatPeso(line.credit) : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t border-parchment bg-cream-dark/40 dark:bg-dm-surface-raised/40">
+                  <td className="px-3 py-2 font-medium text-charcoal dark:text-dm-text">Total</td>
+                  <td className="px-3 py-2 text-right font-mono font-medium">{formatPeso(entry.totalDr)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-medium">{formatPeso(entry.totalCr)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border shrink-0">
+          <button onClick={onClose} className="cos-btn cos-btn-secondary text-sm">Close</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function JournalEntryCard({ entry, index, onView }: { entry: JournalEntry; index: number; onView: () => void }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -506,11 +690,11 @@ function JournalEntryCard({ entry, index }: { entry: JournalEntry; index: number
                 </tfoot>
               </table>
               <div className="flex items-center gap-2 mt-3">
-                <button className="text-xs px-3 py-1.5 rounded-lg bg-cream-dark text-warm-gray hover:bg-parchment transition-all flex items-center gap-1">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onView(); }}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-cream-dark text-warm-gray hover:bg-parchment transition-all flex items-center gap-1"
+                >
                   <Eye className="w-3 h-3" /> View
-                </button>
-                <button className="text-xs px-3 py-1.5 rounded-lg bg-cream-dark text-warm-gray hover:bg-parchment transition-all flex items-center gap-1">
-                  <Edit3 className="w-3 h-3" /> Edit
                 </button>
               </div>
             </div>
@@ -522,16 +706,26 @@ function JournalEntryCard({ entry, index }: { entry: JournalEntry; index: number
 }
 
 // Transaction Entry Modal (800px wide)
-function TransactionModal({ onClose, onPost }: { onClose: () => void; onPost: (entry: JournalEntry) => void }) {
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+function TransactionModal({ onClose, onPost, onSaveDraft }: { onClose: () => void; onPost: (entry: JournalEntry) => void; onSaveDraft: (draft: JournalEntry) => void }) {
+  const today = new Date().toISOString().split('T')[0];
+  const [date, setDate] = useState(today);
   const [reference, setReference] = useState('');
   const [description, setDescription] = useState('');
+  const [errors, setErrors] = useState<{ date?: string; description?: string }>({});
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [lines, setLines] = useState<JournalLine[]>([
     { accountCode: '', accountName: '', debit: 0, credit: 0 },
     { accountCode: '', accountName: '', debit: 0, credit: 0 },
   ]);
 
   const leafAccounts = useMemo(() => getLeafAccounts(), []);
+
+  const addFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const names = Array.from(files).map((f) => f.name);
+    setAttachments((prev) => [...prev, ...names]);
+  };
 
   const totalDr = lines.reduce((s, l) => s + (l.debit || 0), 0);
   const totalCr = lines.reduce((s, l) => s + (l.credit || 0), 0);
@@ -554,7 +748,26 @@ function TransactionModal({ onClose, onPost }: { onClose: () => void; onPost: (e
     }));
   };
 
+  // Validate the header fields (date + description). Returns true if valid.
+  const validate = (): boolean => {
+    const next: { date?: string; description?: string } = {};
+    if (!date) {
+      next.date = 'Date is required.';
+    } else if (date > today) {
+      next.date = 'Date cannot be in the future.';
+    }
+    if (!description.trim()) {
+      next.description = 'Description is required.';
+    }
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
   const handlePost = () => {
+    if (!validate()) {
+      toast.error('Please fix the highlighted fields');
+      return;
+    }
     if (!isBalanced) {
       toast.error('Cannot post unbalanced entry');
       return;
@@ -576,6 +789,18 @@ function TransactionModal({ onClose, onPost }: { onClose: () => void; onPost: (e
   };
 
   const handleSaveDraft = () => {
+    const draft: JournalEntry = {
+      id: `DRAFT-${Date.now()}`,
+      date,
+      reference: reference.trim(),
+      description: description.trim(),
+      lines: lines.filter((l) => l.accountCode),
+      status: 'Draft',
+      postedBy: getCurrentUserName(),
+      totalDr,
+      totalCr,
+    };
+    onSaveDraft(draft);
     toast.success('Draft saved');
     onClose();
   };
@@ -609,8 +834,10 @@ function TransactionModal({ onClose, onPost }: { onClose: () => void; onPost: (e
           <div className="grid grid-cols-2 gap-4 mb-5">
             <div>
               <label className="label text-warm-gray mb-1 block">Date</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-                className="h-10 w-full px-3 rounded-lg border border-parchment bg-cream text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text" />
+              <input type="date" value={date} max={today}
+                onChange={(e) => { setDate(e.target.value); if (errors.date) setErrors((p) => ({ ...p, date: undefined })); }}
+                className={'h-10 w-full px-3 rounded-lg border bg-cream text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:text-dm-text ' + (errors.date ? 'border-error' : 'border-parchment dark:border-dm-border')} />
+              {errors.date && <p className="text-xs text-error mt-1">{errors.date}</p>}
             </div>
             <div>
               <label className="label text-warm-gray mb-1 block">Reference #</label>
@@ -620,15 +847,46 @@ function TransactionModal({ onClose, onPost }: { onClose: () => void; onPost: (e
           </div>
           <div className="mb-5">
             <label className="label text-warm-gray mb-1 block">Description</label>
-            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Transaction description..."
-              className="h-10 w-full px-3 rounded-lg border border-parchment bg-cream text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text" />
+            <input type="text" value={description}
+              onChange={(e) => { setDescription(e.target.value); if (errors.description) setErrors((p) => ({ ...p, description: undefined })); }}
+              placeholder="Transaction description..."
+              className={'h-10 w-full px-3 rounded-lg border bg-cream text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:text-dm-text ' + (errors.description ? 'border-error' : 'border-parchment dark:border-dm-border')} />
+            {errors.description && <p className="text-xs text-error mt-1">{errors.description}</p>}
           </div>
 
           {/* Document upload area */}
-          <div className="mb-5 p-4 border-2 border-dashed border-parchment rounded-lg text-center hover:border-gold/50 transition-colors cursor-pointer">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+          />
+          <div
+            className="mb-3 p-4 border-2 border-dashed border-parchment rounded-lg text-center hover:border-gold/50 transition-colors cursor-pointer"
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
+          >
             <Upload className="w-6 h-6 text-warm-gray mx-auto mb-2" />
             <p className="text-sm text-warm-gray">Drop supporting documents here or click to browse</p>
           </div>
+          {attachments.length > 0 && (
+            <div className="mb-5 flex flex-wrap gap-2">
+              {attachments.map((name, ai) => (
+                <span key={ai} className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-cream-dark text-warm-gray dark:bg-dm-surface-raised dark:text-dm-text-muted">
+                  <FileText className="w-3 h-3" /> {name}
+                  <button
+                    onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== ai))}
+                    className="ml-1 hover:text-error"
+                    aria-label={`Remove ${name}`}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Accounting Lines */}
           <div className="mb-4">
@@ -786,6 +1044,19 @@ function CollectionsTab() {
     setShowPostDialog(false);
   };
 
+  const handleExportCollections = () => {
+    if (collections.length === 0) {
+      toast.error('No collections to export');
+      return;
+    }
+    const headers = ['ID', 'Date', 'Mass Time', 'Cash', 'Checks', 'Digital', 'Total', 'Posted By', 'Status'];
+    const rows = collections.map((c) => [
+      c.id, c.date, c.massTime, c.cash, c.checks, c.digital, c.total, c.postedBy, c.status,
+    ]);
+    downloadCsv(`collections-${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
+    toast.success(`Exported ${rows.length} collection ${rows.length === 1 ? 'record' : 'records'}`);
+  };
+
   // Group collections by month for display
   const groupedCollections = useMemo(() => {
     const groups: { month: string; year: string; items: Collection[] }[] = [];
@@ -887,7 +1158,7 @@ function CollectionsTab() {
       <div className="cos-card p-0 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-parchment/40">
           <h3 className="heading-md text-charcoal dark:text-dm-text">Collections History</h3>
-          <button className="cos-btn cos-btn-secondary text-sm flex items-center gap-1.5">
+          <button onClick={handleExportCollections} className="cos-btn cos-btn-secondary text-sm flex items-center gap-1.5">
             <Download className="w-4 h-4" /> Export to Excel
           </button>
         </div>
@@ -963,10 +1234,13 @@ function CollectionsTab() {
 // ============================================
 // Tab 4 — Budget
 // ============================================
+// Page-local extension of BudgetItem that also carries the user's notes.
+type BudgetItemExt = BudgetItem & { notes?: string };
+
 function BudgetTab() {
   const [showEditModal, setShowEditModal] = useState(false);
-  const [editAccount, setEditAccount] = useState<BudgetItem | null>(null);
-  const [items, setItems] = usePersistedState<BudgetItem[]>(KEYS.budgetItems, budgetData);
+  const [editAccount, setEditAccount] = useState<BudgetItemExt | null>(null);
+  const [items, setItems] = usePersistedState<BudgetItemExt[]>(KEYS.budgetItems, budgetData);
 
   const incomeItems = items.filter((b) => b.category === 'Income');
   const expenseItems = items.filter((b) => b.category === 'Expense');
@@ -975,14 +1249,32 @@ function BudgetTab() {
   const totalActual = items.reduce((s, b) => s + b.actualYTD, 0);
   const totalVariance = totalBudget - totalActual;
 
-  const handleSaveBudget = (accountCode: string, budgetYTD: number) => {
+  const handleSaveBudget = (accountCode: string, budgetYTD: number, notes?: string) => {
     setItems((prev) =>
       prev.map((b) =>
         b.accountCode === accountCode
-          ? { ...b, budgetYTD, variance: budgetYTD - b.actualYTD, variancePercent: budgetYTD > 0 ? ((budgetYTD - b.actualYTD) / budgetYTD) * 100 : 0 }
+          ? { ...b, budgetYTD, variance: budgetYTD - b.actualYTD, variancePercent: budgetYTD > 0 ? ((budgetYTD - b.actualYTD) / budgetYTD) * 100 : 0, ...(notes !== undefined ? { notes } : {}) }
           : b,
       ),
     );
+  };
+
+  // Create a brand-new budget line for an account that has none yet.
+  const handleCreateBudget = (accountCode: string, accountName: string, budgetYTD: number, notes?: string) => {
+    const leaf = getLeafAccounts().find((a) => a.code === accountCode);
+    const category: BudgetItem['category'] = leaf?.type === 'INCOME' ? 'Income' : 'Expense';
+    const newItem: BudgetItemExt = {
+      accountCode,
+      accountName,
+      category,
+      budgetYTD,
+      actualYTD: 0,
+      variance: budgetYTD,
+      variancePercent: budgetYTD > 0 ? 100 : 0,
+      status: 'On Track',
+      ...(notes ? { notes } : {}),
+    };
+    setItems((prev) => [...prev, newItem]);
   };
 
   return (
@@ -1062,7 +1354,13 @@ function BudgetTab() {
       {/* Edit Budget Modal */}
       <AnimatePresence>
         {showEditModal && (
-          <BudgetEditModal account={editAccount} onSave={handleSaveBudget} onClose={() => { setShowEditModal(false); setEditAccount(null); }} />
+          <BudgetEditModal
+            account={editAccount}
+            existingCodes={items.map((b) => b.accountCode)}
+            onSave={handleSaveBudget}
+            onCreate={handleCreateBudget}
+            onClose={() => { setShowEditModal(false); setEditAccount(null); }}
+          />
         )}
       </AnimatePresence>
     </div>
@@ -1117,17 +1415,45 @@ function BudgetRow({ item, index, onEdit }: { item: BudgetItem; index: number; o
   );
 }
 
-function BudgetEditModal({ account, onClose, onSave }: { account: BudgetItem | null; onClose: () => void; onSave: (accountCode: string, budgetYTD: number) => void }) {
+function BudgetEditModal({ account, existingCodes, onClose, onSave, onCreate }: {
+  account: BudgetItemExt | null;
+  existingCodes: string[];
+  onClose: () => void;
+  onSave: (accountCode: string, budgetYTD: number, notes?: string) => void;
+  onCreate: (accountCode: string, accountName: string, budgetYTD: number, notes?: string) => void;
+}) {
   const [budgetAmount, setBudgetAmount] = useState(account ? String(account.budgetYTD) : '');
+  const [notes, setNotes] = useState(account?.notes ?? '');
+  const [newAccountCode, setNewAccountCode] = useState('');
+  const [error, setError] = useState('');
   const leafAccounts = useMemo(() => getLeafAccounts(), []);
 
+  // In create mode, only offer accounts that don't already have a budget line.
+  const availableAccounts = useMemo(
+    () => leafAccounts.filter((a) => !existingCodes.includes(a.code)),
+    [leafAccounts, existingCodes],
+  );
+
   const handleSave = () => {
+    const amount = parseFloat(budgetAmount) || 0;
     if (account) {
-      onSave(account.accountCode, parseFloat(budgetAmount) || 0);
+      onSave(account.accountCode, amount, notes.trim() || undefined);
       toast.success('Budget updated successfully');
-    } else {
-      toast.info('Select an existing budget line to edit its amount.');
+      onClose();
+      return;
     }
+    // Create path
+    if (!newAccountCode) {
+      setError('Please select an account.');
+      return;
+    }
+    const acct = leafAccounts.find((a) => a.code === newAccountCode);
+    if (!acct) {
+      setError('Please select a valid account.');
+      return;
+    }
+    onCreate(acct.code, acct.name, amount, notes.trim() || undefined);
+    toast.success('Budget line added');
     onClose();
   };
 
@@ -1155,12 +1481,20 @@ function BudgetEditModal({ account, onClose, onSave }: { account: BudgetItem | n
           {!account && (
             <div>
               <label className="label text-warm-gray mb-1 block">Account</label>
-              <select className="h-10 w-full px-3 rounded-lg border border-parchment bg-cream text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text">
+              <select
+                value={newAccountCode}
+                onChange={(e) => { setNewAccountCode(e.target.value); if (error) setError(''); }}
+                className={'h-10 w-full px-3 rounded-lg border bg-cream text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:text-dm-text ' + (error ? 'border-error' : 'border-parchment dark:border-dm-border')}
+              >
                 <option value="">Select account...</option>
-                {leafAccounts.map((a) => (
+                {availableAccounts.map((a) => (
                   <option key={a.code} value={a.code}>{a.code} — {a.name}</option>
                 ))}
               </select>
+              {error && <p className="text-xs text-error mt-1">{error}</p>}
+              {availableAccounts.length === 0 && (
+                <p className="text-xs text-warm-gray mt-1">Every account already has a budget line.</p>
+              )}
             </div>
           )}
           {account && (
@@ -1180,7 +1514,8 @@ function BudgetEditModal({ account, onClose, onSave }: { account: BudgetItem | n
           </div>
           <div>
             <label className="label text-warm-gray mb-1 block">Notes</label>
-            <textarea rows={3} placeholder="Optional notes..."
+            <textarea rows={3} placeholder="Optional notes..." value={notes}
+              onChange={(e) => setNotes(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-parchment bg-cream text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold resize-none dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text" />
           </div>
         </div>
@@ -1196,9 +1531,21 @@ function BudgetEditModal({ account, onClose, onSave }: { account: BudgetItem | n
 // ============================================
 // Tab 5 — Approvals
 // ============================================
+// A persisted approval decision: the resolved status plus an optional comment.
+interface ApprovalDecision { status: 'Approved' | 'Rejected'; comment?: string; }
+type ApprovalDecisions = Record<string, ApprovalDecision>;
+
 function ApprovalsTab() {
   const [filter, setFilter] = useState<'All' | 'Council Review' | 'Council Consent' | 'Bishop Approval'>('All');
   const [selectedApproval, setSelectedApproval] = useState<ApprovalItem | null>(null);
+  // Persist approve/reject decisions so they survive filter changes, tab switches, and reloads.
+  const [decisions, setDecisions] = usePersistedState<ApprovalDecisions>('finance_approval_decisions', {});
+
+  const recordDecision = (id: string, status: 'Approved' | 'Rejected', comment?: string) => {
+    setDecisions((prev) => ({ ...prev, [id]: { status, comment: comment?.trim() || undefined } }));
+  };
+
+  const statusOf = (item: ApprovalItem): ApprovalItem['status'] => decisions[item.id]?.status ?? item.status;
 
   const filteredItems = useMemo(() => {
     if (filter === 'All') return approvalItems;
@@ -1230,7 +1577,13 @@ function ApprovalsTab() {
       {/* Approval Cards */}
       <div className="space-y-4">
         {filteredItems.map((item) => (
-          <ApprovalCard key={item.id} item={item} onView={() => setSelectedApproval(item)} />
+          <ApprovalCard
+            key={item.id}
+            item={item}
+            status={statusOf(item)}
+            onView={() => setSelectedApproval(item)}
+            onDecision={(status) => recordDecision(item.id, status)}
+          />
         ))}
         {filteredItems.length === 0 && (
           <div className="cos-card p-12 text-center">
@@ -1243,28 +1596,37 @@ function ApprovalsTab() {
       {/* Approval Detail Modal */}
       <AnimatePresence>
         {selectedApproval && (
-          <ApprovalDetailModal item={selectedApproval} onClose={() => setSelectedApproval(null)} />
+          <ApprovalDetailModal
+            item={selectedApproval}
+            status={statusOf(selectedApproval)}
+            existingComment={decisions[selectedApproval.id]?.comment ?? ''}
+            onDecision={(status, comment) => recordDecision(selectedApproval.id, status, comment)}
+            onClose={() => setSelectedApproval(null)}
+          />
         )}
       </AnimatePresence>
     </div>
   );
 }
 
-function ApprovalCard({ item, onView }: { item: ApprovalItem; onView: () => void }) {
+function ApprovalCard({ item, status, onView, onDecision }: {
+  item: ApprovalItem;
+  status: ApprovalItem['status'];
+  onView: () => void;
+  onDecision: (status: 'Approved' | 'Rejected') => void;
+}) {
   const badgeColor =
     item.category === 'Council Review' ? 'bg-warning/15 text-[#9A7B3D]' :
     item.category === 'Council Consent' ? 'bg-orange-100 text-orange-700' :
     'bg-purple-100 text-purple-700';
 
-  const [status, setStatus] = useState(item.status);
-
   const handleApprove = () => {
-    setStatus('Approved');
+    onDecision('Approved');
     toast.success(`${item.title} approved`);
   };
 
   const handleReject = () => {
-    setStatus('Rejected');
+    onDecision('Rejected');
     toast.error(`${item.title} rejected`);
   };
 
@@ -1337,11 +1699,19 @@ function ApprovalCard({ item, onView }: { item: ApprovalItem; onView: () => void
   );
 }
 
-function ApprovalDetailModal({ item, onClose }: { item: ApprovalItem; onClose: () => void }) {
+function ApprovalDetailModal({ item, status, existingComment, onDecision, onClose }: {
+  item: ApprovalItem;
+  status: ApprovalItem['status'];
+  existingComment: string;
+  onDecision: (status: 'Approved' | 'Rejected', comment?: string) => void;
+  onClose: () => void;
+}) {
   const badgeColor =
     item.category === 'Council Review' ? 'bg-warning/15 text-[#9A7B3D]' :
     item.category === 'Council Consent' ? 'bg-orange-100 text-orange-700' :
     'bg-purple-100 text-purple-700';
+
+  const [comment, setComment] = useState(existingComment);
 
   return (
     <motion.div
@@ -1360,7 +1730,16 @@ function ApprovalDetailModal({ item, onClose }: { item: ApprovalItem; onClose: (
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
           <div>
-            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${badgeColor}`}>{item.category.toUpperCase()}</span>
+            <div className="flex items-center gap-2">
+              <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${badgeColor}`}>{item.category.toUpperCase()}</span>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                status === 'Approved' ? 'bg-success/10 text-success' :
+                status === 'Rejected' ? 'bg-error/10 text-error' :
+                'bg-warning/10 text-warning'
+              }`}>
+                {status}
+              </span>
+            </div>
             <h2 className="heading-md text-charcoal dark:text-dm-text mt-1">{item.title}</h2>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:text-dm-text-muted dark:hover:text-dm-text">
@@ -1438,7 +1817,8 @@ function ApprovalDetailModal({ item, onClose }: { item: ApprovalItem; onClose: (
           {/* Comment field */}
           <div>
             <label className="label text-warm-gray mb-1 block">Add Comment</label>
-            <textarea rows={2} placeholder="Enter your comment..."
+            <textarea rows={2} placeholder="Enter your comment..." value={comment}
+              onChange={(e) => setComment(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-parchment bg-cream text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold resize-none dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text" />
           </div>
         </div>
@@ -1446,7 +1826,16 @@ function ApprovalDetailModal({ item, onClose }: { item: ApprovalItem; onClose: (
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border">
           <button onClick={onClose} className="cos-btn cos-btn-secondary text-sm">Close</button>
-          <button onClick={() => { toast.success('Approved'); onClose(); }} className="cos-btn bg-success text-white hover:bg-forest-green text-sm flex items-center gap-1">
+          <button
+            onClick={() => { onDecision('Rejected', comment); toast.error(`${item.title} rejected`); onClose(); }}
+            className="cos-btn bg-error text-white hover:bg-[#991B1B] text-sm flex items-center gap-1"
+          >
+            <X className="w-4 h-4" /> Reject
+          </button>
+          <button
+            onClick={() => { onDecision('Approved', comment); toast.success(`${item.title} approved`); onClose(); }}
+            className="cos-btn bg-success text-white hover:bg-forest-green text-sm flex items-center gap-1"
+          >
             <Check className="w-4 h-4" /> Approve
           </button>
         </div>

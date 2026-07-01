@@ -60,6 +60,26 @@ const FILE_TYPE_LABELS: Record<ImportFileType, string> = {
   json: 'JSON',
 };
 
+// ── Local validation wrapper ──
+// The shared validateImportRow treats any target field whose key contains
+// "Number" as numeric (parseFloat). registryNumber values are alphanumeric
+// (e.g. "B-2015-0042"), so parseFloat → NaN → a bogus "Invalid number" error.
+// Registry numbers are free-form identifiers, not numeric — strip that
+// false-positive here without touching the shared engine.
+function validateRow(
+  row: Record<string, string>,
+  mappings: ImportMapping[]
+): { errors: ImportValidationError[]; warnings: ImportValidationWarning[] } {
+  const { errors, warnings } = validateImportRow(row, mappings);
+  const filteredErrors = errors.filter(e => {
+    if (e.code !== 'invalid_number') return true;
+    const mapping = mappings.find(m => m.sourceField === e.field);
+    // Keep the error unless it's the alphanumeric registryNumber field.
+    return mapping?.targetField !== 'registryNumber';
+  });
+  return { errors: filteredErrors, warnings };
+}
+
 // ── Main Component ──
 
 export default function ImportPage() {
@@ -73,10 +93,12 @@ export default function ImportPage() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load import history
-  const importHistory = useMemo(() => getImportHistory(), [importResult]);
+  // Load import history — recompute after an import (importResult) OR after the
+  // history is mutated locally (historyVersion bump on Clear).
+  const importHistory = useMemo(() => getImportHistory(), [importResult, historyVersion]);
 
   // ── Step Navigation ──
   const goToStep = useCallback((target: WizardStep, dir: number) => {
@@ -148,7 +170,7 @@ export default function ImportPage() {
   const getPreviewRows = useMemo(() => {
     if (!selectedSample) return [];
     return selectedSample.rows.slice(0, 5).map(row => {
-      const { errors, warnings } = validateImportRow(row, mappings);
+      const { errors, warnings } = validateRow(row, mappings);
       return { sourceData: row, errors, warnings, status: errors.length > 0 ? 'error' as const : warnings.length > 0 ? 'warning' as const : 'valid' as const };
     });
   }, [selectedSample, mappings]);
@@ -157,7 +179,7 @@ export default function ImportPage() {
     if (!selectedSample) return { total: 0, valid: 0, errors: 0, warnings: 0 };
     let valid = 0, errors = 0, warnings = 0;
     selectedSample.rows.forEach(row => {
-      const { errors: e, warnings: w } = validateImportRow(row, mappings);
+      const { errors: e, warnings: w } = validateRow(row, mappings);
       if (e.length > 0) errors++;
       else if (w.length > 0) warnings++;
       else valid++;
@@ -273,10 +295,10 @@ export default function ImportPage() {
               onSelectSample={handleSelectSample}
               onFileUpload={handleFileUpload}
               fileInputRef={fileInputRef}
-              onShowHistory={() => setShowHistory(true)}
+              onShowHistory={() => setShowHistory(v => !v)}
               showHistory={showHistory}
               importHistory={importHistory}
-              onClearHistory={() => { clearImportHistory(); toast.success('Import history cleared'); }}
+              onClearHistory={() => { clearImportHistory(); setHistoryVersion(v => v + 1); toast.success('Import history cleared'); }}
             />
           )}
           {step === 'detect' && (
@@ -650,6 +672,11 @@ function MapStep({
   ) || [];
 
   const mappedCount = mappings.length;
+  // Denominator = number of source columns. Uploaded files carry no column
+  // metadata (sample is null), so fall back to the mapped count instead of
+  // rendering "0/undefined".
+  const totalColumns = sample?.columns.length ?? mappedCount;
+  const mappedPct = totalColumns > 0 ? (mappedCount / totalColumns) * 100 : 0;
   const requiredFields = targetFields.filter(f => f.required);
   const mappedRequired = requiredFields.filter(r => mappings.some(m => m.targetField === r.key));
 
@@ -673,7 +700,7 @@ function MapStep({
         <div className="flex items-center gap-4 mb-6 p-3 rounded-lg bg-parchment/40">
           <div className="flex-1">
             <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-warm-gray">Fields mapped: {mappedCount}/{sample?.columns.length}</span>
+              <span className="text-warm-gray">Fields mapped: {mappedCount}/{totalColumns}</span>
               <span className={`font-medium ${mappedRequired.length === requiredFields.length ? 'text-success' : 'text-warning'}`}>
                 Required: {mappedRequired.length}/{requiredFields.length}
               </span>
@@ -682,7 +709,7 @@ function MapStep({
               <motion.div
                 className="h-full bg-gold rounded-full"
                 initial={{ width: 0 }}
-                animate={{ width: `${sample ? (mappedCount / sample.columns.length) * 100 : 0}%` }}
+                animate={{ width: `${mappedPct}%` }}
                 transition={{ duration: 0.5 }}
               />
             </div>
@@ -719,7 +746,16 @@ function MapStep({
                   <div className="col-span-4">
                     <select
                       value={mapping.targetField}
-                      onChange={(e) => onMappingChange(mapping.sourceField, e.target.value)}
+                      onChange={(e) => {
+                        if (e.target.value === '') {
+                          // "Skip this column" — drop the mapping entirely so it
+                          // doesn't leave a blank-header zombie column in Preview.
+                          onRemoveMapping(mapping.sourceField);
+                          toast.info(`Skipped ${mapping.sourceField}`);
+                        } else {
+                          onMappingChange(mapping.sourceField, e.target.value);
+                        }
+                      }}
                       className="w-full text-sm rounded-lg border border-parchment bg-white px-2 py-1.5 text-charcoal focus:border-gold focus:ring-1 focus:ring-gold"
                     >
                       <option value="">— Skip this column —</option>
@@ -823,6 +859,20 @@ function PreviewStep({
   isImporting: boolean;
 }) {
   const [showAllErrors, setShowAllErrors] = useState(false);
+
+  // ── Required-mapping guard ──
+  // validateImportRow only errors on required fields that are MAPPED but empty;
+  // it never catches a required field that was never mapped (e.g. Finance
+  // debit/credit/description/accountName left as "Skip this column"). Compute
+  // those here so we can block Import and show a visible reason.
+  const targetFields = detectedModule === 'registry' ? CHURCHOS_REGISTRY_FIELDS
+    : detectedModule === 'directory' ? CHURCHOS_DIRECTORY_FIELDS
+    : CHURCHOS_FINANCE_FIELDS;
+  const missingRequired = targetFields.filter(
+    f => f.required && !mappings.some(m => m.targetField === f.key)
+  );
+  const hasMissingRequired = missingRequired.length > 0;
+  const blockImport = hasMissingRequired || validation.errors === validation.total;
 
   return (
     <div className="space-y-6">
@@ -937,7 +987,7 @@ function PreviewStep({
                 >
                   <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
                     {sample?.rows.map((row, i) => {
-                      const { errors, warnings } = validateImportRow(row, mappings);
+                      const { errors, warnings } = validateRow(row, mappings);
                       if (errors.length === 0 && warnings.length === 0) return null;
                       return (
                         <div key={i} className="p-2 rounded bg-parchment/30 text-xs">
@@ -962,7 +1012,23 @@ function PreviewStep({
           </div>
         )}
 
-        {validation.errors === validation.total && (
+        {hasMissingRequired && (
+          <div className="mt-4 p-4 rounded-xl bg-error/5 border border-error/20">
+            <p className="text-sm text-error flex items-center gap-2 font-medium">
+              <Ban className="w-4 h-4 flex-shrink-0" />
+              {missingRequired.length} required field{missingRequired.length > 1 ? 's are' : ' is'} not mapped. Go back and map {missingRequired.length > 1 ? 'them' : 'it'} before importing.
+            </p>
+            <div className="flex flex-wrap gap-1.5 mt-2 ml-6">
+              {missingRequired.map(f => (
+                <span key={f.key} className="text-xs px-2 py-0.5 rounded-full bg-error/10 text-error font-medium">
+                  {f.label}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!hasMissingRequired && validation.errors === validation.total && (
           <div className="mt-4 p-4 rounded-xl bg-error/5 border border-error/20">
             <p className="text-sm text-error flex items-center gap-2">
               <Ban className="w-4 h-4" />
@@ -979,7 +1045,7 @@ function PreviewStep({
         </Button>
         <Button
           onClick={onImport}
-          disabled={isImporting || validation.errors === validation.total}
+          disabled={isImporting || blockImport}
           className="flex items-center gap-2 bg-gold hover:bg-gold-light text-white disabled:opacity-50"
         >
           {isImporting ? (

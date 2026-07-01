@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
 import {
   Heart,
   GraduationCap,
@@ -14,11 +15,9 @@ import {
   XCircle,
   Clock,
   FileText,
-  Download,
   ChevronRight,
   User,
   DollarSign,
-  Eye,
   Upload,
 } from 'lucide-react';
 import EmptyState from '@/components/EmptyState';
@@ -104,11 +103,19 @@ export default function SsdmPage() {
   const [newAppBusiness, setNewAppBusiness] = useState('');
   const [newAppEmergency, setNewAppEmergency] = useState('');
 
+  /* New application validation errors (keyed by field) */
+  const [newAppErrors, setNewAppErrors] = useState<Record<string, string>>({});
+
   /* New disbursement form */
   const [newDisbBeneficiary, setNewDisbBeneficiary] = useState('');
   const [newDisbAmount, setNewDisbAmount] = useState('');
   const [newDisbType, setNewDisbType] = useState<'Cash' | 'Check' | 'Bank Transfer'>('Cash');
   const [newDisbNotes, setNewDisbNotes] = useState('');
+  const [newDisbErrors, setNewDisbErrors] = useState<Record<string, string>>({});
+
+  /* Uploaded supporting documents (New Application) */
+  const [newAppDocs, setNewAppDocs] = useState<File[]>([]);
+  const newAppFileInput = useRef<HTMLInputElement | null>(null);
 
   /* Filtered applications */
   const filteredApplications = useMemo(() => {
@@ -150,6 +157,33 @@ export default function SsdmPage() {
         d.reference.toLowerCase().includes(q)
     );
   }, [searchQuery, disbursements]);
+
+  /* Monthly disbursement totals, derived from live data */
+  const monthlyDisbursementTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const d of disbursements) {
+      if (!d.date) continue;
+      const key = d.date.slice(0, 7); // YYYY-MM
+      totals.set(key, (totals.get(key) ?? 0) + (Number.isFinite(d.amount) ? d.amount : 0));
+    }
+    return Array.from(totals.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, total]) => {
+        const [year, month] = key.split('-');
+        const label = new Date(Number(year), Number(month) - 1, 1)
+          .toLocaleDateString('en-PH', { month: 'short', year: 'numeric' });
+        return { key, label, total };
+      });
+  }, [disbursements]);
+
+  /* Per-program beneficiary counts, derived from live data */
+  const beneficiaryCountByProgram = useMemo(() => {
+    const map: Record<ProgramType, number> = {
+      Scholarship: 0, Medical: 0, Feeding: 0, Livelihood: 0, Emergency: 0,
+    };
+    for (const b of beneficiaries) map[b.program] += 1;
+    return map;
+  }, [beneficiaries]);
 
   /* Program-specific filtered data */
   const programApplications = useMemo(() => {
@@ -232,23 +266,54 @@ export default function SsdmPage() {
   ];
 
   const handleNewAppSubmit = () => {
+    const errors: Record<string, string> = {};
+
     if (!newAppName.trim()) {
-      setShowNewApp(false);
+      errors.name = 'Full name is required.';
+    }
+
+    const familySize = parseNumericInput(newAppFamilySize);
+    if (familySize === null || familySize < 0) {
+      errors.familySize = 'Enter a valid number of members.';
+    }
+    const monthlyIncome = parseNumericInput(newAppIncome);
+    if (monthlyIncome === null || monthlyIncome < 0) {
+      errors.income = 'Enter a valid amount (numbers only).';
+    }
+    const amountRequested = parseNumericInput(newAppAmount);
+    if (amountRequested === null || amountRequested < 0) {
+      errors.amount = 'Enter a valid amount (numbers only).';
+    }
+    let estimatedCost: number | undefined;
+    if (newAppProgram === 'Medical' && newAppEstCost.trim() !== '') {
+      const cost = parseNumericInput(newAppEstCost);
+      if (cost === null || cost < 0) {
+        errors.estCost = 'Enter a valid amount (numbers only).';
+      } else {
+        estimatedCost = cost;
+      }
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setNewAppErrors(errors);
+      toast.error('Please fix the highlighted fields.');
       return;
     }
+    setNewAppErrors({});
+
     const newApp: Application = {
       id: `APP-${Date.now()}`,
       applicantName: newAppName.trim(),
       age: 0,
       address: newAppAddress.trim(),
       contact: newAppContact.trim(),
-      familySize: Number(newAppFamilySize) || 0,
-      monthlyIncome: Number(newAppIncome) || 0,
+      familySize: familySize as number,
+      monthlyIncome: monthlyIncome as number,
       dateApplied: new Date().toISOString().split('T')[0],
       programType: newAppProgram,
       status: 'Pending Review',
       assignedReviewer: 'Unassigned',
-      amountRequested: Number(newAppAmount) || 0,
+      amountRequested: amountRequested as number,
       notes: newAppNotes.trim(),
       school: newAppSchool.trim() || undefined,
       gradeLevel: newAppGrade.trim() || undefined,
@@ -256,16 +321,17 @@ export default function SsdmPage() {
       course: newAppCourse.trim() || undefined,
       diagnosis: newAppDiagnosis.trim() || undefined,
       hospital: newAppHospital.trim() || undefined,
-      estimatedCost: newAppEstCost ? Number(newAppEstCost) || 0 : undefined,
+      estimatedCost,
       businessProposal: newAppBusiness.trim() || undefined,
       emergencyType: newAppEmergency.trim() || undefined,
-      documents: [],
+      documents: newAppDocs.map((f) => ({ name: f.name, size: formatFileSize(f.size) })),
       reviewers: [],
       overallStatus: 'Pending Review',
     };
     setApplications((prev) => [newApp, ...prev]);
     setShowNewApp(false);
     resetNewAppForm();
+    toast.success('Application submitted');
   };
 
   const resetNewAppForm = () => {
@@ -285,13 +351,48 @@ export default function SsdmPage() {
     setNewAppEstCost('');
     setNewAppBusiness('');
     setNewAppEmergency('');
+    setNewAppDocs([]);
+    setNewAppErrors({});
+  };
+
+  const closeNewApp = () => {
+    setShowNewApp(false);
+    setNewAppErrors({});
+  };
+  const closeNewDisbursement = () => {
+    setShowNewDisbursement(false);
+    setNewDisbErrors({});
+  };
+
+  const handleApplicationDecision = (status: 'Approved' | 'Rejected') => {
+    if (!viewApplication) return;
+    const id = viewApplication.id;
+    const updated: Application = {
+      ...viewApplication,
+      status,
+      overallStatus: status,
+    };
+    setApplications((prev) => prev.map((a) => (a.id === id ? updated : a)));
+    setViewApplication(updated);
+    toast.success(`Application ${status.toLowerCase()}`);
   };
 
   const handleNewDisbSubmit = () => {
+    const errors: Record<string, string> = {};
     if (!newDisbBeneficiary.trim()) {
-      setShowNewDisbursement(false);
+      errors.beneficiary = 'Beneficiary name is required.';
+    }
+    const amount = parseNumericInput(newDisbAmount);
+    if (amount === null || amount <= 0) {
+      errors.amount = 'Enter a valid amount greater than zero.';
+    }
+    if (Object.keys(errors).length > 0) {
+      setNewDisbErrors(errors);
+      toast.error('Please fix the highlighted fields.');
       return;
     }
+    setNewDisbErrors({});
+
     const matched = beneficiaries.find(
       (b) => b.name === newDisbBeneficiary || b.id === newDisbBeneficiary,
     );
@@ -300,7 +401,7 @@ export default function SsdmPage() {
       date: new Date().toISOString().split('T')[0],
       beneficiary: matched?.name || newDisbBeneficiary.trim(),
       program: matched?.program || selectedProgram || 'Emergency',
-      amount: Number(newDisbAmount) || 0,
+      amount: amount as number,
       type: newDisbType,
       reference: `REF-${Date.now()}`,
       approvedBy: getCurrentUserName(),
@@ -312,6 +413,8 @@ export default function SsdmPage() {
     setNewDisbAmount('');
     setNewDisbType('Cash');
     setNewDisbNotes('');
+    setNewDisbErrors({});
+    toast.success('Disbursement recorded');
   };
 
   return (
@@ -337,6 +440,7 @@ export default function SsdmPage() {
             onClick={() => {
               setActiveTab(tab);
               setSelectedProgram(null);
+              setSearchQuery('');
             }}
             className={
               'px-5 py-2.5 text-sm font-medium transition-all relative ' +
@@ -388,10 +492,10 @@ export default function SsdmPage() {
                   </div>
                   <h3 className="heading-sm text-charcoal dark:text-dm-text mb-1">{prog.name}</h3>
                   <p className="text-2xl font-bold text-charcoal dark:text-dm-text mb-1">
-                    {prog.id === 'Feeding' ? '120' : prog.id === 'Scholarship' ? '24' : prog.id === 'Medical' ? '18' : prog.id === 'Livelihood' ? '8' : '3'}
+                    {beneficiaryCountByProgram[prog.id]}
                   </p>
                   <p className="body-sm text-warm-gray dark:text-dm-text-muted mb-3">
-                    {prog.id === 'Feeding' ? 'beneficiaries' : prog.id === 'Scholarship' ? 'active scholars' : prog.id === 'Medical' ? 'pending applications' : prog.id === 'Livelihood' ? 'active grants' : 'active cases'}
+                    {beneficiaryCountByProgram[prog.id] === 1 ? 'beneficiary' : 'beneficiaries'}
                   </p>
                   <div className="flex items-center gap-2">
                     <button
@@ -626,21 +730,17 @@ export default function SsdmPage() {
             </button>
           </div>
 
-          {/* Monthly Totals */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="cos-card p-4 text-center">
-              <p className="label text-warm-gray dark:text-dm-text-muted mb-1">Total Disbursed (Jan)</p>
-              <p className="text-xl font-bold text-charcoal dark:text-dm-text">{formatPeso(36500)}</p>
+          {/* Monthly Totals — derived from disbursement records */}
+          {monthlyDisbursementTotals.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {monthlyDisbursementTotals.map((m) => (
+                <div key={m.key} className="cos-card p-4 text-center">
+                  <p className="label text-warm-gray dark:text-dm-text-muted mb-1">Total Disbursed ({m.label})</p>
+                  <p className="text-xl font-bold text-charcoal dark:text-dm-text">{formatPeso(m.total)}</p>
+                </div>
+              ))}
             </div>
-            <div className="cos-card p-4 text-center">
-              <p className="label text-warm-gray dark:text-dm-text-muted mb-1">Total Disbursed (Feb)</p>
-              <p className="text-xl font-bold text-charcoal dark:text-dm-text">{formatPeso(32900)}</p>
-            </div>
-            <div className="cos-card p-4 text-center">
-              <p className="label text-warm-gray dark:text-dm-text-muted mb-1">Total Disbursed (Mar-May)</p>
-              <p className="text-xl font-bold text-charcoal dark:text-dm-text">{formatPeso(43550)}</p>
-            </div>
-          </div>
+          )}
 
           {filteredDisbursements.length === 0 ? (
             <EmptyState
@@ -779,20 +879,19 @@ export default function SsdmPage() {
                     Supporting Documents
                   </h4>
                   <div className="space-y-2">
+                    {viewApplication.documents.length === 0 && (
+                      <p className="body-sm text-warm-gray dark:text-dm-text-muted">No documents attached.</p>
+                    )}
                     {viewApplication.documents.map((doc, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between p-3 rounded-lg border border-parchment dark:border-dm-border hover:bg-cream-dark dark:hover:bg-dm-surface-raised transition-colors cursor-pointer"
+                        className="flex items-center justify-between p-3 rounded-lg border border-parchment dark:border-dm-border"
                       >
                         <div className="flex items-center gap-3">
                           <FileText className="w-4 h-4 text-gold" />
                           <span className="body-sm text-charcoal dark:text-dm-text">{doc.name}</span>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs text-warm-gray dark:text-dm-text-muted">{doc.size}</span>
-                          <Eye className="w-4 h-4 text-warm-gray hover:text-gold transition-colors" />
-                          <Download className="w-4 h-4 text-warm-gray hover:text-gold transition-colors" />
-                        </div>
+                        <span className="text-xs text-warm-gray dark:text-dm-text-muted">{doc.size}</span>
                       </div>
                     ))}
                   </div>
@@ -886,11 +985,17 @@ export default function SsdmPage() {
               <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border">
                 {viewApplication.status === 'Pending Review' && (
                   <>
-                    <button className="cos-btn cos-btn-secondary text-sm py-2 px-4">
+                    <button
+                      onClick={() => handleApplicationDecision('Rejected')}
+                      className="cos-btn cos-btn-secondary text-sm py-2 px-4"
+                    >
                       <XCircle className="w-4 h-4" />
                       Reject
                     </button>
-                    <button className="cos-btn cos-btn-primary text-sm py-2 px-4">
+                    <button
+                      onClick={() => handleApplicationDecision('Approved')}
+                      className="cos-btn cos-btn-primary text-sm py-2 px-4"
+                    >
                       <CheckCircle className="w-4 h-4" />
                       Approve
                     </button>
@@ -986,7 +1091,7 @@ export default function SsdmPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
-            onClick={() => setShowNewApp(false)}
+            onClick={closeNewApp}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
@@ -998,7 +1103,7 @@ export default function SsdmPage() {
               <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
                 <h3 className="heading-lg text-charcoal dark:text-dm-text">New Application</h3>
                 <button
-                  onClick={() => setShowNewApp(false)}
+                  onClick={closeNewApp}
                   className="p-1.5 rounded-lg hover:bg-cream-dark dark:hover:bg-dm-surface-raised transition-colors"
                 >
                   <X className="w-5 h-5 text-warm-gray" />
@@ -1034,12 +1139,12 @@ export default function SsdmPage() {
                 <div>
                   <h4 className="heading-sm text-charcoal dark:text-dm-text mb-3">Applicant Information</h4>
                   <div className="grid grid-cols-2 gap-3">
-                    <FormInput label="Full Name" value={newAppName} onChange={setNewAppName} placeholder="Enter full name" />
+                    <FormInput label="Full Name" value={newAppName} onChange={(v) => { setNewAppName(v); if (newAppErrors.name) setNewAppErrors((e) => ({ ...e, name: '' })); }} placeholder="Enter full name" error={newAppErrors.name} />
                     <FormInput label="Address" value={newAppAddress} onChange={setNewAppAddress} placeholder="Barangay, City" />
                     <FormInput label="Contact Number" value={newAppContact} onChange={setNewAppContact} placeholder="09XX XXX XXXX" />
-                    <FormInput label="Family Size" value={newAppFamilySize} onChange={setNewAppFamilySize} placeholder="Number of members" />
-                    <FormInput label="Monthly Income" value={newAppIncome} onChange={setNewAppIncome} placeholder="₱0.00" />
-                    <FormInput label="Amount Requested" value={newAppAmount} onChange={setNewAppAmount} placeholder="₱0.00" />
+                    <FormInput label="Family Size" value={newAppFamilySize} onChange={(v) => { setNewAppFamilySize(v); if (newAppErrors.familySize) setNewAppErrors((e) => ({ ...e, familySize: '' })); }} placeholder="Number of members" error={newAppErrors.familySize} />
+                    <FormInput label="Monthly Income" value={newAppIncome} onChange={(v) => { setNewAppIncome(v); if (newAppErrors.income) setNewAppErrors((e) => ({ ...e, income: '' })); }} placeholder="₱0.00" error={newAppErrors.income} />
+                    <FormInput label="Amount Requested" value={newAppAmount} onChange={(v) => { setNewAppAmount(v); if (newAppErrors.amount) setNewAppErrors((e) => ({ ...e, amount: '' })); }} placeholder="₱0.00" error={newAppErrors.amount} />
                   </div>
                 </div>
 
@@ -1061,7 +1166,7 @@ export default function SsdmPage() {
                     <div className="grid grid-cols-2 gap-3">
                       <FormInput label="Diagnosis" value={newAppDiagnosis} onChange={setNewAppDiagnosis} placeholder="Medical condition" />
                       <FormInput label="Hospital / Clinic" value={newAppHospital} onChange={setNewAppHospital} placeholder="Hospital name" />
-                      <FormInput label="Estimated Cost" value={newAppEstCost} onChange={setNewAppEstCost} placeholder="₱0.00" colSpan={2} />
+                      <FormInput label="Estimated Cost" value={newAppEstCost} onChange={(v) => { setNewAppEstCost(v); if (newAppErrors.estCost) setNewAppErrors((e) => ({ ...e, estCost: '' })); }} placeholder="₱0.00" colSpan={2} error={newAppErrors.estCost} />
                     </div>
                   </div>
                 )}
@@ -1087,13 +1192,85 @@ export default function SsdmPage() {
                 {/* Documents Upload */}
                 <div>
                   <label className="label text-warm-gray dark:text-dm-text-muted mb-2 block">Supporting Documents</label>
-                  <div className="border-2 border-dashed border-parchment dark:border-dm-border rounded-lg p-6 text-center hover:border-gold transition-colors cursor-pointer">
+                  <input
+                    ref={newAppFileInput}
+                    type="file"
+                    multiple
+                    accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      const accepted = files.filter((f) => {
+                        if (f.size > 10 * 1024 * 1024) {
+                          toast.error(`${f.name} exceeds 10MB and was skipped.`);
+                          return false;
+                        }
+                        return true;
+                      });
+                      if (accepted.length > 0) {
+                        setNewAppDocs((prev) => [...prev, ...accepted]);
+                      }
+                      // Reset so selecting the same file again re-fires onChange
+                      e.target.value = '';
+                    }}
+                  />
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => newAppFileInput.current?.click()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        newAppFileInput.current?.click();
+                      }
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const files = Array.from(e.dataTransfer.files ?? []);
+                      const accepted = files.filter((f) => {
+                        if (f.size > 10 * 1024 * 1024) {
+                          toast.error(`${f.name} exceeds 10MB and was skipped.`);
+                          return false;
+                        }
+                        return true;
+                      });
+                      if (accepted.length > 0) {
+                        setNewAppDocs((prev) => [...prev, ...accepted]);
+                      }
+                    }}
+                    className="border-2 border-dashed border-parchment dark:border-dm-border rounded-lg p-6 text-center hover:border-gold transition-colors cursor-pointer"
+                  >
                     <Upload className="w-6 h-6 text-warm-gray mx-auto mb-2" />
                     <p className="body-sm text-warm-gray dark:text-dm-text-muted">
                       Click to upload or drag and drop files here
                     </p>
                     <p className="text-xs text-warm-gray dark:text-dm-text-muted mt-1">PDF, JPG, PNG up to 10MB each</p>
                   </div>
+                  {newAppDocs.length > 0 && (
+                    <div className="space-y-2 mt-3">
+                      {newAppDocs.map((file, idx) => (
+                        <div
+                          key={`${file.name}-${idx}`}
+                          className="flex items-center justify-between p-2.5 rounded-lg border border-parchment dark:border-dm-border"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <FileText className="w-4 h-4 text-gold shrink-0" />
+                            <span className="body-sm text-charcoal dark:text-dm-text truncate">{file.name}</span>
+                            <span className="text-xs text-warm-gray dark:text-dm-text-muted shrink-0">{formatFileSize(file.size)}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setNewAppDocs((prev) => prev.filter((_, i) => i !== idx))}
+                            className="p-1 rounded hover:bg-cream-dark dark:hover:bg-dm-surface-raised transition-colors shrink-0"
+                            aria-label={`Remove ${file.name}`}
+                          >
+                            <X className="w-4 h-4 text-warm-gray" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Notes */}
@@ -1110,7 +1287,7 @@ export default function SsdmPage() {
               </div>
               <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border">
                 <button
-                  onClick={() => setShowNewApp(false)}
+                  onClick={closeNewApp}
                   className="cos-btn cos-btn-secondary text-sm py-2 px-4"
                 >
                   Cancel
@@ -1136,7 +1313,7 @@ export default function SsdmPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
-            onClick={() => setShowNewDisbursement(false)}
+            onClick={closeNewDisbursement}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
@@ -1148,15 +1325,15 @@ export default function SsdmPage() {
               <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
                 <h3 className="heading-lg text-charcoal dark:text-dm-text">New Disbursement</h3>
                 <button
-                  onClick={() => setShowNewDisbursement(false)}
+                  onClick={closeNewDisbursement}
                   className="p-1.5 rounded-lg hover:bg-cream-dark dark:hover:bg-dm-surface-raised transition-colors"
                 >
                   <X className="w-5 h-5 text-warm-gray" />
                 </button>
               </div>
               <div className="px-6 py-5 space-y-4">
-                <FormInput label="Beneficiary Name" value={newDisbBeneficiary} onChange={setNewDisbBeneficiary} placeholder="Search beneficiary..." />
-                <FormInput label="Amount" value={newDisbAmount} onChange={setNewDisbAmount} placeholder="₱0.00" />
+                <FormInput label="Beneficiary Name" value={newDisbBeneficiary} onChange={(v) => { setNewDisbBeneficiary(v); if (newDisbErrors.beneficiary) setNewDisbErrors((e) => ({ ...e, beneficiary: '' })); }} placeholder="Search beneficiary..." error={newDisbErrors.beneficiary} />
+                <FormInput label="Amount" value={newDisbAmount} onChange={(v) => { setNewDisbAmount(v); if (newDisbErrors.amount) setNewDisbErrors((e) => ({ ...e, amount: '' })); }} placeholder="₱0.00" error={newDisbErrors.amount} />
                 <div>
                   <label className="label text-warm-gray dark:text-dm-text-muted mb-2 block">Disbursement Type</label>
                   <div className="flex gap-2">
@@ -1189,7 +1366,7 @@ export default function SsdmPage() {
               </div>
               <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border">
                 <button
-                  onClick={() => setShowNewDisbursement(false)}
+                  onClick={closeNewDisbursement}
                   className="cos-btn cos-btn-secondary text-sm py-2 px-4"
                 >
                   Cancel
@@ -1220,6 +1397,22 @@ function formatPeso(n: number) {
   return '₱' + n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/* Parse a user-entered number: strip commas/₱/whitespace, then parse.
+   Returns null when the field is non-empty but not a valid number. */
+function parseNumericInput(raw: string): number | null {
+  const cleaned = raw.replace(/[₱,\s]/g, '');
+  if (cleaned === '') return 0;
+  if (!/^-?\d*\.?\d+$/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
 function InfoField({ label, value, colSpan }: { label: string; value: string | number; colSpan?: number }) {
   return (
     <div className={colSpan ? 'col-span-2' : ''}>
@@ -1235,12 +1428,14 @@ function FormInput({
   onChange,
   placeholder,
   colSpan,
+  error,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   colSpan?: number;
+  error?: string;
 }) {
   return (
     <div className={colSpan ? 'col-span-2' : ''}>
@@ -1250,8 +1445,14 @@ function FormInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full h-9 px-3 rounded-lg border border-parchment bg-white text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface dark:border-dm-border dark:text-dm-text"
+        className={
+          'w-full h-9 px-3 rounded-lg border bg-white text-sm text-charcoal placeholder:text-warm-gray focus:outline-none dark:bg-dm-surface dark:text-dm-text ' +
+          (error
+            ? 'border-error focus:border-error'
+            : 'border-parchment focus:border-gold dark:border-dm-border')
+        }
       />
+      {error && <p className="text-xs text-error mt-1">{error}</p>}
     </div>
   );
 }

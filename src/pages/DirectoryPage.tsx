@@ -55,6 +55,33 @@ function formatDate(d: string) {
   return x.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+/** Safe age display: blank / invalid / future DOB renders as "—" instead of NaN or a negative number. */
+function formatAge(dob: string): string {
+  if (!dob) return '—';
+  const birth = new Date(dob + 'T00:00:00');
+  if (isNaN(birth.getTime())) return '—';
+  if (birth.getTime() > Date.now()) return '—';
+  const age = getAge(dob);
+  if (!Number.isFinite(age) || age < 0) return '—';
+  return String(age);
+}
+
+/** Normalize a phone string to just its digits for format-agnostic matching. */
+function normalizePhone(v: string): string {
+  return (v || '').replace(/\D/g, '');
+}
+
+/** PH-friendly phone check: 7–15 digits (mobile or landline), any formatting allowed. */
+function isValidPhone(v: string): boolean {
+  const digits = normalizePhone(v);
+  return digits.length >= 7 && digits.length <= 15;
+}
+
+/** Basic email format check. */
+function isValidEmail(v: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+}
+
 function getAvatarColor(name: string) {
   const colors = ['#C9963B', '#2D6A4F', '#6B2737', '#5B3A73', '#3B6BC9', '#1B2A4A', '#8C8374', '#B8322F'];
   let hash = 0;
@@ -112,6 +139,9 @@ export default function DirectoryPage() {
       const q = searchQuery.toLowerCase();
       if (f.familyName.toLowerCase().includes(q)) return true;
       if (f.primaryPhone.includes(q)) return true;
+      // Phone: match ignoring formatting so "09175550202" and "0917-555-0202" both hit.
+      const qDigits = normalizePhone(searchQuery);
+      if (qDigits && (normalizePhone(f.primaryPhone).includes(qDigits) || normalizePhone(f.secondaryPhone || '').includes(qDigits))) return true;
       if (f.barangay.toLowerCase().includes(q)) return true;
       if (f.sitio.toLowerCase().includes(q)) return true;
       return f.members.some((m) => getFullName(m).toLowerCase().includes(q));
@@ -396,7 +426,7 @@ export default function DirectoryPage() {
               actionsColumn={(row) => (
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => { /* view */ }}
+                    onClick={() => handleEditFamily(row)}
                     className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-colors dark:text-dm-text-muted dark:hover:text-dm-text"
                     title="View"
                   >
@@ -616,7 +646,7 @@ function FamilyCard({
                             <span className="text-sm text-warm-gray dark:text-dm-text-muted">{formatDate(member.dateOfBirth)}</span>
                           </td>
                           <td>
-                            <span className="text-sm text-warm-gray dark:text-dm-text-muted">{getAge(member.dateOfBirth)}</span>
+                            <span className="text-sm text-warm-gray dark:text-dm-text-muted">{formatAge(member.dateOfBirth)}</span>
                           </td>
                           <td>
                             <div className="flex gap-1.5 flex-wrap">
@@ -714,7 +744,14 @@ function FamilyModal({
     const e: Record<string, string> = {};
     if (!form.familyName) e.familyName = 'Family name is required';
     if (!form.barangay) e.barangay = 'Barangay is required';
-    if (!form.primaryPhone) e.primaryPhone = 'Phone number is required';
+    if (!form.primaryPhone) {
+      e.primaryPhone = 'Phone number is required';
+    } else if (!isValidPhone(form.primaryPhone)) {
+      e.primaryPhone = 'Enter a valid phone number (e.g. 0917-555-0101)';
+    }
+    if (form.email && !isValidEmail(form.email)) {
+      e.email = 'Enter a valid email address (e.g. name@email.com)';
+    }
     if (members.some((m) => !m.firstName || !m.lastName)) e.members = 'All members must have a name';
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -845,6 +882,7 @@ function FamilyModal({
                     placeholder="family@email.com"
                     className="w-full h-10 rounded-md border border-parchment bg-white px-3 text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
                   />
+                  {errors.email && <span className="text-xs text-error mt-1 block">{errors.email}</span>}
                 </div>
               </div>
             </div>
@@ -872,7 +910,7 @@ function FamilyModal({
               <AnimatePresence initial={false}>
                 {members.map((member, idx) => (
                   <motion.div
-                    key={idx}
+                    key={member.id ?? idx}
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}

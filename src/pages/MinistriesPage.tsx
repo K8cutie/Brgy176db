@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import { MINISTRIES, getAccentColor } from '@/lib/ministryData';
-import type { Ministry, MinistryMember, ScheduleAssignment } from '@/lib/ministryData';
+import type { Ministry, MinistryMember, ScheduleAssignment, AttendanceRecord } from '@/lib/ministryData';
 import DataTable from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
 import { usePersistedState } from '@/hooks/usePersistedState';
@@ -51,6 +51,11 @@ export default function MinistriesPage() {
   const selectedMinistry = useMemo(() =>
     ministries.find(m => m.id === selectedMinistryId) || null
   , [ministries, selectedMinistryId]);
+
+  // Active assignments = distinct scheduled slots that actually have a member assigned.
+  const activeAssignmentCount = useMemo(() =>
+    (selectedMinistry?.scheduleAssignments ?? []).filter(a => a.memberName.trim() !== '').length
+  , [selectedMinistry]);
 
   // Member modal handlers
   const openAddMember = useCallback(() => {
@@ -94,6 +99,13 @@ export default function MinistriesPage() {
       m.id === ministryId ? { ...m, scheduleAssignments: assignments } : m
     ));
     toast.success('Schedule saved');
+  }, []);
+
+  const handleUpdateAttendance = useCallback((ministryId: string, attendance: AttendanceRecord[]) => {
+    setMinistries(prev => prev.map(m =>
+      m.id === ministryId ? { ...m, attendance } : m
+    ));
+    toast.success('Attendance saved');
   }, []);
 
   return (
@@ -214,7 +226,7 @@ export default function MinistriesPage() {
                       </span>
                       <span className="w-1 h-1 rounded-full bg-warm-gray/40" />
                       <span className="body-sm text-warm-gray dark:text-dm-text-muted">
-                        {selectedMinistry.activeAssignments} active assignments
+                        {activeAssignmentCount} active assignments
                       </span>
                       <span className="w-1 h-1 rounded-full bg-warm-gray/40" />
                       <span className="body-sm text-warm-gray dark:text-dm-text-muted">
@@ -262,6 +274,7 @@ export default function MinistriesPage() {
                 >
                   <RosterTab
                     ministry={selectedMinistry}
+                    onAddMember={openAddMember}
                     onEditMember={openEditMember}
                     onDeleteMember={(id) => { setMemberToDelete(id); setDeleteMemberDialog(true); }}
                   />
@@ -289,7 +302,10 @@ export default function MinistriesPage() {
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <AttendanceTab ministry={selectedMinistry} />
+                  <AttendanceTab
+                    ministry={selectedMinistry}
+                    onUpdate={(attendance) => handleUpdateAttendance(selectedMinistry.id, attendance)}
+                  />
                 </motion.div>
               )}
             </AnimatePresence>
@@ -328,10 +344,12 @@ export default function MinistriesPage() {
 // ------------------------------------------------------------------
 function RosterTab({
   ministry,
+  onAddMember,
   onEditMember,
   onDeleteMember,
 }: {
   ministry: Ministry;
+  onAddMember: () => void;
   onEditMember: (m: MinistryMember) => void;
   onDeleteMember: (id: string) => void;
 }) {
@@ -370,7 +388,7 @@ function RosterTab({
         tip={getLabel('ministries.empty.tip', 'Tap any ministry card above to start adding members.')}
         actionLabel="Add Member"
         actionIcon={Plus}
-        onAction={() => toast('Tap a ministry card above to add members')}
+        onAction={onAddMember}
       />
     );
   }
@@ -491,7 +509,13 @@ function ScheduleTab({
 // ------------------------------------------------------------------
 // Attendance Tab
 // ------------------------------------------------------------------
-function AttendanceTab({ ministry }: { ministry: Ministry }) {
+function AttendanceTab({
+  ministry,
+  onUpdate,
+}: {
+  ministry: Ministry;
+  onUpdate: (attendance: AttendanceRecord[]) => void;
+}) {
   const [attendance, setAttendance] = useState(ministry.attendance);
 
   const dates = useMemo(() => {
@@ -516,8 +540,8 @@ function AttendanceTab({ ministry }: { ministry: Ministry }) {
   }, []);
 
   const handleSave = useCallback(() => {
-    toast.success('Attendance saved');
-  }, []);
+    onUpdate(attendance);
+  }, [attendance, onUpdate]);
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + 'T00:00:00');
@@ -622,9 +646,22 @@ function MemberModal({
   const [notes, setNotes] = useState(member?.notes || '');
   const [age, setAge] = useState(member?.age?.toString() || '');
   const [section, setSection] = useState(member?.section || '');
+  const [ageError, setAgeError] = useState<string | null>(null);
+
+  const AGE_MIN = 10;
+  const AGE_MAX = 17;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Altar server age must be within the allowed range when provided.
+    if (isAltar && age.trim() !== '') {
+      const parsedAge = parseInt(age, 10);
+      if (Number.isNaN(parsedAge) || parsedAge < AGE_MIN || parsedAge > AGE_MAX) {
+        setAgeError(`Age must be between ${AGE_MIN} and ${AGE_MAX}.`);
+        return;
+      }
+    }
+    setAgeError(null);
     const newMember: MinistryMember = {
       id: member?.id || `${ministryId}-${Date.now()}`,
       name: name || 'New Member',
@@ -744,12 +781,13 @@ function MemberModal({
               <label className="label text-warm-gray dark:text-dm-text-muted mb-1 block">Status</label>
               <select
                 value={status}
-                onChange={e => setStatus(e.target.value as 'Active' | 'Inactive' | 'On Leave')}
+                onChange={e => setStatus(e.target.value as 'Active' | 'Inactive' | 'On Leave' | 'Trainee')}
                 className="w-full h-10 px-3 rounded-lg border border-parchment bg-white text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
               >
                 <option>Active</option>
                 <option>Inactive</option>
                 <option>On Leave</option>
+                <option>Trainee</option>
               </select>
             </div>
           </div>
@@ -760,12 +798,20 @@ function MemberModal({
               <input
                 type="number"
                 value={age}
-                onChange={e => setAge(e.target.value)}
-                placeholder="Age (10-17)"
-                min={10}
-                max={17}
-                className="w-full h-10 px-3 rounded-lg border border-parchment bg-white text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                onChange={e => { setAge(e.target.value); if (ageError) setAgeError(null); }}
+                placeholder={`Age (${AGE_MIN}-${AGE_MAX})`}
+                min={AGE_MIN}
+                max={AGE_MAX}
+                aria-invalid={!!ageError}
+                className={`w-full h-10 px-3 rounded-lg border bg-white text-charcoal placeholder:text-warm-gray focus:outline-none dark:bg-dm-surface-raised dark:text-dm-text ${
+                  ageError
+                    ? 'border-error focus:border-error'
+                    : 'border-parchment focus:border-gold dark:border-dm-border'
+                }`}
               />
+              {ageError && (
+                <p className="mt-1 text-xs text-error">{ageError}</p>
+              )}
             </div>
           )}
 

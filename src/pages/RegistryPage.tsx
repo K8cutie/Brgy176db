@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BookOpen,
@@ -301,6 +302,31 @@ function getPersonName(record: BaptismRecord | MarriageRecord | ConfirmationReco
   }
 }
 
+/* ------------------------------------------------------------------ */
+/*  Certificate template persistence (per parish, localStorage-backed)  */
+/* ------------------------------------------------------------------ */
+type CertificateTemplate = (typeof certificateTemplates)[number];
+
+// Namespaced storage key (resolved through storageNamespaced, like KEYS).
+const CERT_TEMPLATES_KEY = 'certificate_templates';
+
+// Load templates: any edits saved by the user override the module defaults
+// (matched by id); new/unknown ids in the default set are always included so
+// shipping new templates keeps working. Returns a fresh array each call.
+function loadCertificateTemplates(): CertificateTemplate[] {
+  const saved = ns.getJSON<Partial<CertificateTemplate>[]>(CERT_TEMPLATES_KEY, []);
+  if (!saved.length) return certificateTemplates.map((t) => ({ ...t }));
+  const byId = new Map(saved.map((t) => [t.id, t]));
+  return certificateTemplates.map((t) => {
+    const override = byId.get(t.id);
+    return override ? { ...t, ...override } : { ...t };
+  });
+}
+
+function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
+  return ns.setJSON(CERT_TEMPLATES_KEY, templates);
+}
+
 const defaultPaymentInfo = (ceremonyFee: number): PaymentInfo => ({
   status: 'collect_now', // DEFAULT: always collect now; other options require override
   amount: ceremonyFee,
@@ -328,7 +354,12 @@ export default function RegistryPage() {
   const [certRecord, setCertRecord] = useState<BaptismRecord | null>(null);
   const [templateModal, setTemplateModal] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; id: string }>({ open: false, id: '' });
+  const [statusFilter, setStatusFilter] = useState('');
+  const [yearFilter, setYearFilter] = useState('');
+  const [officiantFilter, setOfficiantFilter] = useState('');
+  const [highlightId, setHighlightId] = useState('');
   const { toasts, addToast, removeToast } = useToasts();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   /* data state (persisted per parish) */
   const [bData, setBData] = usePersistedState<BaptismRecord[]>(KEYS.baptismRecords, baptismRecords);
@@ -339,8 +370,69 @@ export default function RegistryPage() {
   const tabConfigs = useMemo(() => tabs(bData.length, mData.length, cData.length, dData.length), [bData.length, mData.length, cData.length, dData.length]);
   const activeConfig = tabConfigs.find((t) => t.key === activeTab)!;
 
+  /* Inbound query params: ?action=add opens the Add modal; ?id=<recordId>
+     switches to the record's tab and scrolls/highlights it. Params are
+     consumed (removed) so navigation/re-renders don't re-trigger. */
+  const paramsHandled = useRef(false);
+  useEffect(() => {
+    if (paramsHandled.current) return;
+    const action = searchParams.get('action');
+    const id = searchParams.get('id');
+    if (!action && !id) return;
+    paramsHandled.current = true;
+
+    if (action === 'add') {
+      setEditingRecord(null);
+      setRecordModal('add');
+    }
+
+    if (id) {
+      // Locate which sacrament tab holds this record.
+      const inTab: SacramentTab | null =
+        bData.some((r) => r.id === id) ? 'baptism'
+        : mData.some((r) => r.id === id) ? 'marriage'
+        : cData.some((r) => r.id === id) ? 'confirmation'
+        : dData.some((r) => r.id === id) ? 'death'
+        : null;
+      if (inTab) {
+        setActiveTab(inTab);
+        setSearchQuery('');
+        setHighlightId(id);
+        // Scroll to and briefly highlight the row after it renders.
+        setTimeout(() => {
+          const el = document.querySelector(`[data-record-id="${id}"]`);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 200);
+        setTimeout(() => setHighlightId(''), 3000);
+      }
+    }
+
+    // Consume the params so a re-render or back/forward doesn't reopen.
+    const next = new URLSearchParams(searchParams);
+    next.delete('action');
+    next.delete('id');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, bData, mData, cData, dData]);
+
+  /* Shared filter predicate for the Filters panel (status / year / officiant).
+     `primaryDate` is the sacrament's main date used for the Year filter. */
+  const matchesFilters = useCallback(
+    (r: { status: string; officiant: string }, primaryDate: string) => {
+      if (statusFilter && r.status !== statusFilter) return false;
+      if (officiantFilter && r.officiant !== officiantFilter) return false;
+      if (yearFilter) {
+        const year = primaryDate ? primaryDate.slice(0, 4) : '';
+        if (year !== yearFilter) return false;
+      }
+      return true;
+    },
+    [statusFilter, officiantFilter, yearFilter],
+  );
+
   /* filtered data */
   const baptismFiltered = bData.filter((r) => {
+    if (!matchesFilters(r, r.dateOfBaptism)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -354,6 +446,7 @@ export default function RegistryPage() {
   });
 
   const marriageFiltered = mData.filter((r) => {
+    if (!matchesFilters(r, r.dateOfMarriage)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -366,6 +459,7 @@ export default function RegistryPage() {
   });
 
   const confirmationFiltered = cData.filter((r) => {
+    if (!matchesFilters(r, r.dateOfConfirmation)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -377,6 +471,7 @@ export default function RegistryPage() {
   });
 
   const deathFiltered = dData.filter((r) => {
+    if (!matchesFilters(r, r.dateOfDeath)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -555,6 +650,104 @@ export default function RegistryPage() {
     }
   };
 
+  /* Distinct years present in the active tab's data — drives the Year filter
+     so it only offers years that actually have records. */
+  const availableYears = useMemo(() => {
+    const dates: string[] =
+      activeTab === 'baptism' ? bData.map((r) => r.dateOfBaptism)
+      : activeTab === 'marriage' ? mData.map((r) => r.dateOfMarriage)
+      : activeTab === 'confirmation' ? cData.map((r) => r.dateOfConfirmation)
+      : dData.map((r) => r.dateOfDeath);
+    const years = new Set<string>();
+    for (const d of dates) {
+      if (d && d.length >= 4) years.add(d.slice(0, 4));
+    }
+    return Array.from(years).sort((a, b) => b.localeCompare(a));
+  }, [activeTab, bData, mData, cData, dData]);
+
+  /* ── Export helpers (operate on the currently visible/filtered rows) ── */
+  // Build [header row, ...data rows] as plain strings using the active
+  // columns' own render logic, so the export matches what's on screen.
+  const buildExportRows = useCallback((): string[][] => {
+    const cols = getColumns() as unknown as Column<Record<string, unknown>>[];
+    const rows = getData() as unknown as Record<string, unknown>[];
+    const header = cols.map((c) => c.header);
+    const body = rows.map((row) =>
+      cols.map((c) => {
+        // Prefer render() when it yields text (matches the on-screen cell,
+        // e.g. formatted dates and computed names). Skip JSX (status badge)
+        // and fall back to the plain field value / searchValue.
+        if (c.render) {
+          const out = c.render(row);
+          if (typeof out === 'string' || typeof out === 'number') return String(out);
+        }
+        if (c.searchValue) {
+          const sv = c.searchValue(row);
+          if (sv != null) return String(sv);
+        }
+        const raw = row[c.key];
+        return raw != null && typeof raw !== 'object' ? String(raw) : '';
+      }),
+    );
+    return [header, ...body];
+    // getColumns/getData are recreated each render and read the same tab data
+    // captured by the deps below; listing them would defeat the memo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, baptismFiltered, marriageFiltered, confirmationFiltered, deathFiltered]);
+
+  const csvEscape = (v: string) => `"${v.replace(/"/g, '""')}"`;
+
+  const handleExportCSV = () => {
+    setExportOpen(false);
+    const rows = buildExportRows();
+    if (rows.length <= 1) { addToast('No records to export', 'warning'); return; }
+    const csv = rows.map((r) => r.map(csvEscape).join(',')).join('\r\n');
+    // BOM so Excel opens UTF-8 (accented names) correctly.
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeTab}-registry-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    addToast(`Exported ${rows.length - 1} ${activeConfig.label.toLowerCase()} record${rows.length - 1 === 1 ? '' : 's'} to CSV`, 'success');
+  };
+
+  const handlePrintList = () => {
+    setExportOpen(false);
+    const rows = buildExportRows();
+    if (rows.length <= 1) { addToast('No records to print', 'warning'); return; }
+    const [header, ...body] = rows;
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const win = window.open('', '_blank');
+    if (!win) { addToast('Unable to open print window — please allow pop-ups', 'error'); return; }
+    win.document.write(`
+      <html><head><title>${esc(activeConfig.label)} Registry</title>
+      <style>
+        body{font-family:Georgia,serif;margin:32px;color:#3D3A36;}
+        h1{font-size:20px;margin:0 0 4px;}
+        .meta{font-size:12px;color:#8C8374;margin-bottom:16px;}
+        table{width:100%;border-collapse:collapse;font-size:12px;}
+        th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;}
+        th{background:#F2EFE8;}
+        @media print{body{margin:12mm;}}
+      </style></head>
+      <body>
+        <h1>${esc(activeConfig.label)} Registry</h1>
+        <div class="meta">${body.length} record${body.length === 1 ? '' : 's'} — printed ${new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
+        <table>
+          <thead><tr>${header.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+          <tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table>
+      </body></html>
+    `);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 300);
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -582,7 +775,7 @@ export default function RegistryPage() {
           return (
             <button
               key={t.key}
-              onClick={() => { setActiveTab(t.key); setSearchQuery(''); }}
+              onClick={() => { setActiveTab(t.key); setSearchQuery(''); setStatusFilter(''); setYearFilter(''); setOfficiantFilter(''); }}
               className="relative flex items-center gap-2 px-5 py-3 text-sm font-medium transition-all whitespace-nowrap"
               style={{
                 color: isActive ? t.color : '#8C8374',
@@ -646,31 +839,49 @@ export default function RegistryPage() {
                 >
                   <div>
                     <label className="label block text-warm-gray mb-1">Officiant</label>
-                    <select className="w-full h-9 rounded-md border border-parchment bg-white text-sm dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text">
-                      <option>All Officiants</option>
-                      {officiants.map((o) => <option key={o}>{o}</option>)}
+                    <select
+                      value={officiantFilter}
+                      onChange={(e) => setOfficiantFilter(e.target.value)}
+                      className="w-full h-9 rounded-md border border-parchment bg-white text-sm dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    >
+                      <option value="">All Officiants</option>
+                      {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="label block text-warm-gray mb-1">Status</label>
-                    <select className="w-full h-9 rounded-md border border-parchment bg-white text-sm dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text">
-                      <option>All Statuses</option>
-                      <option>Active</option>
-                      <option>Cancelled</option>
-                      <option>Annotated</option>
+                    <select
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                      className="w-full h-9 rounded-md border border-parchment bg-white text-sm dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    >
+                      <option value="">All Statuses</option>
+                      <option value="Active">Active</option>
+                      <option value="Cancelled">Cancelled</option>
+                      <option value="Annotated">Annotated</option>
+                      <option value="Annulled">Annulled</option>
+                      <option value="Dispensed">Dispensed</option>
                     </select>
                   </div>
                   <div>
                     <label className="label block text-warm-gray mb-1">Year</label>
-                    <select className="w-full h-9 rounded-md border border-parchment bg-white text-sm dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text">
-                      <option>All Years</option>
-                      <option>2024</option>
-                      <option>2023</option>
-                      <option>2022</option>
-                      <option>2021</option>
-                      <option>2020</option>
+                    <select
+                      value={yearFilter}
+                      onChange={(e) => setYearFilter(e.target.value)}
+                      className="w-full h-9 rounded-md border border-parchment bg-white text-sm dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    >
+                      <option value="">All Years</option>
+                      {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
                     </select>
                   </div>
+                  {(statusFilter || yearFilter || officiantFilter) && (
+                    <button
+                      onClick={() => { setStatusFilter(''); setYearFilter(''); setOfficiantFilter(''); }}
+                      className="w-full text-xs text-gold hover:underline text-left"
+                    >
+                      Clear all filters
+                    </button>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -704,13 +915,17 @@ export default function RegistryPage() {
                   exit={{ opacity: 0, y: -8 }}
                   className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-dm-surface rounded-xl shadow-lg border border-parchment dark:border-dm-border z-30 py-1"
                 >
-                  {['Export as PDF', 'Export as Excel', 'Print List'].map((item) => (
+                  {[
+                    { label: 'Export as CSV', onClick: handleExportCSV },
+                    { label: 'Export as Excel (CSV)', onClick: handleExportCSV },
+                    { label: 'Print List', onClick: handlePrintList },
+                  ].map((item) => (
                     <button
-                      key={item}
+                      key={item.label}
                       className="w-full text-left px-4 py-2.5 text-sm text-charcoal hover:bg-cream-dark dark:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
-                      onClick={() => setExportOpen(false)}
+                      onClick={item.onClick}
                     >
-                      {item}
+                      {item.label}
                     </button>
                   ))}
                 </motion.div>
@@ -753,7 +968,14 @@ export default function RegistryPage() {
               columns={getColumns() as unknown as Column<Record<string, unknown>>[]}
               data={getData() as unknown as Record<string, unknown>[]}
               actionsColumn={(row: Record<string, unknown>) => (
-                <div className="flex items-center gap-1">
+                <div
+                  data-record-id={(row as unknown as { id: string }).id}
+                  className={`flex items-center gap-1 rounded-md transition-all ${
+                    highlightId && highlightId === (row as unknown as { id: string }).id
+                      ? 'ring-2 ring-gold bg-gold-glow px-1'
+                      : ''
+                  }`}
+                >
                   <button
                     onClick={() => handleEdit(row as unknown as BaptismRecord & MarriageRecord & ConfirmationRecord & DeathRecord)}
                     className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
@@ -808,7 +1030,7 @@ export default function RegistryPage() {
 
       {/* ── Template Editor Modal ──────────────────── */}
       <AnimatePresence>
-        {templateModal && <TemplateEditorModal onClose={() => setTemplateModal(false)} />}
+        {templateModal && <TemplateEditorModal onClose={() => setTemplateModal(false)} onToast={addToast} />}
       </AnimatePresence>
 
       {/* ── Delete Confirmation ────────────────────── */}
@@ -1065,6 +1287,7 @@ function ScheduleSection({
   onChangeLocation,
   onChangeAutoCalendar,
   eventTitle,
+  errors,
 }: {
   sacrament: SacramentTab;
   date: string;
@@ -1078,6 +1301,7 @@ function ScheduleSection({
   onChangeLocation: (v: string) => void;
   onChangeAutoCalendar: (v: boolean) => void;
   eventTitle: string;
+  errors?: { date?: string; time?: string; officiant?: string };
 }) {
   const [checked, setChecked] = useState(false);
 
@@ -1117,14 +1341,14 @@ function ScheduleSection({
       )}
 
       <div className="grid grid-cols-2 gap-4 mt-3">
-        <Field label="Ceremony Date *" type="date" value={date} onChange={onChangeDate} required />
-        <Field label="Time *" as="select" value={time} onChange={onChangeTime} required>
+        <Field label="Ceremony Date *" type="date" value={date} onChange={onChangeDate} error={errors?.date} required />
+        <Field label="Time *" as="select" value={time} onChange={onChangeTime} error={errors?.time} required>
           <option value="">Select time...</option>
           {timeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
         </Field>
       </div>
       <div className="grid grid-cols-2 gap-4 mt-3">
-        <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} required>
+        <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} error={errors?.officiant} required>
           <option value="">Select officiant...</option>
           {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
         </Field>
@@ -1203,10 +1427,12 @@ function PaymentSection({
   sacrament,
   paymentInfo,
   onChange,
+  error,
 }: {
   sacrament: SacramentTab;
   paymentInfo: PaymentInfo;
   onChange: (p: PaymentInfo) => void;
+  error?: string;
 }) {
   const currency = getCurrencySymbol();
   const feeItem = getFeeForSacrament(
@@ -1371,6 +1597,12 @@ function PaymentSection({
                 <p className="body-xs text-amber-600 dark:text-amber-300 mt-1">
                   This reason will be saved to the audit log. Be specific: date collected, who received it, receipt number if available.
                 </p>
+                {error && (
+                  <p className="text-error text-xs mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                    {error}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1436,6 +1668,12 @@ function PaymentSection({
                   <p className="body-xs text-amber-600 dark:text-amber-300 mt-1">
                     Both category + detailed reason are required. This creates an audit trail.
                   </p>
+                  {error && (
+                    <p className="text-error text-xs mt-1 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                      {error}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -1498,6 +1736,12 @@ function PaymentSection({
                   <p className="body-xs text-amber-600 dark:text-amber-300 mt-1">
                     Both due date + reason are required. This creates an audit trail and AR entry.
                   </p>
+                  {error && (
+                    <p className="text-error text-xs mt-1 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                      {error}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -1601,6 +1845,14 @@ function RecordModal({
   const [paymentInfo, setPaymentInfo] = useState<PaymentInfo>(() =>
     defaultPaymentInfo(ceremonyFee)
   );
+  const [paymentError, setPaymentError] = useState('');
+
+  // Clear the inline override error when the reason or status changes, and
+  // re-run PaymentSection with the new value.
+  const handlePaymentChange = (p: PaymentInfo) => {
+    if (paymentError) setPaymentError('');
+    setPaymentInfo(p);
+  };
 
   /* ── Update helpers ── */
   const bUpdate = (field: string, value: string | number) => {
@@ -1656,9 +1908,12 @@ function RecordModal({
       : paymentInfo.status === 'waived' ? 'Fee waived'
       : 'Bill later';
     if (!paymentInfo.overrideReason || paymentInfo.overrideReason.trim().length < 5) {
-      onToast(`Override reason required: "${label}" needs a detailed explanation (min 5 characters). This protects against fee abuse.`, 'error');
+      const msg = `A detailed reason (min 5 characters) is required for "${label}". This protects against fee abuse.`;
+      setPaymentError(msg);
+      onToast(`Override reason required: ${msg}`, 'error');
       return false;
     }
+    setPaymentError('');
     return true;
   };
 
@@ -2111,10 +2366,11 @@ function RecordModal({
                 onChangeLocation={(v) => bUpdate('scheduledLocation', v)}
                 onChangeAutoCalendar={setBAutoCalendar}
                 eventTitle={`Baptism: ${bForm.childLastName || ''}, ${bForm.childFirstName || ''} ${bForm.childMiddleName || ''}`}
+                errors={{ date: bErrors.scheduledDate, time: bErrors.scheduledTime, officiant: bErrors.scheduledOfficiant }}
               />
 
               {/* ═══ PAYMENT ═══ */}
-              <PaymentSection sacrament="baptism" paymentInfo={paymentInfo} onChange={setPaymentInfo} />
+              <PaymentSection sacrament="baptism" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
           )}
 
@@ -2229,10 +2485,11 @@ function RecordModal({
                 onChangeLocation={(v) => mUpdate('scheduledLocation', v)}
                 onChangeAutoCalendar={setMAutoCalendar}
                 eventTitle={`Wedding: ${mForm.groomFirstName || ''} ${mForm.groomLastName || ''} & ${mForm.brideFirstName || ''} ${mForm.brideLastName || ''}`}
+                errors={{ date: mErrors.scheduledDate, time: mErrors.scheduledTime, officiant: mErrors.scheduledOfficiant }}
               />
 
               {/* ═══ PAYMENT ═══ */}
-              <PaymentSection sacrament="marriage" paymentInfo={paymentInfo} onChange={setPaymentInfo} />
+              <PaymentSection sacrament="marriage" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
           )}
 
@@ -2309,10 +2566,11 @@ function RecordModal({
                 onChangeLocation={(v) => cUpdate('scheduledLocation', v)}
                 onChangeAutoCalendar={setCAutoCalendar}
                 eventTitle={`Confirmation: ${cForm.confirmandLastName || ''}, ${cForm.confirmandFirstName || ''} ${cForm.confirmandMiddleName || ''}`}
+                errors={{ date: cErrors.scheduledDate, time: cErrors.scheduledTime, officiant: cErrors.scheduledOfficiant }}
               />
 
               {/* ═══ PAYMENT ═══ */}
-              <PaymentSection sacrament="confirmation" paymentInfo={paymentInfo} onChange={setPaymentInfo} />
+              <PaymentSection sacrament="confirmation" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
           )}
 
@@ -2390,10 +2648,11 @@ function RecordModal({
                 onChangeLocation={(v) => dUpdate('scheduledLocation', v)}
                 onChangeAutoCalendar={setDAutoCalendar}
                 eventTitle={`Burial: ${dForm.deceasedFirstName || ''} ${dForm.deceasedMiddleName || ''} ${dForm.deceasedLastName || ''}`}
+                errors={{ date: dErrors.scheduledDate, time: dErrors.scheduledTime, officiant: dErrors.scheduledOfficiant }}
               />
 
               {/* ═══ PAYMENT ═══ */}
-              <PaymentSection sacrament="death" paymentInfo={paymentInfo} onChange={setPaymentInfo} />
+              <PaymentSection sacrament="death" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
           )}
         </div>
@@ -2415,7 +2674,9 @@ function RecordModal({
    CertificateModal — Generate certificate with template selector
    ===================================================================== */
 function CertificateModal({ record, onClose }: { record: BaptismRecord; onClose: () => void }) {
-  const [selectedTemplateId, setSelectedTemplateId] = useState(certificateTemplates[0].id);
+  // Use persisted (user-edited) templates so Template Editor changes apply here.
+  const [templates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates());
+  const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0].id);
   const [zoom, setZoom] = useState(100);
   const [certFeeStatus, setCertFeeStatus] = useState<'original' | 'reprint'>('original');
   const [certPayment, setCertPayment] = useState<PaymentInfo>(() =>
@@ -2423,7 +2684,7 @@ function CertificateModal({ record, onClose }: { record: BaptismRecord; onClose:
   );
   const previewRef = useRef<HTMLDivElement>(null);
 
-  const selectedTemplate = certificateTemplates.find((t) => t.id === selectedTemplateId)!;
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId)!;
   const parishTokens = getCertificateTokens();
   const recordHTML = replaceTokens(selectedTemplate.html, record);
   const renderedHTML = Object.entries(parishTokens).reduce(
@@ -2526,7 +2787,7 @@ function CertificateModal({ record, onClose }: { record: BaptismRecord; onClose:
           <div className="w-full lg:w-56 flex-shrink-0 space-y-3">
             <h3 className="heading-sm text-charcoal dark:text-dm-text">Templates</h3>
             <div className="space-y-2">
-              {certificateTemplates.map((t) => (
+              {templates.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setSelectedTemplateId(t.id)}
@@ -2760,17 +3021,26 @@ function CertificateModal({ record, onClose }: { record: BaptismRecord; onClose:
 /* =====================================================================
    TemplateEditorModal — Edit certificate templates
    ===================================================================== */
-function TemplateEditorModal({ onClose }: { onClose: () => void }) {
-  const [templates, setTemplates] = useState(certificateTemplates);
+function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToast: (msg: string, type: ToastType) => void }) {
+  // Load persisted (user-edited) templates so prior edits survive reloads.
+  const [templates, setTemplates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates());
   const [activeTmplId, setActiveTmplId] = useState(templates[0].id);
   const [html, setHtml] = useState(templates[0].html);
   const activeTmpl = templates.find((t) => t.id === activeTmplId)!;
 
   const handleSave = () => {
-    setTemplates((prev) => prev.map((t) => (t.id === activeTmplId ? { ...t, html, isSystem: false } : t)));
+    if (activeTmpl.isSystem) {
+      onToast('System templates are read-only. Duplicate or edit a custom template to save changes.', 'warning');
+      return;
+    }
+    const next = templates.map((t) => (t.id === activeTmplId ? { ...t, html } : t));
+    setTemplates(next);
+    const ok = saveCertificateTemplates(next);
+    onToast(ok ? 'Template saved' : 'Could not save template — storage is full', ok ? 'success' : 'error');
   };
 
   const handleReset = () => {
+    // Reset to the module default (factory) HTML for this template.
     const original = certificateTemplates.find((t) => t.id === activeTmplId);
     if (original) setHtml(original.html);
   };

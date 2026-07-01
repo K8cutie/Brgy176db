@@ -779,6 +779,17 @@ function CertificateTemplatesSection() {
     return replaceTokens(editHtml, editCss, sampleData);
   }, [editHtml, editCss]);
 
+  const handleTestPrint = () => {
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(
+      `<!DOCTYPE html><html><head><title>${editName || 'Certificate'} — Test Print</title>` +
+      `<style>@page{size:${paperSize} ${orientation};margin:0}html,body{margin:0;padding:0}</style>` +
+      `</head><body onload="window.focus();window.print();">${previewHtml}</body></html>`
+    );
+    w.document.close();
+  };
+
   const paperSizeMap = {
     A4: { w: 210, h: 297 },
     Letter: { w: 216, h: 279 },
@@ -1069,7 +1080,7 @@ function CertificateTemplatesSection() {
             <button onClick={handleSave} className="cos-btn cos-btn-primary text-sm">
               <Save className="w-4 h-4" /> Save
             </button>
-            <button className="cos-btn text-sm bg-deep-navy text-white hover:bg-deep-navy-light">
+            <button onClick={handleTestPrint} className="cos-btn text-sm bg-deep-navy text-white hover:bg-deep-navy-light">
               <Printer className="w-4 h-4" /> Test Print
             </button>
           </div>
@@ -1740,10 +1751,11 @@ function GuidedToursSection() {
   };
 
   const handleStartTour = (tour: TourConfig) => {
-    // Start the tour via the global handler set up in App.tsx
+    // Start the tour via the global handler set up in App.tsx.
+    // App.tsx defines it as (steps, id) — pass in that order.
     const startFn = (window as unknown as Record<string, unknown>).__startChurchOSTour;
     if (typeof startFn === 'function') {
-      (startFn as (id: string, steps: Step[]) => void)(tour.id, tour.steps);
+      (startFn as (steps: Step[], id: string) => void)(tour.steps, tour.id);
     }
   };
 
@@ -2141,7 +2153,10 @@ export default function SettingsPage() {
       facebook: cfg.facebook || defaultParishInfo.facebook,
       currency: cfg.currency || defaultParishInfo.currency,
       timezone: cfg.timezone || defaultParishInfo.timezone,
-      dateFormat: defaultParishInfo.dateFormat,
+      // dateFormat is not part of the shared ParishConfig type, but it is
+      // persisted alongside it in the same config blob; read it back here so
+      // the saved choice survives reloads instead of always resetting.
+      dateFormat: (cfg as { dateFormat?: string }).dateFormat || defaultParishInfo.dateFormat,
       language: cfg.language || defaultParishInfo.language,
     };
   });
@@ -2164,7 +2179,10 @@ export default function SettingsPage() {
       timezone: info.timezone,
       language: info.language,
     };
-    setParishConfig(configUpdate);
+    // dateFormat isn't in the ParishConfig type but is persisted in the same
+    // blob (getParishConfig spreads any extra keys back out), so the user's
+    // Date Format selection is actually saved rather than silently discarded.
+    setParishConfig({ ...configUpdate, dateFormat: info.dateFormat } as Partial<ParishConfig>);
   };
 
   const renderSection = () => {

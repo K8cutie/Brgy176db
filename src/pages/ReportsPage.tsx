@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback } from 'react';
+import { Fragment, useState, useRef, useCallback } from 'react';
+import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileText,
@@ -62,7 +63,9 @@ export default function ReportsPage() {
   const [genReport, setGenReport] = useState<ReportType | null>(null);
   const [previewReport, setPreviewReport] = useState<ReportType | null>(null);
   const [previewPeriod, setPreviewPeriod] = useState('This Quarter');
-  const [previewFormat, setPreviewFormat] = useState<'PDF' | 'Excel'>('PDF');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [customError, setCustomError] = useState('');
   const previewRef = useRef<HTMLDivElement>(null);
 
   const filteredReports = reports.filter((r) => {
@@ -71,11 +74,27 @@ export default function ReportsPage() {
   });
 
   const handleGenerate = (reportId: ReportType) => {
+    // Validate custom range before opening the preview.
+    if (previewPeriod === 'Custom Range') {
+      if (!customFrom || !customTo) {
+        setCustomError('Select both a start and end date.');
+        return;
+      }
+      if (customFrom > customTo) {
+        setCustomError('Start date must be on or before the end date.');
+        return;
+      }
+    }
+    setCustomError('');
     setGenReport(null);
     setPreviewReport(reportId);
-    setPreviewPeriod('This Quarter');
-    setPreviewFormat('PDF');
   };
+
+  // Human-readable label for the period shown in the preview header.
+  const periodLabel =
+    previewPeriod === 'Custom Range' && customFrom && customTo
+      ? `${formatDate(customFrom)} — ${formatDate(customTo)}`
+      : previewPeriod;
 
   const handleDownloadCSV = useCallback(() => {
     if (!previewReport) return;
@@ -113,7 +132,10 @@ export default function ReportsPage() {
     const content = previewRef.current;
     if (!content) return;
     const w = window.open('', '_blank');
-    if (!w) return;
+    if (!w) {
+      toast.error('Print was blocked. Please allow pop-ups for this site and try again.');
+      return;
+    }
     w.document.write(`
       <html><head><title>ChurchOS Report</title>
       <style>
@@ -145,7 +167,7 @@ export default function ReportsPage() {
         <div>
           <h1 className="display-md font-playfair text-charcoal dark:text-dm-text">Reports</h1>
           <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-1">
-            Generate financial statements, sacramental statistics, and parish reports in CBCP-compliant formats. Export to PDF or Excel.
+            Generate financial statements, sacramental statistics, and parish reports in CBCP-compliant formats. Export to CSV or print.
           </p>
         </div>
       </div>
@@ -206,8 +228,8 @@ export default function ReportsPage() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2 mb-4">
-                <span className="cos-badge cos-badge-default">PDF</span>
-                <span className="cos-badge cos-badge-default">Excel</span>
+                <span className="cos-badge cos-badge-default">CSV</span>
+                <span className="cos-badge cos-badge-default">Print</span>
               </div>
               <div className="flex items-center gap-2 mt-auto pt-3 border-t border-parchment/40 dark:border-dm-border">
                 <button
@@ -267,7 +289,10 @@ export default function ReportsPage() {
                     <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-warm-gray" />
                     <select
                       value={previewPeriod}
-                      onChange={(e) => setPreviewPeriod(e.target.value)}
+                      onChange={(e) => {
+                        setPreviewPeriod(e.target.value);
+                        setCustomError('');
+                      }}
                       className="w-full h-10 pl-9 pr-8 rounded-lg border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface dark:border-dm-border dark:text-dm-text appearance-none"
                     >
                       {periodOptions.map((opt) => (
@@ -278,26 +303,40 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* Format */}
-                <div>
-                  <label className="label text-warm-gray dark:text-dm-text-muted mb-2 block">Export Format</label>
-                  <div className="flex gap-2">
-                    {(['PDF', 'Excel'] as const).map((fmt) => (
-                      <button
-                        key={fmt}
-                        onClick={() => setPreviewFormat(fmt)}
-                        className={
-                          'flex-1 py-2.5 px-4 rounded-lg border text-sm font-medium transition-all ' +
-                          (previewFormat === fmt
-                            ? 'border-gold bg-gold-glow text-gold'
-                            : 'border-parchment dark:border-dm-border text-charcoal dark:text-dm-text hover:bg-cream-dark dark:hover:bg-dm-surface-raised')
-                        }
-                      >
-                        {fmt}
-                      </button>
-                    ))}
+                {/* Custom Range date pickers */}
+                {previewPeriod === 'Custom Range' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="label text-warm-gray dark:text-dm-text-muted mb-2 block">From</label>
+                      <input
+                        type="date"
+                        value={customFrom}
+                        max={customTo || undefined}
+                        onChange={(e) => {
+                          setCustomFrom(e.target.value);
+                          setCustomError('');
+                        }}
+                        className="w-full h-10 px-3 rounded-lg border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface dark:border-dm-border dark:text-dm-text"
+                      />
+                    </div>
+                    <div>
+                      <label className="label text-warm-gray dark:text-dm-text-muted mb-2 block">To</label>
+                      <input
+                        type="date"
+                        value={customTo}
+                        min={customFrom || undefined}
+                        onChange={(e) => {
+                          setCustomTo(e.target.value);
+                          setCustomError('');
+                        }}
+                        className="w-full h-10 px-3 rounded-lg border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface dark:border-dm-border dark:text-dm-text"
+                      />
+                    </div>
                   </div>
-                </div>
+                )}
+                {customError && (
+                  <p className="text-xs text-error font-medium">{customError}</p>
+                )}
               </div>
               <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border">
                 <button
@@ -345,7 +384,7 @@ export default function ReportsPage() {
                     {reports.find((r) => r.id === previewReport)?.title}
                   </h3>
                   <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-0.5">
-                    {previewPeriod} — Generated {new Date().toLocaleDateString('en-PH')}
+                    {periodLabel} — Generated {new Date().toLocaleDateString('en-PH')}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -354,7 +393,7 @@ export default function ReportsPage() {
                     className="cos-btn cos-btn-secondary text-xs py-2 px-3"
                   >
                     <Download className="w-4 h-4" />
-                    Download Excel
+                    Download CSV
                   </button>
                   <button
                     onClick={handlePrint}
@@ -434,19 +473,19 @@ function TrialBalancePreview() {
         </thead>
         <tbody>
           {(['Assets', 'Liabilities', 'Equity', 'Income', 'Expenses'] as const).map((type) => (
-            <>
-              <tr key={type} className="section-header">
+            <Fragment key={type}>
+              <tr className="section-header">
                 <td colSpan={4} className="font-semibold text-deep-navy dark:text-dm-text py-2">{type}</td>
               </tr>
               {grouped[type]?.map((a, idx) => (
-                <tr key={idx}>
+                <tr key={`${type}-${a.code}-${idx}`}>
                   <td className="font-mono text-xs">{a.code}</td>
                   <td>{a.name}</td>
                   <td className="text-right font-mono">{a.debit > 0 ? formatPeso(a.debit) : ''}</td>
                   <td className="text-right font-mono">{a.credit > 0 ? formatPeso(a.credit) : ''}</td>
                 </tr>
               ))}
-            </>
+            </Fragment>
           ))}
           <tr className="total-row">
             <td colSpan={2} className="text-right pr-4">TOTAL</td>

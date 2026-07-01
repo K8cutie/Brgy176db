@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 type SacramentTab = 'baptism' | 'marriage' | 'confirmation' | 'death';
 import {
   Calendar as CalendarIcon,
@@ -92,11 +92,28 @@ export default function CalendarPage() {
     errors: string[]; warnings: string[]; nextAvailable: string;
   } | null>(null);
   const calendarRef = useRef<FullCalendar>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const inboundHandledRef = useRef(false);
 
   // Filtered events
   const filteredEvents = useMemo(() => {
     return events.filter(e => visibleTypes.has(e.type));
   }, [events, visibleTypes]);
+
+  // Sync-to-Phone bridge: the .ics generator (icsGenerator.ts) reads the legacy
+  // bare "churchos_calendar_events" key, but usePersistedState writes the
+  // parish-namespaced key (churchos_parish_{id}_calendar_events). Without this
+  // mirror the export only ever emits the default Mass schedule and drops every
+  // real parish event. Keep the bare key in lock-step with the real store so the
+  // export includes actual events. (We only own this page, so we bridge here
+  // rather than changing the shared generator.)
+  useEffect(() => {
+    try {
+      localStorage.setItem(`churchos_${KEYS.calendarEvents}`, JSON.stringify(events));
+    } catch {
+      /* best-effort mirror; the on-page calendar is unaffected */
+    }
+  }, [events]);
 
   // Toggle event type filter
   const toggleType = useCallback((type: EventType) => {
@@ -109,13 +126,45 @@ export default function CalendarPage() {
   }, []);
 
   // Navigation
-  const goToday = useCallback(() => setCurrentDate(new Date(2026, 4, 1)), []);
+  // FullCalendar's initialDate is init-only, so the mounted grid never moves on
+  // its own. We drive it through the imperative API (calendarRef) for the grid
+  // views (month/week/day) and mirror the resulting date back into currentDate
+  // (which powers the header label + mini-calendar highlight). List view has no
+  // FullCalendar instance, so we advance currentDate directly there.
+  const gotoCalendarDate = useCallback((date: Date) => {
+    const api = calendarRef.current?.getApi();
+    if (api) api.gotoDate(date);
+    setCurrentDate(date);
+  }, []);
+
+  const goToday = useCallback(() => {
+    // "Today" for this seeded pre-launch demo means the demo month (May 2026).
+    gotoCalendarDate(new Date(2026, 4, 1));
+  }, [gotoCalendarDate]);
+
   const goPrev = useCallback(() => {
+    if (view === 'list') { setCurrentDate(d => subMonths(d, 1)); return; }
+    const api = calendarRef.current?.getApi();
+    if (api) {
+      api.prev();
+      setCurrentDate(api.getDate());
+      return;
+    }
+    // Fallback if the grid hasn't mounted yet.
     if (view === 'month') setCurrentDate(d => subMonths(d, 1));
     else if (view === 'week') setCurrentDate(d => subWeeks(d, 1));
     else if (view === 'day') setCurrentDate(d => addDaysFn(d, -1));
   }, [view]);
+
   const goNext = useCallback(() => {
+    if (view === 'list') { setCurrentDate(d => addMonths(d, 1)); return; }
+    const api = calendarRef.current?.getApi();
+    if (api) {
+      api.next();
+      setCurrentDate(api.getDate());
+      return;
+    }
+    // Fallback if the grid hasn't mounted yet.
     if (view === 'month') setCurrentDate(d => addMonths(d, 1));
     else if (view === 'week') setCurrentDate(d => addWeeks(d, 1));
     else if (view === 'day') setCurrentDate(d => addDaysFn(d, 1));
@@ -264,6 +313,53 @@ export default function CalendarPage() {
   const handleSelect = useCallback((arg: DateSelectArg) => {
     openNewEvent(format(arg.start, 'yyyy-MM-dd'));
   }, [openNewEvent]);
+
+  // Inbound deep-links (from dashboard shortcuts, notifications, etc.):
+  //   ?action=schedule        → open the New Event modal
+  //   ?event=<id>             → open that event's detail popover
+  //   ?date=<YYYY-MM-DD>      → navigate the calendar to that date (Day view)
+  // Runs once after mount (events are already hydrated synchronously by
+  // usePersistedState), then strips the params so a refresh/back doesn't reopen.
+  useEffect(() => {
+    if (inboundHandledRef.current) return;
+    inboundHandledRef.current = true;
+
+    const action = searchParams.get('action');
+    const eventId = searchParams.get('event');
+    const dateParam = searchParams.get('date');
+    if (!action && !eventId && !dateParam) return;
+
+    // ?date= — move the grid to the requested day.
+    const parsedDate = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+      ? new Date(dateParam + 'T00:00:00')
+      : null;
+    if (parsedDate && !isNaN(parsedDate.getTime())) {
+      setCurrentDate(parsedDate);
+      setView('day');
+    }
+
+    // ?event= — open the matching event's detail popover.
+    if (eventId) {
+      const found = events.find(e => e.id === eventId);
+      if (found) {
+        setDetailEvent(found);
+        if (!parsedDate) {
+          setCurrentDate(new Date(found.date + 'T00:00:00'));
+        }
+      } else {
+        toast.error('That event could not be found. It may have been deleted.');
+      }
+    }
+
+    // ?action=schedule — open the New Event modal (prefilled with ?date if given).
+    if (action === 'schedule') {
+      openNewEvent(parsedDate ? dateParam! : undefined);
+    }
+
+    // Clear the params so the action doesn't re-fire on refresh/back.
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Upcoming events (next 8)
   const upcomingEvents = useMemo(() => {
@@ -662,7 +758,10 @@ export default function CalendarPage() {
               currentDate={currentDate}
               events={filteredEvents}
               onDateClick={(date) => {
-                setCurrentDate(date);
+                // If we're already in a grid view (esp. Day), the mounted
+                // FullCalendar won't move on its own — drive it imperatively.
+                if (view !== 'list') gotoCalendarDate(date);
+                else setCurrentDate(date);
                 setView('day');
               }}
             />
