@@ -194,13 +194,12 @@ export default function MinistriesPage() {
       </div>
 
       {/* Ministry Detail View */}
-      <AnimatePresence mode="wait">
+      <AnimatePresence>
         {selectedMinistry && (
           <motion.div
             key={selectedMinistry.id}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.3 }}
           >
             {/* Detail Header */}
@@ -263,13 +262,12 @@ export default function MinistriesPage() {
             </div>
 
             {/* Tab Content */}
-            <AnimatePresence mode="wait">
+            <AnimatePresence>
               {detailTab === 'roster' && (
                 <motion.div
                   key="roster"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
                 >
                   <RosterTab
@@ -285,7 +283,6 @@ export default function MinistriesPage() {
                   key="schedule"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
                 >
                   <ScheduleTab
@@ -299,7 +296,6 @@ export default function MinistriesPage() {
                   key="attendance"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
                 >
                   <AttendanceTab

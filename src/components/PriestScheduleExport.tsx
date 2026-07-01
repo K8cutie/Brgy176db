@@ -217,14 +217,13 @@ export default function PriestScheduleExport({ onClose }: PriestScheduleExportPr
 
         {/* Tab content */}
         <div className="px-6 py-5 min-h-[340px]">
-          <AnimatePresence mode="wait">
+          <AnimatePresence>
             {/* QR CODE TAB */}
             {activeTab === 'qr' && (
               <motion.div
                 key="qr"
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
                 className="flex flex-col items-center"
               >
                 {qrDataUrl ? (
@@ -259,7 +258,6 @@ export default function PriestScheduleExport({ onClose }: PriestScheduleExportPr
                 key="download"
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
                 className="flex flex-col items-center text-center"
               >
                 <div className="w-16 h-16 rounded-2xl bg-forest-green/10 flex items-center justify-center mb-4">
@@ -300,7 +298,6 @@ export default function PriestScheduleExport({ onClose }: PriestScheduleExportPr
                 key="text"
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
                 className="flex flex-col"
               >
                 <p className="body-sm text-warm-gray dark:text-dm-text-muted mb-3 text-center">

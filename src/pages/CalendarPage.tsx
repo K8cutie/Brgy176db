@@ -534,13 +534,12 @@ export default function CalendarPage() {
 
           {/* Calendar Views */}
           <div className="cos-card p-0 overflow-hidden">
-            <AnimatePresence mode="wait">
+            <AnimatePresence>
               {view === 'month' && (
                 <motion.div
                   key="month"
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
                   transition={{ duration: 0.25 }}
                 >
                   <FullCalendar
@@ -584,7 +583,6 @@ export default function CalendarPage() {
                   key="week"
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
                   transition={{ duration: 0.25 }}
                 >
                   <FullCalendar
@@ -633,7 +631,6 @@ export default function CalendarPage() {
                   key="day"
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
                   transition={{ duration: 0.25 }}
                 >
                   <FullCalendar
@@ -683,7 +680,6 @@ export default function CalendarPage() {
                   key="list"
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
                   transition={{ duration: 0.25 }}
                   className="p-6 max-h-[720px] overflow-y-auto"
                 >

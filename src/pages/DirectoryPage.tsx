@@ -376,13 +376,12 @@ export default function DirectoryPage() {
       </motion.div>
 
       {/* ── Grid View ───────────────────────────────── */}
-      <AnimatePresence mode="wait">
+      <AnimatePresence>
         {viewMode === 'grid' ? (
           <motion.div
             key="grid"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
             className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5"
           >
@@ -417,7 +416,6 @@ export default function DirectoryPage() {
             key="list"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
           >
             <DataTable

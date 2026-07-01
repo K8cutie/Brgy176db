@@ -129,13 +129,14 @@ export default function FinancePage() {
         ))}
       </div>
 
-      {/* Tab Content */}
-      <AnimatePresence mode="wait">
+      {/* Tab Content — no mode="wait"/exit: under React 19 + framer-motion 12 the
+          exit hangs, so the outgoing tab never unmounts and the incoming tab never
+          shows (tab switch appears dead). Keyed enter-only animation instead. */}
+      <AnimatePresence>
         <motion.div
           key={activeTab}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -12 }}
           transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] }}
         >
           {activeTab === 'coa' && <ChartOfAccountsTab />}
@@ -249,13 +250,12 @@ function ChartOfAccountsTab() {
 
       {/* Detail Panel */}
       <div className="lg:col-span-1">
-        <AnimatePresence mode="wait">
+        <AnimatePresence>
           {selectedAccount ? (
             <motion.div
               key={selectedAccount.code}
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
               transition={{ duration: 0.25 }}
               className="cos-card"
             >

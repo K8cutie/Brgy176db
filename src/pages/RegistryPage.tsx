@@ -945,12 +945,11 @@ export default function RegistryPage() {
       </motion.div>
 
       {/* ── Data Table / Empty State ──────────────── */}
-      <AnimatePresence mode="wait">
+      <AnimatePresence>
         <motion.div
           key={activeTab}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
         >
           {(getData() as unknown as Record<string, unknown>[]).length === 0 ? (

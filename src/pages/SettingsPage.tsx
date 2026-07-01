@@ -2298,13 +2298,12 @@ export default function SettingsPage() {
 
         {/* Content Area */}
         <div className="flex-1 min-w-0">
-          <AnimatePresence mode="wait">
+          <AnimatePresence>
             <motion.div
               key={activeTab}
               variants={contentVariants}
               initial="hidden"
               animate="visible"
-              exit="exit"
             >
               {renderSection()}
             </motion.div>
