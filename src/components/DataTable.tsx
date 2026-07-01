@@ -38,6 +38,23 @@ interface DataTableProps<T> {
   emptyMessage?: string;
 }
 
+// The text used to search/sort a cell: explicit searchValue, else the render
+// output when it's a string/number (so composed columns like `${first} ${last}`
+// are matchable), else the raw key value. JSX-returning renders (e.g. a status
+// badge) fall back to row[key], which holds the value in those cases.
+function cellText<T extends Record<string, any>>(col: Column<T>, row: T): unknown {
+  if (col.searchValue) return col.searchValue(row);
+  if (col.render) {
+    try {
+      const out = col.render(row);
+      if (typeof out === 'string' || typeof out === 'number') return out;
+    } catch {
+      /* fall through to key value */
+    }
+  }
+  return row[col.key];
+}
+
 export default function DataTable<T extends Record<string, any>>({
   columns,
   data,
@@ -60,25 +77,10 @@ export default function DataTable<T extends Record<string, any>>({
     const q = searchQuery.toLowerCase();
     return data.filter((row) =>
       columns.some((col) => {
-        // Search the text the user actually SEES. Previously render columns were
-        // skipped entirely, so name/parents/date columns (composed in render, e.g.
-        // `${firstName} ${lastName}`) returned "0 records" for on-screen text.
-        // Order: explicit searchValue → the render output when it's a string/number
-        // → the raw key value. JSX-returning renders (e.g. a status badge) fall back
-        // to row[key], which holds the value for those cases.
-        let val: unknown;
-        if (col.searchValue) {
-          val = col.searchValue(row);
-        } else if (col.render) {
-          try {
-            const out = col.render(row);
-            val = typeof out === 'string' || typeof out === 'number' ? out : row[col.key];
-          } catch {
-            val = row[col.key];
-          }
-        } else {
-          val = row[col.key];
-        }
+        // Search the text the user actually SEES (see cellText) — previously render
+        // columns were skipped entirely, so name/parents/date columns returned
+        // "0 records" for on-screen text.
+        const val = cellText(col, row);
         return val != null && String(val).toLowerCase().includes(q);
       })
     );
@@ -86,14 +88,21 @@ export default function DataTable<T extends Record<string, any>>({
 
   const sortedData = useMemo(() => {
     if (!sortable || !sortKey) return filteredData;
+    const col = columns.find((c) => c.key === sortKey);
     return [...filteredData].sort((a, b) => {
-      const aVal = a[sortKey];
-      const bVal = b[sortKey];
+      // Prefer the raw key value (sorts ISO dates / numbers correctly); fall back
+      // to the rendered text so computed columns (e.g. a composed name) sort too
+      // instead of being a no-op.
+      const aVal = a[sortKey] ?? (col ? cellText(col, a) : undefined);
+      const bVal = b[sortKey] ?? (col ? cellText(col, b) : undefined);
       if (aVal == null || bVal == null) return 0;
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+      }
       const cmp = String(aVal).localeCompare(String(bVal));
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [filteredData, sortKey, sortDir, sortable]);
+  }, [filteredData, sortKey, sortDir, sortable, columns]);
 
   const totalPages = Math.max(1, Math.ceil(sortedData.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
