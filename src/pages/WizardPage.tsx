@@ -1333,8 +1333,18 @@ export default function WizardPage() {
       roleLabel: 'Parish Priest',
       loginAt: new Date().toISOString(),
     }));
-    window.location.hash = '/';
-    window.location.reload();
+    // Navigate to the app root so the setup-complete + auth guards re-run and
+    // the Dashboard mounts. Desktop (Electron, file://) uses HashRouter, so the
+    // route lives in the hash; the web build (Vercel/localhost) uses BrowserRouter,
+    // so the route is the path — setting the hash there just yields "/setup#/",
+    // which reloads the wizard at step 1. Branch on the same flag main.tsx uses.
+    const isDesktop = !!(window as unknown as { churchos?: { isDesktop?: boolean } }).churchos?.isDesktop;
+    if (isDesktop) {
+      window.location.hash = '/';
+      window.location.reload();
+    } else {
+      window.location.assign('/');
+    }
   };
 
   /* ── Update helpers ── */
