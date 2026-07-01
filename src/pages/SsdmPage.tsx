@@ -670,14 +670,12 @@ export default function SsdmPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
             onClick={() => setViewApplication(null)}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.97 }}
               transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-3xl max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
@@ -918,14 +916,12 @@ export default function SsdmPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
             onClick={() => setViewBeneficiary(null)}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.97 }}
               transition={{ duration: 0.25 }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-2xl max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
@@ -989,14 +985,12 @@ export default function SsdmPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
             onClick={() => setShowNewApp(false)}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.97 }}
               transition={{ duration: 0.25 }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-2xl max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
@@ -1141,14 +1135,12 @@ export default function SsdmPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
             onClick={() => setShowNewDisbursement(false)}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.97 }}
               transition={{ duration: 0.25 }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-lg"
               onClick={(e) => e.stopPropagation()}

@@ -1227,7 +1227,6 @@ function UserManagementSection() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
             onClick={() => setShowUserModal(false)}
@@ -1235,7 +1234,6 @@ function UserManagementSection() {
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.95 }}
               transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[600px] overflow-hidden"
               onClick={(e) => e.stopPropagation()}
@@ -1373,14 +1371,12 @@ function UserManagementSection() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
             onClick={() => setResetPassword(null)}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.95 }}
               transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-sm overflow-hidden"
               onClick={(e) => e.stopPropagation()}
@@ -1627,7 +1623,6 @@ function AuditLogSection() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
             onClick={() => setSelectedLog(null)}
@@ -1635,7 +1630,6 @@ function AuditLogSection() {
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.95 }}
               transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-lg overflow-hidden"
               onClick={(e) => e.stopPropagation()}

@@ -238,14 +238,12 @@ export default function ReportsPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-modal flex items-center justify-center p-4 modal-overlay"
             onClick={() => setGenReport(null)}
           >
             <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.97 }}
               transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-md"
               onClick={(e) => e.stopPropagation()}
@@ -329,14 +327,12 @@ export default function ReportsPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
             className="fixed inset-0 z-modal flex items-start justify-center pt-6 pb-6 px-4 modal-overlay overflow-y-auto"
             onClick={() => setPreviewReport(null)}
           >
             <motion.div
               initial={{ opacity: 0, x: 30, scale: 0.97 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 30, scale: 0.97 }}
               transition={{ duration: 0.35, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
               className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full"
               style={{ maxWidth: 1100 }}

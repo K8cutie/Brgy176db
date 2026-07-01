@@ -930,7 +930,6 @@ function EventDetailPopover({ event, publicView, onClose, onEdit }: {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
       className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
       onClick={onClose}
@@ -938,7 +937,6 @@ function EventDetailPopover({ event, publicView, onClose, onEdit }: {
       <motion.div
         initial={{ opacity: 0, scale: 0.9, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.9, y: 10 }}
         transition={{ duration: 0.2, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
         className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[380px] overflow-hidden"
         onClick={e => e.stopPropagation()}
@@ -1063,14 +1061,12 @@ function DragWarningModal({ warning, onAction, onClose }: {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
       className="fixed inset-0 z-modal modal-overlay flex items-center justify-center p-4"
       onClick={onClose}
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 10 }}
         transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
         className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[440px] overflow-hidden"
         onClick={e => e.stopPropagation()}
@@ -1384,7 +1380,6 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
       className="fixed inset-0 z-modal modal-overlay flex items-center justify-center p-4"
       onClick={onClose}
@@ -1392,7 +1387,6 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.95 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 20, scale: 0.95 }}
         transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
         className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[640px] overflow-hidden max-h-[92vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}

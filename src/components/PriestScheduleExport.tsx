@@ -105,14 +105,12 @@ export default function PriestScheduleExport({ onClose }: PriestScheduleExportPr
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
       className="fixed inset-0 z-overlay modal-overlay flex items-start justify-center p-4 pt-10 overflow-y-auto"
       onClick={onClose}
     >
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: 20 }}
         transition={{ duration: 0.3, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
         className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[520px] overflow-hidden my-8"
         onClick={(e) => e.stopPropagation()}
