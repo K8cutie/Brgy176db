@@ -164,7 +164,12 @@ export function getAnalyticLines(type?: 'revenue' | 'expense'): AnalyticLine[] {
   const lines: AnalyticLine[] = [];
 
   for (const entry of getJournalEntries()) {
-    if (entry.status !== 'Posted') continue;
+    // Entries in the journal ledger are POSTED by definition — drafts live in a
+    // separate store (finance_journal_drafts). Real posted entries (and the app's
+    // own GL-booked entries) carry NO `status` field, so a `!== 'Posted'` filter
+    // silently dropped every real entry and left analytics at ₱0. Only skip an entry
+    // that is EXPLICITLY marked something other than Posted.
+    if (entry.status && entry.status !== 'Posted') continue;
 
     for (const line of entry.lines) {
       // Revenue = credit to 4xxx account
