@@ -16,6 +16,13 @@ export interface Column<T> {
   width?: string;
   sortable?: boolean;
   render?: (row: T) => React.ReactNode;
+  /**
+   * Value used for search/sort when the visible cell comes from `render`
+   * (whose JSX can't be matched as text). Defaults to `row[key]`. Provide this
+   * for computed columns (e.g. a "Head of Family" derived from a members array)
+   * so the column is actually searchable instead of silently ignored.
+   */
+  searchValue?: (row: T) => string | number | null | undefined;
 }
 
 interface DataTableProps<T> {
@@ -53,8 +60,11 @@ export default function DataTable<T extends Record<string, any>>({
     const q = searchQuery.toLowerCase();
     return data.filter((row) =>
       columns.some((col) => {
-        if (col.render) return false;
-        const val = row[col.key];
+        // A render column's JSX can't be matched as text, so search its
+        // underlying key value (or an explicit searchValue accessor). Previously
+        // render columns were skipped entirely, making name/status/date columns
+        // silently unsearchable — searches returned "0 records" for on-screen text.
+        const val = col.searchValue ? col.searchValue(row) : row[col.key];
         return val != null && String(val).toLowerCase().includes(q);
       })
     );
