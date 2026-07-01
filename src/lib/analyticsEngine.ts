@@ -3,7 +3,22 @@
 // Six Sigma-inspired: Pareto analysis, drill-down, comparisons
 // ═══════════════════════════════════════════════════════════
 
-import { journalEntries, type JournalEntry, type JournalLine } from './financeData';
+import { journalEntries as seedJournalEntries, type JournalEntry } from './financeData';
+import { getJSON } from './storageNamespaced';
+import { KEYS } from './storageKeys';
+
+// ── Single source of truth ──
+// The Journal tab (FinancePage) persists posted entries to the per-parish
+// namespaced localStorage key KEYS.journalEntries via usePersistedState.
+// Analytics MUST read that same store so a freshly-posted balanced entry
+// shows up in Total Revenue / Total Expenses / the Transactions table.
+// We fall back to the static seed ONLY when nothing has been persisted yet
+// (fresh install with an untouched ledger), and clearly prefer real data.
+function getJournalEntries(): JournalEntry[] {
+  const stored = getJSON<JournalEntry[]>(KEYS.journalEntries, []);
+  if (Array.isArray(stored) && stored.length > 0) return stored;
+  return seedJournalEntries;
+}
 
 // ── Sub-category classification rules ──
 // Maps journal entry descriptions to sub-categories for drill-down
@@ -148,7 +163,7 @@ export interface AnalyticLine {
 export function getAnalyticLines(type?: 'revenue' | 'expense'): AnalyticLine[] {
   const lines: AnalyticLine[] = [];
 
-  for (const entry of journalEntries) {
+  for (const entry of getJournalEntries()) {
     if (entry.status !== 'Posted') continue;
 
     for (const line of entry.lines) {

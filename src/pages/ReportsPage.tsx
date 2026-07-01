@@ -889,6 +889,21 @@ function CollectionPreview() {
     { name: 'Digital', value: totalDigital },
   ];
 
+  // Monthly subtotals derived from the same rows so they always tie to the
+  // Weekly-Total column and the Grand Total (no hardcoded drift).
+  const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const monthlyMap = new Map<string, { month: string; cash: number; checks: number; digital: number }>();
+  collectionSummaryData.forEach((r) => {
+    const key = r.date.slice(0, 7); // YYYY-MM
+    const monthName = MONTH_NAMES[Number(r.date.slice(5, 7)) - 1];
+    const entry = monthlyMap.get(key) ?? { month: monthName, cash: 0, checks: 0, digital: 0 };
+    entry.cash += r.cashTotal;
+    entry.checks += r.checkTotal;
+    entry.digital += r.digitalTotal;
+    monthlyMap.set(key, entry);
+  });
+  const monthlySubtotals = Array.from(monthlyMap.values());
+
   return (
     <div>
       <ReportHeader title="SUNDAY COLLECTION SUMMARY" subtitle="January — May 2026" />
@@ -940,6 +955,14 @@ function CollectionPreview() {
                 </tr>
               );
             })}
+            <tr className="total-row">
+              <td className="font-semibold">Grand Total</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass6am, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass8am, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass10am, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass6pm, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(grandTotal)}</td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -957,13 +980,7 @@ function CollectionPreview() {
           </tr>
         </thead>
         <tbody>
-          {[
-            { month: 'January', cash: 54800, checks: 6500, digital: 25200 },
-            { month: 'February', cash: 57000, checks: 7100, digital: 28700 },
-            { month: 'March', cash: 59800, checks: 8100, digital: 29300 },
-            { month: 'April', cash: 62700, checks: 8400, digital: 32700 },
-            { month: 'May', cash: 64900, checks: 8700, digital: 35400 },
-          ].map((m, idx) => (
+          {monthlySubtotals.map((m, idx) => (
             <tr key={idx}>
               <td>{m.month}</td>
               <td className="text-right font-mono">{formatPeso(m.cash)}</td>
@@ -972,6 +989,13 @@ function CollectionPreview() {
               <td className="text-right font-mono font-semibold">{formatPeso(m.cash + m.checks + m.digital)}</td>
             </tr>
           ))}
+          <tr className="total-row">
+            <td className="font-semibold">Grand Total</td>
+            <td className="text-right font-mono font-semibold">{formatPeso(totalCash)}</td>
+            <td className="text-right font-mono font-semibold">{formatPeso(totalChecks)}</td>
+            <td className="text-right font-mono font-semibold">{formatPeso(totalDigital)}</td>
+            <td className="text-right font-mono font-semibold">{formatPeso(grandTotal)}</td>
+          </tr>
         </tbody>
       </table>
 

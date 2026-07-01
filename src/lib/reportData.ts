@@ -20,7 +20,7 @@ export const trialBalanceData: TrialBalanceAccount[] = [
   { code: '2120', name: 'Notes Payable', type: 'Liabilities', debit: 0, credit: 45000.00 },
   { code: '2130', name: 'SSS Payable', type: 'Liabilities', debit: 0, credit: 8500.00 },
   { code: '2140', name: 'Withholding Tax Payable', type: 'Liabilities', debit: 0, credit: 6200.00 },
-  { code: '3110', name: 'Parish Net Assets', type: 'Equity', debit: 0, credit: 180550.00 },
+  { code: '3110', name: 'Parish Net Assets', type: 'Equity', debit: 0, credit: 359150.00 },
   { code: '3120', name: 'Restricted Donations', type: 'Equity', debit: 0, credit: 35000.00 },
   { code: '4110', name: 'Sunday Collections', type: 'Income', debit: 0, credit: 185000.00 },
   { code: '4120', name: 'Donations & Offerings', type: 'Income', debit: 0, credit: 42500.00 },
@@ -90,7 +90,7 @@ export const balanceSheetData = {
     { name: 'Withholding Tax Payable', amount: 6200 },
   ],
   equity: [
-    { name: 'Parish Net Assets', amount: 180550 },
+    { name: 'Parish Net Assets', amount: 459050 },
     { name: 'Restricted Donations', amount: 35000 },
   ],
   date: 'May 31, 2026',
@@ -162,28 +162,31 @@ export interface CollectionRecord {
   digitalTotal: number;
 }
 
+// Per row, the four Mass-time amounts (6AM+8AM+10AM+6PM) sum EXACTLY to
+// cashTotal + checkTotal + digitalTotal, so the "Weekly Total" column, the
+// per-method Grand Total, and the Monthly Subtotals all tie out to ₱464,200.
 export const collectionSummaryData: CollectionRecord[] = [
-  { date: '2026-01-04', mass6am: 3200, mass8am: 6800, mass10am: 5200, mass6pm: 4100, cashTotal: 13500, checkTotal: 1200, digitalTotal: 4600 },
-  { date: '2026-01-11', mass6am: 3500, mass8am: 7200, mass10am: 5800, mass6pm: 4300, cashTotal: 14200, checkTotal: 1800, digitalTotal: 5800 },
-  { date: '2026-01-18', mass6am: 3100, mass8am: 6900, mass10am: 5400, mass6pm: 3900, cashTotal: 13100, checkTotal: 1500, digitalTotal: 6500 },
-  { date: '2026-01-25', mass6am: 3800, mass8am: 7500, mass10am: 6100, mass6pm: 4500, cashTotal: 15200, checkTotal: 2000, digitalTotal: 6300 },
-  { date: '2026-02-01', mass6am: 3400, mass8am: 7000, mass10am: 5600, mass6pm: 4200, cashTotal: 13800, checkTotal: 1600, digitalTotal: 7200 },
-  { date: '2026-02-08', mass6am: 3600, mass8am: 7400, mass10am: 5900, mass6pm: 4400, cashTotal: 14500, checkTotal: 2100, digitalTotal: 6900 },
-  { date: '2026-02-15', mass6am: 3300, mass8am: 7100, mass10am: 5500, mass6pm: 4000, cashTotal: 13400, checkTotal: 1400, digitalTotal: 7500 },
-  { date: '2026-02-22', mass6am: 3700, mass8am: 7600, mass10am: 6200, mass6pm: 4600, cashTotal: 15100, checkTotal: 1900, digitalTotal: 7100 },
-  { date: '2026-03-01', mass6am: 3500, mass8am: 7300, mass10am: 5700, mass6pm: 4300, cashTotal: 14100, checkTotal: 1700, digitalTotal: 6800 },
-  { date: '2026-03-08', mass6am: 3900, mass8am: 7800, mass10am: 6400, mass6pm: 4700, cashTotal: 15600, checkTotal: 2200, digitalTotal: 7400 },
-  { date: '2026-03-15', mass6am: 3600, mass8am: 7200, mass10am: 5800, mass6pm: 4400, cashTotal: 14300, checkTotal: 1800, digitalTotal: 7800 },
-  { date: '2026-03-22', mass6am: 4000, mass8am: 7900, mass10am: 6500, mass6pm: 4800, cashTotal: 15800, checkTotal: 2400, digitalTotal: 7600 },
-  { date: '2026-04-05', mass6am: 3700, mass8am: 7500, mass10am: 6000, mass6pm: 4500, cashTotal: 14700, checkTotal: 1600, digitalTotal: 8200 },
-  { date: '2026-04-12', mass6am: 4100, mass8am: 8000, mass10am: 6600, mass6pm: 4900, cashTotal: 16200, checkTotal: 2300, digitalTotal: 7900 },
-  { date: '2026-04-19', mass6am: 4200, mass8am: 8200, mass10am: 6800, mass6pm: 5100, cashTotal: 16500, checkTotal: 2500, digitalTotal: 8100 },
-  { date: '2026-04-26', mass6am: 3800, mass8am: 7700, mass10am: 6200, mass6pm: 4600, cashTotal: 15300, checkTotal: 2000, digitalTotal: 8500 },
-  { date: '2026-05-03', mass6am: 4300, mass8am: 8400, mass10am: 6900, mass6pm: 5200, cashTotal: 16800, checkTotal: 2600, digitalTotal: 8800 },
-  { date: '2026-05-10', mass6am: 4000, mass8am: 7900, mass10am: 6400, mass6pm: 4800, cashTotal: 15500, checkTotal: 2100, digitalTotal: 9100 },
-  { date: '2026-05-17', mass6am: 3900, mass8am: 7600, mass10am: 6100, mass6pm: 4700, cashTotal: 15100, checkTotal: 1800, digitalTotal: 8700 },
-  { date: '2026-05-24', mass6am: 4100, mass8am: 8100, mass10am: 6700, mass6pm: 5000, cashTotal: 16400, checkTotal: 2400, digitalTotal: 9300 },
-  { date: '2026-05-31', mass6am: 4500, mass8am: 8600, mass10am: 7100, mass6pm: 5400, cashTotal: 17300, checkTotal: 2800, digitalTotal: 9500 },
+  { date: '2026-01-04', mass6am: 3200, mass8am: 6800, mass10am: 5200, mass6pm: 4100, cashTotal: 13900, checkTotal: 1500, digitalTotal: 3900 },
+  { date: '2026-01-11', mass6am: 3500, mass8am: 7200, mass10am: 5800, mass6pm: 4300, cashTotal: 15000, checkTotal: 1600, digitalTotal: 4200 },
+  { date: '2026-01-18', mass6am: 3100, mass8am: 6900, mass10am: 5400, mass6pm: 3900, cashTotal: 13900, checkTotal: 1500, digitalTotal: 3900 },
+  { date: '2026-01-25', mass6am: 3800, mass8am: 7500, mass10am: 6100, mass6pm: 4500, cashTotal: 15800, checkTotal: 1700, digitalTotal: 4400 },
+  { date: '2026-02-01', mass6am: 3400, mass8am: 7000, mass10am: 5600, mass6pm: 4200, cashTotal: 14500, checkTotal: 1700, digitalTotal: 4000 },
+  { date: '2026-02-08', mass6am: 3600, mass8am: 7400, mass10am: 5900, mass6pm: 4400, cashTotal: 15300, checkTotal: 1700, digitalTotal: 4300 },
+  { date: '2026-02-15', mass6am: 3300, mass8am: 7100, mass10am: 5500, mass6pm: 4000, cashTotal: 14300, checkTotal: 1600, digitalTotal: 4000 },
+  { date: '2026-02-22', mass6am: 3700, mass8am: 7600, mass10am: 6200, mass6pm: 4600, cashTotal: 15900, checkTotal: 1800, digitalTotal: 4400 },
+  { date: '2026-03-01', mass6am: 3500, mass8am: 7300, mass10am: 5700, mass6pm: 4300, cashTotal: 15000, checkTotal: 1600, digitalTotal: 4200 },
+  { date: '2026-03-08', mass6am: 3900, mass8am: 7800, mass10am: 6400, mass6pm: 4700, cashTotal: 16400, checkTotal: 1800, digitalTotal: 4600 },
+  { date: '2026-03-15', mass6am: 3600, mass8am: 7200, mass10am: 5800, mass6pm: 4400, cashTotal: 15100, checkTotal: 1700, digitalTotal: 4200 },
+  { date: '2026-03-22', mass6am: 4000, mass8am: 7900, mass10am: 6500, mass6pm: 4800, cashTotal: 16700, checkTotal: 1900, digitalTotal: 4600 },
+  { date: '2026-04-05', mass6am: 3700, mass8am: 7500, mass10am: 6000, mass6pm: 4500, cashTotal: 15600, checkTotal: 1800, digitalTotal: 4300 },
+  { date: '2026-04-12', mass6am: 4100, mass8am: 8000, mass10am: 6600, mass6pm: 4900, cashTotal: 17000, checkTotal: 1900, digitalTotal: 4700 },
+  { date: '2026-04-19', mass6am: 4200, mass8am: 8200, mass10am: 6800, mass6pm: 5100, cashTotal: 17500, checkTotal: 1900, digitalTotal: 4900 },
+  { date: '2026-04-26', mass6am: 3800, mass8am: 7700, mass10am: 6200, mass6pm: 4600, cashTotal: 16100, checkTotal: 1700, digitalTotal: 4500 },
+  { date: '2026-05-03', mass6am: 4300, mass8am: 8400, mass10am: 6900, mass6pm: 5200, cashTotal: 17900, checkTotal: 1900, digitalTotal: 5000 },
+  { date: '2026-05-10', mass6am: 4000, mass8am: 7900, mass10am: 6400, mass6pm: 4800, cashTotal: 16600, checkTotal: 1900, digitalTotal: 4600 },
+  { date: '2026-05-17', mass6am: 3900, mass8am: 7600, mass10am: 6100, mass6pm: 4700, cashTotal: 16100, checkTotal: 1700, digitalTotal: 4500 },
+  { date: '2026-05-24', mass6am: 4100, mass8am: 8100, mass10am: 6700, mass6pm: 5000, cashTotal: 17200, checkTotal: 1900, digitalTotal: 4800 },
+  { date: '2026-05-31', mass6am: 4500, mass8am: 8600, mass10am: 7100, mass6pm: 5400, cashTotal: 18400, checkTotal: 2100, digitalTotal: 5100 },
 ];
 
 export type ReportType =
