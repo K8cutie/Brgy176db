@@ -3,15 +3,19 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Download, Smartphone, MessageCircle, Calendar, Check, ChevronDown } from 'lucide-react';
 import { generatePriestIcs, generateTextSummary, downloadIcs } from '@/lib/icsGenerator';
 import { getPriestName, getParishName } from '@/lib/parishConfig';
+import type { CalendarEvent } from '@/lib/calendarData';
 
 // QRCode is loaded dynamically to avoid SSR issues
 let QRCodeModule: typeof import('qrcode') | null = null;
 
 interface PriestScheduleExportProps {
+  // Live parish events from the calendar's persisted store — the generator
+  // never reads them from bare localStorage keys.
+  events: CalendarEvent[];
   onClose: () => void;
 }
 
-export default function PriestScheduleExport({ onClose }: PriestScheduleExportProps) {
+export default function PriestScheduleExport({ events, onClose }: PriestScheduleExportProps) {
   const priestName = getPriestName();
   const parishName = getParishName();
 
@@ -39,8 +43,9 @@ export default function PriestScheduleExport({ onClose }: PriestScheduleExportPr
   /* ── Regenerate on option change ── */
   const regenerate = useCallback(() => {
     const opts = { days, includeMass, includeSacraments, includeEvents };
-    const ics = generatePriestIcs(opts);
-    const text = generateTextSummary(opts);
+    const data = { events };
+    const ics = generatePriestIcs(opts, data);
+    const text = generateTextSummary(opts, data);
     setIcsContent(ics);
     setTextSummary(text);
 
@@ -60,7 +65,7 @@ export default function PriestScheduleExport({ onClose }: PriestScheduleExportPr
         errorCorrectionLevel: 'M',
       }).then(setQrDataUrl).catch(() => setQrDataUrl(''));
     }
-  }, [days, includeMass, includeSacraments, includeEvents]);
+  }, [days, includeMass, includeSacraments, includeEvents, events]);
 
   useEffect(() => {
     // Small delay to let QR lib load on first mount

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import { isAuthenticated } from '@/lib/session'
+import { hasDioceseRole } from '@/lib/dioceseAccess'
 import { hasSetupBeenCompleted } from '@/lib/store'
 import { setPersistedWriteErrorHandler } from '@/hooks/usePersistedState'
 import { setCorruptionHandler } from '@/lib/storageNamespaced'
@@ -39,6 +40,45 @@ interface ActiveTour {
   id: string;
   steps: Step[];
   run: boolean;
+}
+
+// /diocese is SaaS-only (cross-parish roll-up) and restricted to diocese-level
+// roles. Lazy so the cockpit chunk (and its Supabase queries) never loads on
+// desktop/offline installs. The gate renders friendly notices instead of a
+// crash/blank page, and direct-URL access hits the exact same checks.
+const DioceseCockpit = lazy(() => import('@/pages/DioceseCockpit'));
+
+function GateNotice({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="max-w-lg mx-auto mt-16 rounded-xl border border-parchment bg-white p-8 text-center">
+      <h2 className="font-playfair text-xl text-charcoal mb-2">{title}</h2>
+      <p className="text-sm text-warm-gray">{body}</p>
+    </div>
+  );
+}
+
+function DioceseGate() {
+  if (!isCloud()) {
+    return (
+      <GateNotice
+        title="Diocese oversight is part of ChurchOS Cloud"
+        body="This install runs standalone for a single parish, so there is no cross-parish data here. The diocese roll-up is available on ChurchOS Cloud, where parishes report to their diocese."
+      />
+    );
+  }
+  if (!hasDioceseRole()) {
+    return (
+      <GateNotice
+        title="Not authorized"
+        body="The diocese view is limited to diocese administrators and the bishop. If you believe you need access, contact your diocese administrator."
+      />
+    );
+  }
+  return (
+    <Suspense fallback={<div className="p-6 text-warm-gray text-sm">Loading diocese…</div>}>
+      <DioceseCockpit />
+    </Suspense>
+  );
 }
 
 function AppRoutes() {
@@ -187,6 +227,7 @@ function AppRoutes() {
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/import" element={<ImportPage />} />
+          <Route path="/diocese" element={<DioceseGate />} />
         </Routes>
       </Layout>
 

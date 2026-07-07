@@ -82,6 +82,10 @@ function isValidEmail(v: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 }
 
+/* Grid view renders this many family cards at a time ("Load more" reveals the
+   next batch) so a 10k-family parish doesn't mount thousands of cards. */
+const GRID_PAGE_SIZE = 24;
+
 function getAvatarColor(name: string) {
   const colors = ['#C9963B', '#2D6A4F', '#6B2737', '#5B3A73', '#3B6BC9', '#1B2A4A', '#8C8374', '#B8322F'];
   let hash = 0;
@@ -149,6 +153,20 @@ export default function DirectoryPage() {
   }, [families, searchQuery, selectedBarangay, selectedSitio]);
 
   const totalMembers = filteredFamilies.reduce((sum, f) => sum + f.members.length, 0);
+
+  /* Grid pagination (load-more). Resets whenever the filter/search results
+     change (adjusted during render — filteredFamilies is memoized, so a new
+     identity means the results really changed). */
+  const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
+  const [prevFiltered, setPrevFiltered] = useState(filteredFamilies);
+  if (prevFiltered !== filteredFamilies) {
+    setPrevFiltered(filteredFamilies);
+    setVisibleCount(GRID_PAGE_SIZE);
+  }
+  const visibleFamilies = useMemo(
+    () => filteredFamilies.slice(0, visibleCount),
+    [filteredFamilies, visibleCount]
+  );
 
   const handleEditFamily = (family: Family) => {
     setEditingFamily(family);
@@ -385,7 +403,7 @@ export default function DirectoryPage() {
             transition={{ duration: 0.2 }}
             className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5"
           >
-            {filteredFamilies.map((family, idx) => (
+            {visibleFamilies.map((family, idx) => (
               <FamilyCard
                 key={family.id}
                 family={family}
@@ -396,6 +414,20 @@ export default function DirectoryPage() {
                 onDelete={() => handleDeleteFamily(family.id)}
               />
             ))}
+            {filteredFamilies.length > visibleCount && (
+              <div className="col-span-full flex flex-col items-center gap-2 py-2">
+                <button
+                  onClick={() => setVisibleCount((c) => c + GRID_PAGE_SIZE)}
+                  className="cos-btn cos-btn-secondary h-9 px-5 text-sm"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                  Load more families
+                </button>
+                <span className="text-xs text-warm-gray dark:text-dm-text-muted">
+                  Showing {visibleFamilies.length} of {filteredFamilies.length} families
+                </span>
+              </div>
+            )}
             {filteredFamilies.length === 0 && (
               <div className="col-span-full">
                 <EmptyState
@@ -515,7 +547,9 @@ function FamilyCard({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay: index * 0.05, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] }}
+      // Stagger within the current load-more batch only, capped so late batches
+      // (index ≥ GRID_PAGE_SIZE) don't wait seconds before appearing.
+      transition={{ duration: 0.3, delay: Math.min(index % GRID_PAGE_SIZE, 11) * 0.05, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] }}
       className="cos-card cos-card-hover cursor-pointer flex flex-col overflow-hidden"
       onClick={onToggleExpand}
       style={{ borderTopWidth: 4, borderTopColor: family.color }}

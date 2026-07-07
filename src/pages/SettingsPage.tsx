@@ -38,6 +38,7 @@ import {
   actionBadgeColors,
 } from '@/lib/settingsData';
 import type { ParishInfo, MassTime, CertificateTemplate, User, AuditLogEntry } from '@/lib/settingsData';
+import { getJSON } from '@/lib/storageNamespaced';
 import {
   getAvailableTours,
   getTourStatus,
@@ -1450,23 +1451,32 @@ function AuditLogSection() {
   });
   const [selectedLog, setSelectedLog] = useState<AuditLogEntry | null>(null);
 
-  const allUsers = useMemo(() => {
-    const names = new Set(auditLogData.map((l) => l.user));
-    return Array.from(names);
+  // The REAL audit trail: finance actions (Submitted/Created/Approved/Rejected)
+  // are appended to the persisted 'audit_log' store. The demo fixture is shown
+  // only while that store is still empty, so real decisions are never hidden
+  // behind fake rows.
+  const logs = useMemo(() => {
+    const stored = getJSON<AuditLogEntry[]>('audit_log', []);
+    return Array.isArray(stored) && stored.length > 0 ? stored : auditLogData;
   }, []);
+
+  const allUsers = useMemo(() => {
+    const names = new Set(logs.map((l) => l.user));
+    return Array.from(names);
+  }, [logs]);
 
   const allActions = useMemo(() => {
-    const acts = new Set(auditLogData.map((l) => l.action));
+    const acts = new Set(logs.map((l) => l.action));
     return Array.from(acts);
-  }, []);
+  }, [logs]);
 
   const allTables = useMemo(() => {
-    const tables = new Set(auditLogData.map((l) => l.table));
+    const tables = new Set(logs.map((l) => l.table));
     return Array.from(tables);
-  }, []);
+  }, [logs]);
 
   const filteredLogs = useMemo(() => {
-    return auditLogData.filter((log) => {
+    return logs.filter((log) => {
       if (filters.user && log.user !== filters.user) return false;
       if (filters.action && log.action !== filters.action) return false;
       if (filters.table && log.table !== filters.table) return false;
@@ -1481,7 +1491,7 @@ function AuditLogSection() {
       }
       return true;
     });
-  }, [filters]);
+  }, [filters, logs]);
 
   const formatTimestamp = (ts: string) => {
     const d = new Date(ts);

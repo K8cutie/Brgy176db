@@ -19,10 +19,13 @@ export interface JournalEntry {
   reference: string;
   description: string;
   lines: JournalLine[];
-  status: 'Posted' | 'Pending' | 'Draft';
+  status: 'Posted' | 'Pending' | 'Draft' | 'Rejected';
   postedBy: string;
   totalDr: number;
   totalCr: number;
+  // Set when the amount hits an approval threshold (getAmountApprovalLevel).
+  requiredApproval?: string;
+  approvalHistory?: ApprovalHistoryStep[];
 }
 
 export interface JournalLine {
@@ -452,4 +455,16 @@ export function getAmountApprovalLevel(amount: number): { label: string; color: 
   if (amount < 200000) return { label: 'Council Review Required', color: 'text-warning', bgColor: 'bg-warning/10' };
   if (amount < 500000) return { label: 'Council Consent Required', color: 'text-orange-600', bgColor: 'bg-orange-50' };
   return { label: 'Bishop Approval Required', color: 'text-error', bgColor: 'bg-error/10' };
+}
+
+// Role codes that may decide each approval level. Accepts both the role CODES
+// setSession stores (e.g. 'priest', 'finance_council') and legacy label-style
+// roles, mirroring the defensive matching in feeSchedule.canEditFeeSchedule.
+const COUNCIL_APPROVERS = ['priest', 'parish_priest', 'finance_council', 'bishop', 'diocese_admin', 'Parish Priest', 'Finance Council', 'Bishop'];
+const BISHOP_APPROVERS = ['bishop', 'diocese_admin', 'Bishop'];
+
+export function canApproveLevel(role: string, requiredApproval: string | undefined): boolean {
+  if (!requiredApproval || requiredApproval === 'Direct Post') return false;
+  if (requiredApproval === 'Bishop Approval Required') return BISHOP_APPROVERS.includes(role);
+  return COUNCIL_APPROVERS.includes(role);
 }

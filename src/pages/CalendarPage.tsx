@@ -100,21 +100,6 @@ export default function CalendarPage() {
     return events.filter(e => visibleTypes.has(e.type));
   }, [events, visibleTypes]);
 
-  // Sync-to-Phone bridge: the .ics generator (icsGenerator.ts) reads the legacy
-  // bare "churchos_calendar_events" key, but usePersistedState writes the
-  // parish-namespaced key (churchos_parish_{id}_calendar_events). Without this
-  // mirror the export only ever emits the default Mass schedule and drops every
-  // real parish event. Keep the bare key in lock-step with the real store so the
-  // export includes actual events. (We only own this page, so we bridge here
-  // rather than changing the shared generator.)
-  useEffect(() => {
-    try {
-      localStorage.setItem(`churchos_${KEYS.calendarEvents}`, JSON.stringify(events));
-    } catch {
-      /* best-effort mirror; the on-page calendar is unaffected */
-    }
-  }, [events]);
-
   // Toggle event type filter
   const toggleType = useCallback((type: EventType) => {
     setVisibleTypes(prev => {
@@ -271,6 +256,13 @@ export default function CalendarPage() {
     if (!dragWarning) return;
     const { event, proposedDate, proposedTime, nextAvailable } = dragWarning;
 
+    if (action === 'cancel') {
+      // The grid visual was already reverted by arg.revert() in handleEventDrop
+      // before this modal opened, so cancelling only dismisses the modal.
+      setDragWarning(null);
+      return;
+    }
+
     // Duration preservation
     const oldDuration = (parseInt(event.endTime.split(':')[0]) * 60 + parseInt(event.endTime.split(':')[1])) -
                         (parseInt(event.startTime.split(':')[0]) * 60 + parseInt(event.startTime.split(':')[1]));
@@ -278,28 +270,43 @@ export default function CalendarPage() {
     const newEndMins = newStartMins + oldDuration;
     const newEndTime = `${String(Math.floor(newEndMins / 60)).padStart(2, '0')}:${String(newEndMins % 60).padStart(2, '0')}`;
 
-    if (action === 'cancel') {
-      setDragWarning(null);
-      return;
-    }
-
-    if (action === 'move-anyway') {
-      setDragWarning(null);
-      return; // Hard stop -- not allowed
-    }
-
     const finalDate = action === 'next-available' ? nextAvailable : proposedDate;
+
+    // Re-annotate against the final slot so the committed event carries the
+    // current rule status instead of the pre-move one.
+    const ruleKey = eventTypeToRuleKey(event.type);
+    const revalidation = ruleKey ? validateSchedulingRules(ruleKey, finalDate, proposedTime, event.location) : null;
+
     const updated: CalendarEvent = {
       ...event,
       date: finalDate,
       startTime: proposedTime,
       endTime: newEndTime,
-      ruleNotes: event.ruleNotes,
+      ruleEnforced: revalidation ? revalidation.valid : event.ruleEnforced,
+      ruleNotes: revalidation
+        ? [...revalidation.errors, ...revalidation.warnings].join('; ') || undefined
+        : event.ruleNotes,
     };
+
+    // Time/location overlaps stay a hard stop even when overriding rules
+    // (mirrors handleEventDrop; also protects the next-available date, which
+    // was never overlap-checked at drop time).
+    const overlaps = findConflicts(updated, events);
+    if (overlaps.length > 0) {
+      toast.error(`Cannot move: conflicts with ${overlaps[0].title} at ${overlaps[0].startTime}`);
+      setDragWarning(null);
+      return;
+    }
+
     setEvents(prev => prev.map(e => e.id === event.id ? updated : e));
     setDragWarning(null);
-    toast.success(`${event.type} moved to ${format(new Date(finalDate), 'EEEE, MMMM d, yyyy')}.`);
-  }, [dragWarning]);
+    const dateLabel = format(new Date(finalDate + 'T00:00:00'), 'EEEE, MMMM d, yyyy');
+    if (action === 'move-anyway') {
+      toast.warning(`${event.type} moved to ${dateLabel} despite scheduling rules. The violation is noted on the event.`, { duration: 5000 });
+    } else {
+      toast.success(`${event.type} moved to ${dateLabel}.`);
+    }
+  }, [dragWarning, events]);
 
   const handleDateClick = useCallback((arg: { date: Date }) => {
     openNewEvent(format(arg.date, 'yyyy-MM-dd'));
@@ -886,7 +893,7 @@ export default function CalendarPage() {
       {/* Priest Schedule to Phone Export */}
       <AnimatePresence>
         {showPriestExport && (
-          <PriestScheduleExport onClose={() => setShowPriestExport(false)} />
+          <PriestScheduleExport events={events} onClose={() => setShowPriestExport(false)} />
         )}
       </AnimatePresence>
     </div>
@@ -1209,6 +1216,13 @@ function DragWarningModal({ warning, onAction, onClose }: {
           <div className="flex items-center gap-2 justify-end">
             <button onClick={() => onAction('cancel')} className="cos-btn cos-btn-secondary text-sm px-4 py-2">
               Cancel
+            </button>
+            <button
+              onClick={() => onAction('move-anyway')}
+              title="Pastoral override — the rule violation is recorded on the event"
+              className="cos-btn text-sm px-4 py-2 bg-warning hover:bg-[#B58535] text-white"
+            >
+              Move Anyway
             </button>
             {nextAvailable !== proposedDate && (
               <button onClick={() => onAction('next-available')} className="cos-btn text-sm px-4 py-2 bg-success hover:bg-[#225C44] text-white">

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -16,7 +15,9 @@ import {
   Church,
   Upload,
   Inbox,
+  Landmark,
 } from 'lucide-react';
+import { canSeeDiocese } from '@/lib/dioceseAccess';
 
 interface NavItem {
   label: string;
@@ -66,6 +67,16 @@ interface SidebarProps {
 export default function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
   const location = useLocation();
 
+  // Diocese entry only exists for cloud diocese_admin/bishop (same gate as the
+  // /diocese route). Everyone else keeps the exact same sections array.
+  const sections = canSeeDiocese()
+    ? [
+        navSections[0],
+        { title: 'DIOCESE', items: [{ label: 'Diocese', icon: Landmark, path: '/diocese' }] },
+        ...navSections.slice(1),
+      ]
+    : navSections;
+
   return (
     <aside
       className="fixed left-0 top-0 h-screen bg-deep-navy flex flex-col z-sidebar transition-all duration-300"
@@ -96,7 +107,7 @@ export default function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
 
       {/* Nav Items */}
       <nav className="flex-1 overflow-y-auto py-4">
-        {navSections.map((section) => (
+        {sections.map((section) => (
           <div key={section.title} className="mb-2">
             {!collapsed && (
               <div className="px-5 mt-5 mb-2">

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { classifySubCategory, formatPeso } from "./analyticsEngine"
+import { classifySubCategory, formatPeso, getAnalyticLines, getAnalyticsSummary } from "./analyticsEngine"
+import { deriveIncomeStatement } from "./ledger"
+import { journalEntries, collectionsData } from "./financeData"
 
 describe("classifySubCategory — revenue", () => {
   it("routes Sunday Mass collections by Mass time", () => {
@@ -43,6 +45,30 @@ describe("classifySubCategory — expense", () => {
   })
   it("returns null for an unknown parent code", () => {
     expect(classifySubCategory("anything", "9999")).toBeNull()
+  })
+})
+
+describe("getAnalyticLines — agrees with the ledger", () => {
+  // Nothing persisted in jsdom localStorage → both sides derive from the same
+  // seeds. Analytics MUST include collectionsAsEntries postings, otherwise the
+  // Analytics tab disagrees with the Finance KPI cards on the same page
+  // (₱279,100 on seed data: the Feb 9 + Mar 2 collections).
+  it("revenue total equals deriveIncomeStatement totalRevenue (incl. collections)", () => {
+    const analyticsRevenue = getAnalyticLines("revenue").reduce((s, l) => s + l.amount, 0)
+    const ledgerRevenue = deriveIncomeStatement(journalEntries, collectionsData).totalRevenue
+    expect(analyticsRevenue).toBeCloseTo(ledgerRevenue, 6)
+  })
+
+  it("expense total equals deriveIncomeStatement totalExpenses", () => {
+    const analyticsExpense = getAnalyticLines("expense").reduce((s, l) => s + l.amount, 0)
+    const ledgerExpense = deriveIncomeStatement(journalEntries, collectionsData).totalExpenses
+    expect(analyticsExpense).toBeCloseTo(ledgerExpense, 6)
+  })
+
+  it("summary net income matches the ledger net income", () => {
+    const summary = getAnalyticsSummary()
+    const is = deriveIncomeStatement(journalEntries, collectionsData)
+    expect(summary.netIncome).toBeCloseTo(is.netIncome, 6)
   })
 })
 

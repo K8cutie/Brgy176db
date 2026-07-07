@@ -20,12 +20,24 @@ import {
   type ImportTarget, type ImportFileType, type ImportMapping,
   type ImportValidationError, type ImportValidationWarning,
   type ImportResult, type ImportHistoryEntry, type SampleLegacyFile,
+  type DuplicateInfo,
   detectTargetModule, detectFileType, autoMapFields, validateImportRow,
-  splitFullName, convertDate, getImportHistory, addImportHistory, clearImportHistory,
+  getImportHistory, addImportHistory, clearImportHistory,
+  parseCSV, parseXLSX, detectParsedIssues, mapImportRow, detectDuplicates,
+  buildImportedRecord, missingRequiredFields, type ImportedRecord,
   REGISTRY_FIELD_MAP, DIRECTORY_FIELD_MAP, FINANCE_FIELD_MAP,
   CHURCHOS_REGISTRY_FIELDS, CHURCHOS_DIRECTORY_FIELDS, CHURCHOS_FINANCE_FIELDS,
   SAMPLE_BAPTISM_DBF, SAMPLE_MARRIAGE_DBF, SAMPLE_FINANCE_CSV,
 } from '@/lib/importEngine';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
+import {
+  type BaptismRecord, type MarriageRecord, type ConfirmationRecord, type DeathRecord,
+  baptismRecords as seedBaptisms, marriageRecords as seedMarriages,
+  confirmationRecords as seedConfirmations, deathRecords as seedDeaths,
+} from '@/lib/registryData';
+import { type Family, families as seedFamilies } from '@/lib/directoryData';
+import { type JournalEntry, journalEntries as seedJournalEntries } from '@/lib/financeData';
 
 // ── Step Types ──
 type WizardStep = 'upload' | 'detect' | 'map' | 'preview' | 'import';
@@ -94,7 +106,19 @@ export default function ImportPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
+  // rowIndex -> true means the user chose "import anyway" for a flagged duplicate.
+  const [dupOverrides, setDupOverrides] = useState<Record<number, boolean>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Existing records per module (same keys + seeds the module pages use) —
+  // read for duplicate detection AND written through on import, so imported
+  // records land in the exact stores the Registry/Directory/Finance pages read.
+  const [existingBaptisms, setExistingBaptisms] = usePersistedState<BaptismRecord[]>(KEYS.baptismRecords, seedBaptisms);
+  const [existingMarriages, setExistingMarriages] = usePersistedState<MarriageRecord[]>(KEYS.marriageRecords, seedMarriages);
+  const [existingConfirmations, setExistingConfirmations] = usePersistedState<ConfirmationRecord[]>(KEYS.confirmationRecords, seedConfirmations);
+  const [existingDeaths, setExistingDeaths] = usePersistedState<DeathRecord[]>(KEYS.deathRecords, seedDeaths);
+  const [existingFamilies, setExistingFamilies] = usePersistedState<Family[]>(KEYS.families, seedFamilies);
+  const [existingJournalEntries, setExistingJournalEntries] = usePersistedState<JournalEntry[]>(KEYS.journalEntries, seedJournalEntries);
 
   // Load import history — recompute after an import (importResult) OR after the
   // history is mutated locally (historyVersion bump on Clear).
@@ -111,23 +135,49 @@ export default function ImportPage() {
     setSelectedSample(sample);
     setUploadedFile({ name: sample.name, type: sample.type });
     setDetectedModule(sample.targetModule);
+    setDupOverrides({});
     goToStep('detect', 1);
     toast.success(`Loaded sample: ${sample.name}`);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const type = detectFileType(file.name);
     const module = detectTargetModule(file.name);
-    setUploadedFile({ name: file.name, type });
-    setDetectedModule(module);
-    // Simulate parsing
+    if (type === 'dbf' || type === 'json') {
+      toast.error(`${type.toUpperCase()} files can't be parsed yet — export the data as CSV or XLSX and upload that instead.`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     toast.info(`Reading ${file.name}...`);
-    setTimeout(() => {
+    try {
+      const parsed = type === 'xlsx'
+        ? await parseXLSX(await file.arrayBuffer())
+        : parseCSV(await file.text());
+      if (parsed.rows.length === 0) {
+        toast.error(`No data rows found in ${file.name}. The first row must contain column headers.`);
+        return;
+      }
+      // Shape the parsed file like a sample so the rest of the wizard
+      // (detect / map / preview) works identically for real uploads.
+      setSelectedSample({
+        name: file.name,
+        type,
+        targetModule: module,
+        recordCount: parsed.rows.length,
+        columns: parsed.columns,
+        rows: parsed.rows,
+        issues: detectParsedIssues(parsed),
+      });
+      setUploadedFile({ name: file.name, type });
+      setDetectedModule(module);
+      setDupOverrides({});
       goToStep('detect', 1);
-      toast.success(`File parsed: ${file.name}`);
-    }, 1200);
+      toast.success(`File parsed: ${file.name} (${parsed.rows.length} rows)`);
+    } catch {
+      toast.error(`Could not read ${file.name}. Make sure it's a valid ${type.toUpperCase()} file.`);
+    }
   };
 
   // ── Step 2: Detect -> Auto Map ──
@@ -167,43 +217,112 @@ export default function ImportPage() {
     goToStep('preview', 1);
   };
 
+  // ── Duplicate detection (against existing records AND within the file) ──
+  const mappedRows = useMemo(
+    () => selectedSample ? selectedSample.rows.map(r => mapImportRow(r, mappings)) : [],
+    [selectedSample, mappings],
+  );
+
+  const existingRecords = useMemo(() => {
+    if (detectedModule === 'registry') return [...existingBaptisms, ...existingMarriages, ...existingConfirmations, ...existingDeaths];
+    if (detectedModule === 'directory') return existingFamilies;
+    if (detectedModule === 'finance') return existingJournalEntries;
+    return [];
+  }, [detectedModule, existingBaptisms, existingMarriages, existingConfirmations, existingDeaths, existingFamilies, existingJournalEntries]);
+
+  const duplicates = useMemo(
+    () => detectDuplicates(mappedRows, existingRecords, detectedModule),
+    [mappedRows, existingRecords, detectedModule],
+  );
+
+  const dupByRow = useMemo(
+    () => new Map(duplicates.map(d => [d.rowIndex, d])),
+    [duplicates],
+  );
+
+  const handleToggleDupOverride = useCallback((rowIndex: number) => {
+    setDupOverrides(prev => ({ ...prev, [rowIndex]: !prev[rowIndex] }));
+  }, []);
+
   const getPreviewRows = useMemo(() => {
     if (!selectedSample) return [];
-    return selectedSample.rows.slice(0, 5).map(row => {
+    return selectedSample.rows.slice(0, 5).map((row, i) => {
       const { errors, warnings } = validateRow(row, mappings);
-      return { sourceData: row, errors, warnings, status: errors.length > 0 ? 'error' as const : warnings.length > 0 ? 'warning' as const : 'valid' as const };
+      const dup = dupByRow.get(i);
+      return {
+        sourceData: row, errors, warnings,
+        dup,
+        dupSkipped: !!dup && !dupOverrides[i],
+        status: errors.length > 0 ? 'error' as const : warnings.length > 0 ? 'warning' as const : 'valid' as const,
+      };
     });
-  }, [selectedSample, mappings]);
+  }, [selectedSample, mappings, dupByRow, dupOverrides]);
 
   const allRowsValidated = useMemo(() => {
-    if (!selectedSample) return { total: 0, valid: 0, errors: 0, warnings: 0 };
-    let valid = 0, errors = 0, warnings = 0;
-    selectedSample.rows.forEach(row => {
+    if (!selectedSample) return { total: 0, valid: 0, errors: 0, warnings: 0, duplicates: 0, dupSkipped: 0, willImport: 0 };
+    let valid = 0, errors = 0, warnings = 0, dupSkipped = 0;
+    selectedSample.rows.forEach((row, i) => {
       const { errors: e, warnings: w } = validateRow(row, mappings);
-      if (e.length > 0) errors++;
-      else if (w.length > 0) warnings++;
+      if (e.length > 0) { errors++; return; }
+      if (dupByRow.has(i) && !dupOverrides[i]) { dupSkipped++; return; }
+      if (w.length > 0) warnings++;
       else valid++;
     });
-    return { total: selectedSample.rows.length, valid, errors, warnings };
-  }, [selectedSample, mappings]);
+    return {
+      total: selectedSample.rows.length,
+      valid, errors, warnings,
+      duplicates: duplicates.length,
+      dupSkipped,
+      willImport: valid + warnings,
+    };
+  }, [selectedSample, mappings, dupByRow, dupOverrides, duplicates]);
 
   // ── Step 5: Execute Import ──
   const handleImport = () => {
+    if (!selectedSample) return;
     setIsImporting(true);
     toast.info('Importing data... Please wait.');
 
-    // Simulate import with progress
+    // Build the REAL records up front (same skip rules the Preview showed:
+    // error rows and non-overridden duplicates are excluded).
+    const created: ImportedRecord[] = [];
+    selectedSample.rows.forEach((row, i) => {
+      const { errors } = validateRow(row, mappings);
+      if (errors.length > 0) return;
+      if (dupByRow.has(i) && !dupOverrides[i]) return;
+      const rec = buildImportedRecord(mapImportRow(row, mappings), detectedModule, 'Admin');
+      if (rec) created.push(rec);
+    });
+
+    // Short progress animation, then persist + report.
     let progress = 0;
     const interval = setInterval(() => {
       progress += 20;
       if (progress >= 100) {
         clearInterval(interval);
+
+        // ── Persist through the SAME stores the module pages read ──
+        const baptisms = created.flatMap((c) => (c.store === 'baptismRecords' ? [c.record] : []));
+        const marriages = created.flatMap((c) => (c.store === 'marriageRecords' ? [c.record] : []));
+        const confirmations = created.flatMap((c) => (c.store === 'confirmationRecords' ? [c.record] : []));
+        const deaths = created.flatMap((c) => (c.store === 'deathRecords' ? [c.record] : []));
+        const newFamilies = created.flatMap((c) => (c.store === 'families' ? [c.record] : []));
+        const newEntries = created.flatMap((c) => (c.store === 'journalEntries' ? [c.record] : []));
+        if (baptisms.length > 0) setExistingBaptisms((prev) => [...baptisms, ...prev]);
+        if (marriages.length > 0) setExistingMarriages((prev) => [...marriages, ...prev]);
+        if (confirmations.length > 0) setExistingConfirmations((prev) => [...confirmations, ...prev]);
+        if (deaths.length > 0) setExistingDeaths((prev) => [...deaths, ...prev]);
+        if (newFamilies.length > 0) setExistingFamilies((prev) => [...newFamilies, ...prev]);
+        if (newEntries.length > 0) setExistingJournalEntries((prev) => [...newEntries, ...prev]);
+
+        const importedRows = created.length;
         const result: ImportResult = {
-          totalRows: selectedSample?.rows.length || 0,
-          importedRows: allRowsValidated.valid + allRowsValidated.warnings,
-          skippedRows: allRowsValidated.errors,
+          totalRows: selectedSample.rows.length,
+          importedRows,
+          skippedRows: selectedSample.rows.length - importedRows,
+          duplicateRows: allRowsValidated.dupSkipped,
           errors: [],
-          createdRecords: selectedSample?.rows.slice(0, allRowsValidated.valid) || [],
+          createdRecords: created.map((c) => c.record),
           importTime: new Date().toISOString(),
           fileName: uploadedFile?.name || 'unknown',
           targetModule: detectedModule,
@@ -219,16 +338,20 @@ export default function ImportPage() {
           fileType: uploadedFile?.type || 'csv',
           targetModule: detectedModule,
           totalRows: result.totalRows,
-          importedRows: result.importedRows,
-          errors: result.skippedRows,
+          importedRows,
+          errors: allRowsValidated.errors,
+          duplicatesSkipped: allRowsValidated.dupSkipped,
           importedBy: 'Admin',
-          status: result.skippedRows === 0 ? 'completed' : result.importedRows > 0 ? 'partial' : 'failed',
+          // Duplicates skipped on purpose don't make an import "partial" —
+          // only genuine error rows do.
+          status: allRowsValidated.errors === 0 && importedRows === allRowsValidated.willImport
+            ? 'completed' : importedRows > 0 ? 'partial' : 'failed',
           mappings,
         };
         addImportHistory(historyEntry);
 
         goToStep('import', 1);
-        toast.success(`Import complete! ${result.importedRows} records imported.`);
+        toast.success(`Import complete! ${importedRows} records imported.`);
       }
     }, 400);
   };
@@ -257,6 +380,7 @@ export default function ImportPage() {
     setImportResult(null);
     setIsImporting(false);
     setShowHistory(false);
+    setDupOverrides({});
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -329,6 +453,9 @@ export default function ImportPage() {
               mappings={mappings}
               previewRows={getPreviewRows}
               validation={allRowsValidated}
+              duplicates={duplicates}
+              dupOverrides={dupOverrides}
+              onToggleDupOverride={handleToggleDupOverride}
               detectedModule={detectedModule}
               onBack={() => goToStep('map', -1)}
               onImport={handleImport}
@@ -489,6 +616,7 @@ function UploadStep({
                 <div className="flex items-center gap-4 text-xs text-warm-gray">
                   <span>{MODULE_LABELS[entry.targetModule]}</span>
                   <span>{entry.importedRows}/{entry.totalRows} imported</span>
+                  {(entry.duplicatesSkipped ?? 0) > 0 && <span className="text-gold">{entry.duplicatesSkipped} duplicates skipped</span>}
                   {entry.errors > 0 && <span className="text-error">{entry.errors} errors</span>}
                 </div>
               </div>
@@ -843,6 +971,9 @@ function PreviewStep({
   mappings,
   previewRows,
   validation,
+  duplicates,
+  dupOverrides,
+  onToggleDupOverride,
   detectedModule,
   onBack,
   onImport,
@@ -850,8 +981,11 @@ function PreviewStep({
 }: {
   sample: SampleLegacyFile | null;
   mappings: ImportMapping[];
-  previewRows: { sourceData: Record<string, string>; errors: ImportValidationError[]; warnings: ImportValidationWarning[]; status: 'valid' | 'error' | 'warning' }[];
-  validation: { total: number; valid: number; errors: number; warnings: number };
+  previewRows: { sourceData: Record<string, string>; errors: ImportValidationError[]; warnings: ImportValidationWarning[]; dup?: DuplicateInfo; dupSkipped: boolean; status: 'valid' | 'error' | 'warning' }[];
+  validation: { total: number; valid: number; errors: number; warnings: number; duplicates: number; dupSkipped: number; willImport: number };
+  duplicates: DuplicateInfo[];
+  dupOverrides: Record<number, boolean>;
+  onToggleDupOverride: (rowIndex: number) => void;
   detectedModule: ImportTarget;
   onBack: () => void;
   onImport: () => void;
@@ -863,15 +997,13 @@ function PreviewStep({
   // validateImportRow only errors on required fields that are MAPPED but empty;
   // it never catches a required field that was never mapped (e.g. Finance
   // debit/credit/description/accountName left as "Skip this column"). Compute
-  // those here so we can block Import and show a visible reason.
-  const targetFields = detectedModule === 'registry' ? CHURCHOS_REGISTRY_FIELDS
-    : detectedModule === 'directory' ? CHURCHOS_DIRECTORY_FIELDS
-    : CHURCHOS_FINANCE_FIELDS;
-  const missingRequired = targetFields.filter(
-    f => f.required && !mappings.some(m => m.targetField === f.key)
-  );
+  // those here so we can block Import and show a visible reason. The engine's
+  // check is record-type aware (a marriage file needs groom/bride/date, not
+  // the baptism-only child fields) and treats a mapped full-name column as
+  // satisfying the corresponding LastName field.
+  const missingRequired = missingRequiredFields(mappings, detectedModule);
   const hasMissingRequired = missingRequired.length > 0;
-  const blockImport = hasMissingRequired || validation.errors === validation.total;
+  const blockImport = hasMissingRequired || validation.willImport === 0;
 
   return (
     <div className="space-y-6">
@@ -889,7 +1021,7 @@ function PreviewStep({
         </p>
 
         {/* Validation Summary */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
           <div className="p-4 rounded-xl bg-success/5 border border-success/20 text-center">
             <p className="text-2xl font-bold text-success">{validation.valid}</p>
             <p className="text-xs text-success/80 mt-1">Ready to Import</p>
@@ -897,6 +1029,10 @@ function PreviewStep({
           <div className="p-4 rounded-xl bg-warning/5 border border-warning/20 text-center">
             <p className="text-2xl font-bold text-warning">{validation.warnings}</p>
             <p className="text-xs text-warning-dark mt-1">Warnings (Will Import)</p>
+          </div>
+          <div className="p-4 rounded-xl bg-gold/5 border border-gold/20 text-center">
+            <p className="text-2xl font-bold text-gold">{validation.dupSkipped}</p>
+            <p className="text-xs text-gold/80 mt-1">Duplicates (Will Skip)</p>
           </div>
           <div className="p-4 rounded-xl bg-error/5 border border-error/20 text-center">
             <p className="text-2xl font-bold text-error">{validation.errors}</p>
@@ -943,19 +1079,21 @@ function PreviewStep({
                     </td>
                   ))}
                   <td className="py-2 px-3">
-                    {row.status === 'valid' && (
-                      <span className="inline-flex items-center gap-1 text-success">
-                        <CheckCircle2 className="w-3 h-3" /> OK
+                    {row.status === 'error' ? (
+                      <span className="inline-flex items-center gap-1 text-error">
+                        <XCircle className="w-3 h-3" /> {row.errors.length}
                       </span>
-                    )}
-                    {row.status === 'warning' && (
+                    ) : row.dupSkipped ? (
+                      <span className="inline-flex items-center gap-1 text-gold" title={row.dup?.reason}>
+                        <Ban className="w-3 h-3" /> Duplicate
+                      </span>
+                    ) : row.status === 'warning' ? (
                       <span className="inline-flex items-center gap-1 text-warning">
                         <AlertCircle className="w-3 h-3" /> {row.warnings.length}
                       </span>
-                    )}
-                    {row.status === 'error' && (
-                      <span className="inline-flex items-center gap-1 text-error">
-                        <XCircle className="w-3 h-3" /> {row.errors.length}
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-success">
+                        <CheckCircle2 className="w-3 h-3" /> OK
                       </span>
                     )}
                   </td>
@@ -964,6 +1102,40 @@ function PreviewStep({
             </tbody>
           </table>
         </div>
+
+        {/* Duplicates */}
+        {duplicates.length > 0 && (
+          <div className="mt-4 p-4 rounded-xl bg-gold/5 border border-gold/20">
+            <h3 className="font-semibold text-charcoal mb-1 flex items-center gap-2 text-sm">
+              <Ban className="w-4 h-4 text-gold" />
+              Duplicates Detected ({duplicates.length})
+            </h3>
+            <p className="text-xs text-warm-gray mb-3">
+              {validation.dupSkipped} duplicate{validation.dupSkipped === 1 ? '' : 's'} will be skipped.
+              Use "Import anyway" if a flagged row is actually a different record.
+            </p>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              {duplicates.map(d => (
+                <div key={d.rowIndex} className="flex items-center justify-between gap-3 p-2 rounded bg-white/60 text-xs">
+                  <span className="text-charcoal">
+                    <span className="font-medium">Row {d.rowIndex + 1}:</span>
+                    <span className="text-warm-gray ml-1">{d.reason}</span>
+                  </span>
+                  <button
+                    onClick={() => onToggleDupOverride(d.rowIndex)}
+                    className={`flex-shrink-0 px-2 py-1 rounded-md font-medium transition-colors ${
+                      dupOverrides[d.rowIndex]
+                        ? 'bg-success/10 text-success hover:bg-success/20'
+                        : 'bg-parchment/80 text-charcoal hover:bg-gold/20'
+                    }`}
+                  >
+                    {dupOverrides[d.rowIndex] ? 'Will import — undo' : 'Import anyway'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Errors Detail */}
         {(validation.errors > 0 || validation.warnings > 0) && (
@@ -1027,11 +1199,11 @@ function PreviewStep({
           </div>
         )}
 
-        {!hasMissingRequired && validation.errors === validation.total && (
+        {!hasMissingRequired && validation.willImport === 0 && (
           <div className="mt-4 p-4 rounded-xl bg-error/5 border border-error/20">
             <p className="text-sm text-error flex items-center gap-2">
               <Ban className="w-4 h-4" />
-              All rows have errors. Please go back and fix the field mappings before importing.
+              No rows left to import — every row has errors or is a skipped duplicate.
             </p>
           </div>
         )}
@@ -1060,7 +1232,7 @@ function PreviewStep({
           ) : (
             <>
               <Play className="w-4 h-4" />
-              Import {validation.valid + validation.warnings} Records
+              Import {validation.willImport} Records
             </>
           )}
         </Button>
@@ -1109,7 +1281,7 @@ function ImportResultStep({
         <p className="body-sm text-warm-gray mb-6">
           {result.skippedRows === 0
             ? 'All records were imported successfully. Your parish data is now in ChurchOS!'
-            : `${result.importedRows} records imported. ${result.skippedRows} rows had errors and were skipped.`}
+            : `${result.importedRows} records imported. ${result.skippedRows} rows were skipped${result.duplicateRows ? ` (${result.duplicateRows} duplicate${result.duplicateRows === 1 ? '' : 's'})` : ''}.`}
         </p>
 
         {/* Results Grid */}

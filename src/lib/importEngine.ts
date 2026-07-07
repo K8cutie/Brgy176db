@@ -9,6 +9,7 @@ import type {
 import type { Family } from './directoryData';
 import type { CalendarEvent } from './calendarData';
 import type { JournalEntry, Collection } from './financeData';
+import { getLeafAccounts } from './financeData';
 
 // ── Import Types ──
 
@@ -56,6 +57,7 @@ export interface ImportResult {
   totalRows: number;
   importedRows: number;
   skippedRows: number;
+  duplicateRows?: number;
   errors: ImportValidationError[];
   createdRecords: any[];
   importTime: string;
@@ -72,6 +74,7 @@ export interface ImportHistoryEntry {
   totalRows: number;
   importedRows: number;
   errors: number;
+  duplicatesSkipped?: number;
   importedBy: string;
   status: 'completed' | 'partial' | 'failed';
   mappings: ImportMapping[];
@@ -197,6 +200,28 @@ export const CHURCHOS_REGISTRY_FIELDS = [
   { key: 'registryNumber', label: 'Registry Number', required: true, module: 'registry' as ImportTarget },
   { key: 'notations', label: 'Notations', required: false, module: 'registry' as ImportTarget },
   { key: 'gender', label: 'Gender', required: false, module: 'registry' as ImportTarget },
+  // Marriage record fields (the auto-mapper produces these targets for
+  // MARRIAGES.DBF-style files — they must exist here or the mapping dropdown
+  // cannot display/select them).
+  { key: 'groomFirstName', label: "Groom's Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'groomLastName', label: "Groom's Last Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'brideFirstName', label: "Bride's Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'brideLastName', label: "Bride's Last Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'dateOfMarriage', label: 'Date of Marriage', required: false, module: 'registry' as ImportTarget },
+  { key: 'witness1Name', label: 'Witness 1', required: false, module: 'registry' as ImportTarget },
+  { key: 'witness2Name', label: 'Witness 2', required: false, module: 'registry' as ImportTarget },
+  // Confirmation record fields
+  { key: 'confirmandFirstName', label: "Confirmand's Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'confirmandLastName', label: "Confirmand's Last Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'dateOfConfirmation', label: 'Date of Confirmation', required: false, module: 'registry' as ImportTarget },
+  { key: 'bishop', label: 'Confirming Bishop', required: false, module: 'registry' as ImportTarget },
+  { key: 'sponsorName', label: 'Sponsor', required: false, module: 'registry' as ImportTarget },
+  // Death record fields
+  { key: 'deceasedFirstName', label: "Deceased's Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'deceasedLastName', label: "Deceased's Last Name", required: false, module: 'registry' as ImportTarget },
+  { key: 'dateOfDeath', label: 'Date of Death', required: false, module: 'registry' as ImportTarget },
+  { key: 'dateOfBurial', label: 'Date of Burial', required: false, module: 'registry' as ImportTarget },
+  { key: 'cemetery', label: 'Cemetery', required: false, module: 'registry' as ImportTarget },
 ];
 
 export const CHURCHOS_DIRECTORY_FIELDS = [
@@ -372,6 +397,89 @@ export function detectFileType(fileName: string): ImportFileType {
   return 'csv';
 }
 
+// ── File Parsing (CSV and XLSX share the same normalization path) ──
+
+export interface ParsedSheet {
+  columns: { name: string; sample: string }[];
+  rows: Record<string, string>[];
+}
+
+// Header row + raw cell matrix → columns/rows. Blank-header columns are
+// dropped, fully-empty rows are skipped, every cell is stringified + trimmed.
+export function normalizeSheetMatrix(matrix: unknown[][]): ParsedSheet {
+  if (matrix.length === 0) return { columns: [], rows: [] };
+  const headers = matrix[0].map(h => String(h ?? '').trim());
+  const rows: Record<string, string>[] = [];
+  for (const raw of matrix.slice(1)) {
+    const row: Record<string, string> = {};
+    let hasValue = false;
+    headers.forEach((h, i) => {
+      if (!h) return;
+      const v = String(raw[i] ?? '').trim();
+      row[h] = v;
+      if (v) hasValue = true;
+    });
+    if (hasValue) rows.push(row);
+  }
+  const columns = headers.filter(Boolean).map(name => ({
+    name,
+    sample: rows.find(r => r[name])?.[name] ?? '',
+  }));
+  return { columns, rows };
+}
+
+// RFC-4180-ish CSV: quoted fields may contain commas, newlines and "" escapes.
+export function parseCSV(text: string): ParsedSheet {
+  const matrix: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field); field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      matrix.push(row); row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== '' || row.length > 0) { row.push(field); matrix.push(row); }
+  return normalizeSheetMatrix(matrix.filter(r => r.some(c => c.trim() !== '')));
+}
+
+// Lazy dynamic import keeps SheetJS (~400KB) out of the initial bundle; it
+// only loads the first time someone actually uploads an .xlsx file.
+export async function parseXLSX(data: ArrayBuffer): Promise<ParsedSheet> {
+  const XLSX = await import('xlsx');
+  const workbook = XLSX.read(data, { type: 'array' });
+  const firstSheet = workbook.SheetNames[0];
+  if (!firstSheet) return { columns: [], rows: [] };
+  // raw:false formats dates/numbers as display strings so XLSX cells flow
+  // through the exact same normalization + validation path as CSV text.
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[firstSheet], {
+    header: 1, raw: false, defval: '',
+  });
+  return normalizeSheetMatrix(matrix);
+}
+
+export function detectParsedIssues(parsed: ParsedSheet): string[] {
+  const issues: string[] = [];
+  if (parsed.columns.some(c => /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(c.sample))) {
+    issues.push('Date format DD/MM/YYYY detected — will be converted to ISO format');
+  }
+  return issues;
+}
+
 // ── Auto-map fields ──
 
 export function autoMapFields(
@@ -512,6 +620,425 @@ export function convertDate(dateStr: string): string | null {
   // Already ISO
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
   return null;
+}
+
+// ── Row mapping ──
+
+// Applies the field mappings to one source row, producing a record keyed by
+// ChurchOS target field. date_fix values are converted to ISO when possible.
+export function mapImportRow(
+  sourceRow: Record<string, string>,
+  mappings: ImportMapping[],
+): Record<string, string> {
+  const mapped: Record<string, string> = {};
+  for (const m of mappings) {
+    const raw = (sourceRow[m.sourceField] ?? '').trim();
+    mapped[m.targetField] = m.transform === 'date_fix' ? (convertDate(raw) ?? raw) : raw;
+  }
+  return mapped;
+}
+
+// ── Type-aware required mappings ──
+
+// Which registry record type do the chosen mappings describe?
+export function registryTypeOfMappings(mappings: ImportMapping[]): RegistryRecordType {
+  const keys = new Set(mappings.map((m) => m.targetField));
+  if (keys.has('groomFirstName') || keys.has('brideFirstName') || keys.has('dateOfMarriage')) return 'marriage';
+  if (keys.has('confirmandFirstName') || keys.has('dateOfConfirmation')) return 'confirmation';
+  if (keys.has('deceasedFirstName') || keys.has('dateOfDeath')) return 'death';
+  return 'baptism';
+}
+
+// The minimum mappings each import needs before real records can be written.
+// LastName fields are deliberately absent: a full-name column mapped to the
+// FirstName field satisfies them — buildImportedRecord splits
+// "MARIA CLARA SANTOS" into first/middle/last on write.
+const REGISTRY_REQUIRED_BY_TYPE: Record<RegistryRecordType, string[]> = {
+  baptism: ['childFirstName', 'dateOfBirth', 'dateOfBaptism', 'fatherFirstName', 'motherFirstName', 'officiant', 'bookNumber', 'pageNumber', 'registryNumber'],
+  marriage: ['groomFirstName', 'brideFirstName', 'dateOfMarriage', 'officiant', 'bookNumber', 'pageNumber', 'registryNumber'],
+  confirmation: ['confirmandFirstName', 'dateOfConfirmation', 'registryNumber'],
+  death: ['deceasedFirstName', 'dateOfDeath', 'registryNumber'],
+};
+
+// Required target fields that no mapping covers. For the registry the set is
+// record-type aware (a marriage file must not be blocked for lacking
+// baptism-only fields like childFirstName).
+export function missingRequiredFields(
+  mappings: ImportMapping[],
+  module: ImportTarget,
+): { key: string; label: string }[] {
+  const mappedKeys = new Set(mappings.map((m) => m.targetField));
+  if (module === 'registry') {
+    const type = registryTypeOfMappings(mappings);
+    return REGISTRY_REQUIRED_BY_TYPE[type]
+      .filter((k) => !mappedKeys.has(k))
+      .map((k) => ({ key: k, label: CHURCHOS_REGISTRY_FIELDS.find((f) => f.key === k)?.label ?? k }));
+  }
+  const fields = module === 'directory' ? CHURCHOS_DIRECTORY_FIELDS : CHURCHOS_FINANCE_FIELDS;
+  return fields
+    .filter((f) => f.required && !mappedKeys.has(f.key))
+    .map((f) => ({ key: f.key, label: f.label }));
+}
+
+// ── Building real module records from mapped rows ──
+// The import wizard's final step must WRITE to the same persisted stores the
+// Registry/Directory/Finance pages read — an import that only animates a
+// progress bar is not an import.
+
+export type ImportedRecord =
+  | { store: 'baptismRecords'; record: BaptismRecord }
+  | { store: 'marriageRecords'; record: MarriageRecord }
+  | { store: 'confirmationRecords'; record: ConfirmationRecord }
+  | { store: 'deathRecords'; record: DeathRecord }
+  | { store: 'families'; record: Family }
+  | { store: 'journalEntries'; record: JournalEntry };
+
+const isoOrRaw = (v?: string): string => {
+  const s = (v ?? '').trim();
+  return convertDate(s) ?? s;
+};
+
+// A legacy full-name column mapped onto the FirstName field is split into
+// first/middle/last; explicit Last/Middle mappings win when present.
+function personName(first?: string, last?: string, middle?: string): { firstName: string; middleName: string; lastName: string } {
+  const f = (first ?? '').trim();
+  const l = (last ?? '').trim();
+  const m = (middle ?? '').trim();
+  if (!l && f.includes(' ')) {
+    const split = splitFullName(f);
+    return { firstName: split.firstName, middleName: m || split.middleName || '', lastName: split.lastName };
+  }
+  return { firstName: f, middleName: m, lastName: l };
+}
+
+const intOf = (v?: string): number => {
+  const n = parseInt((v ?? '').trim(), 10);
+  return isNaN(n) ? 0 : n;
+};
+
+const pesoOf = (v?: string): number => {
+  const n = parseFloat((v ?? '').replace(/,/g, '').replace(/[₱\s]/g, ''));
+  return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+};
+
+const genderOf = (v?: string): 'Male' | 'Female' =>
+  (v ?? '').trim().toUpperCase().startsWith('F') ? 'Female' : 'Male';
+
+const SCHED_DEFAULTS = { scheduledDate: '', scheduledTime: '', scheduledOfficiant: '', scheduledLocation: '' };
+
+let importSeq = 0;
+
+export function buildImportedRecord(
+  mapped: Record<string, string>,
+  module: ImportTarget,
+  importedBy: string,
+): ImportedRecord | null {
+  const uid = `imp-${Date.now()}-${++importSeq}`;
+
+  if (module === 'registry') {
+    const type = registryTypeOf(mapped);
+    if (type === 'baptism') {
+      const child = personName(mapped.childFirstName, mapped.childLastName, mapped.childMiddleName);
+      const father = personName(mapped.fatherFirstName, mapped.fatherLastName);
+      const mother = personName(mapped.motherFirstName, mapped.motherLastName);
+      const godfather = personName(mapped.godfatherFirstName, mapped.godfatherLastName);
+      const godmother = personName(mapped.godmotherFirstName, mapped.godmotherLastName);
+      const record: BaptismRecord = {
+        id: `bap-${uid}`,
+        registryNumber: mapped.registryNumber ?? '',
+        childLastName: child.lastName, childFirstName: child.firstName, childMiddleName: child.middleName,
+        dateOfBirth: isoOrRaw(mapped.dateOfBirth),
+        placeOfBirthCity: '', placeOfBirthProvince: '',
+        gender: genderOf(mapped.gender),
+        fatherLastName: father.lastName, fatherFirstName: father.firstName, fatherMiddleName: father.middleName,
+        motherLastName: mother.lastName, motherFirstName: mother.firstName, motherMiddleName: mother.middleName,
+        motherMaidenName: '',
+        godfatherLastName: godfather.lastName, godfatherFirstName: godfather.firstName,
+        godmotherLastName: godmother.lastName, godmotherFirstName: godmother.firstName,
+        addressStreet: '', addressBarangay: '', addressSitio: '', addressCity: '', addressProvince: '',
+        dateOfBaptism: isoOrRaw(mapped.dateOfBaptism),
+        timeOfBaptism: '',
+        officiant: mapped.officiant ?? '',
+        bookNumber: intOf(mapped.bookNumber),
+        pageNumber: intOf(mapped.pageNumber),
+        notations: mapped.notations ?? '',
+        status: 'Active',
+        ...SCHED_DEFAULTS,
+      };
+      return { store: 'baptismRecords', record };
+    }
+    if (type === 'marriage') {
+      const groom = personName(mapped.groomFirstName, mapped.groomLastName);
+      const bride = personName(mapped.brideFirstName, mapped.brideLastName);
+      const record: MarriageRecord = {
+        id: `mar-${uid}`,
+        registryNumber: mapped.registryNumber ?? '',
+        groomLastName: groom.lastName, groomFirstName: groom.firstName, groomMiddleName: groom.middleName,
+        groomAge: 0, groomStatus: '', groomFather: '', groomMother: '',
+        brideLastName: bride.lastName, brideFirstName: bride.firstName, brideMiddleName: bride.middleName,
+        brideAge: 0, brideStatus: '', brideFather: '', brideMother: '',
+        witness1Name: mapped.witness1Name ?? '',
+        witness2Name: mapped.witness2Name ?? '',
+        dateOfMarriage: isoOrRaw(mapped.dateOfMarriage),
+        timeOfMarriage: '',
+        officiant: mapped.officiant ?? '',
+        bookNumber: intOf(mapped.bookNumber),
+        pageNumber: intOf(mapped.pageNumber),
+        notations: mapped.notations ?? '',
+        status: 'Active',
+        ...SCHED_DEFAULTS,
+      };
+      return { store: 'marriageRecords', record };
+    }
+    if (type === 'confirmation') {
+      const confirmand = personName(mapped.confirmandFirstName, mapped.confirmandLastName);
+      const sponsor = personName(mapped.sponsorName);
+      const record: ConfirmationRecord = {
+        id: `con-${uid}`,
+        registryNumber: mapped.registryNumber ?? '',
+        confirmandLastName: confirmand.lastName, confirmandFirstName: confirmand.firstName, confirmandMiddleName: confirmand.middleName,
+        dateOfBirth: isoOrRaw(mapped.dateOfBirth),
+        parishOfBaptism: '', dateOfBaptism: isoOrRaw(mapped.dateOfBaptism),
+        officiant: mapped.officiant ?? '',
+        bishop: mapped.bishop ?? '',
+        sponsorLastName: sponsor.lastName, sponsorFirstName: sponsor.firstName,
+        dateOfConfirmation: isoOrRaw(mapped.dateOfConfirmation),
+        timeOfConfirmation: '',
+        bookNumber: intOf(mapped.bookNumber),
+        pageNumber: intOf(mapped.pageNumber),
+        notations: mapped.notations ?? '',
+        status: 'Active',
+        ...SCHED_DEFAULTS,
+      };
+      return { store: 'confirmationRecords', record };
+    }
+    if (type === 'death') {
+      const deceased = personName(mapped.deceasedFirstName, mapped.deceasedLastName);
+      const record: DeathRecord = {
+        id: `dth-${uid}`,
+        registryNumber: mapped.registryNumber ?? '',
+        deceasedLastName: deceased.lastName, deceasedFirstName: deceased.firstName, deceasedMiddleName: deceased.middleName,
+        age: intOf(mapped.age),
+        gender: genderOf(mapped.gender),
+        dateOfDeath: isoOrRaw(mapped.dateOfDeath),
+        dateOfBurial: isoOrRaw(mapped.dateOfBurial),
+        timeOfBurial: '',
+        causeOfDeath: '',
+        cemetery: mapped.cemetery ?? '',
+        officiant: mapped.officiant ?? '',
+        bookNumber: intOf(mapped.bookNumber),
+        pageNumber: intOf(mapped.pageNumber),
+        notations: mapped.notations ?? '',
+        status: 'Active',
+        ...SCHED_DEFAULTS,
+      };
+      return { store: 'deathRecords', record };
+    }
+    return null;
+  }
+
+  if (module === 'directory') {
+    const familyName = (mapped.familyName ?? '').trim()
+      || personName(mapped.headFirstName).lastName;
+    if (!familyName) return null;
+    const noteParts = [
+      mapped.headFirstName ? `Head of family: ${mapped.headFirstName}` : '',
+      mapped.spouseFirstName ? `Spouse: ${mapped.spouseFirstName}` : '',
+      'Imported from legacy data.',
+    ].filter(Boolean);
+    const record: Family = {
+      id: `fam-${uid}`,
+      familyName,
+      color: '#C9963B',
+      status: 'Active',
+      street: mapped.address ?? '',
+      barangay: mapped.addressBarangay ?? '',
+      sitio: mapped.addressSitio ?? '',
+      city: mapped.addressCity ?? '',
+      province: '',
+      primaryPhone: mapped.contactNumber ?? '',
+      email: mapped.email || undefined,
+      notes: noteParts.join(' '),
+      members: [],
+    };
+    return { store: 'families', record };
+  }
+
+  // finance (and calendar files, which the wizard maps with the finance
+  // field set): one legacy row = one amount against one account. Book it as a
+  // balanced two-line entry with Cash on Hand (1000) as the offsetting
+  // account — the standard treatment for single-column cash books.
+  const debit = pesoOf(mapped.debit);
+  const credit = pesoOf(mapped.credit);
+  const amount = debit > 0 ? debit : credit > 0 ? credit : pesoOf(mapped.amount);
+  if (amount <= 0) return null;
+  const side: 'debit' | 'credit' = debit > 0 ? 'debit' : 'credit';
+
+  // Resolve the stated account against the chart by (case-insensitive) name;
+  // unmatched names keep their label under a derived 4xxx/5xxx code so the
+  // ledger's unknown-code handling reports them without breaking the tie.
+  const accountName = (mapped.accountName ?? '').trim();
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  const leaf = accountName
+    ? getLeafAccounts().find((a) => norm(a.name) === norm(accountName) || norm(a.name).includes(norm(accountName)) || norm(accountName).includes(norm(a.name)))
+    : undefined;
+  const accountCode = leaf?.code ?? (side === 'credit' ? '4990' : '5990');
+  const resolvedName = leaf?.name ?? (accountName || (side === 'credit' ? 'Imported Income' : 'Imported Expense'));
+
+  const accountLine = side === 'debit'
+    ? { accountCode, accountName: resolvedName, debit: amount, credit: 0 }
+    : { accountCode, accountName: resolvedName, debit: 0, credit: amount };
+  const cashLine = side === 'debit'
+    ? { accountCode: '1000', accountName: 'Cash on Hand', debit: 0, credit: amount }
+    : { accountCode: '1000', accountName: 'Cash on Hand', debit: amount, credit: 0 };
+
+  const record: JournalEntry = {
+    id: `JE-IMP-${uid}`,
+    date: isoOrRaw(mapped.date),
+    reference: (mapped.reference ?? '').trim() || 'Legacy import',
+    description: (mapped.description ?? '').trim() || 'Imported legacy transaction',
+    lines: side === 'debit' ? [accountLine, cashLine] : [cashLine, accountLine],
+    status: 'Posted',
+    postedBy: (mapped.postedBy ?? '').trim() || importedBy,
+    totalDr: amount,
+    totalCr: amount,
+  };
+  return { store: 'journalEntries', record };
+}
+
+// ── Duplicate Detection ──
+
+export type DuplicateKind = 'existing' | 'in_file';
+
+export interface DuplicateInfo {
+  rowIndex: number; // index into mappedRows
+  kind: DuplicateKind;
+  key: string;
+  reason: string;
+}
+
+const normText = (v: unknown) => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+// Token-sorted so an unsplit PIMS full name ("MARIA CLARA SANTOS") still
+// matches a hand-entered record split into first "Maria Clara" + last "Santos".
+const normName = (...parts: unknown[]) =>
+  parts.map(normText).join(' ').split(' ').filter(Boolean).sort().join(' ');
+
+const normDateKey = (v: unknown) => {
+  const s = String(v ?? '').trim();
+  return convertDate(s) ?? s;
+};
+
+const normAmount = (v: unknown) => {
+  const n = parseFloat(String(v ?? '').replace(/,/g, ''));
+  return isNaN(n) ? '' : n.toFixed(2);
+};
+
+export type RegistryRecordType = 'baptism' | 'marriage' | 'confirmation' | 'death';
+
+const REGISTRY_KEY_FIELDS: Record<RegistryRecordType, { last: string; first: string; date: string }> = {
+  baptism: { last: 'childLastName', first: 'childFirstName', date: 'dateOfBaptism' },
+  marriage: { last: 'groomLastName', first: 'groomFirstName', date: 'dateOfMarriage' },
+  confirmation: { last: 'confirmandLastName', first: 'confirmandFirstName', date: 'dateOfConfirmation' },
+  death: { last: 'deceasedLastName', first: 'deceasedFirstName', date: 'dateOfDeath' },
+};
+
+export function registryTypeOf(rec: Record<string, any>): RegistryRecordType | null {
+  if (rec.childFirstName || rec.childLastName) return 'baptism';
+  if (rec.groomFirstName || rec.groomLastName || rec.brideFirstName) return 'marriage';
+  if (rec.confirmandFirstName || rec.confirmandLastName) return 'confirmation';
+  if (rec.deceasedFirstName || rec.deceasedLastName) return 'death';
+  return null;
+}
+
+function financeAmountOf(rec: Record<string, any>): string {
+  for (const k of ['amount', 'debit', 'credit', 'totalDr', 'totalCr']) {
+    const a = normAmount(rec[k]);
+    if (a && a !== '0.00') return a;
+  }
+  return '';
+}
+
+// A record only gets a key when every key component is present — an
+// incomplete key must not flag half the file as duplicates.
+function dedupKey(rec: Record<string, any>, module: ImportTarget): string | null {
+  if (module === 'registry') {
+    const type = registryTypeOf(rec);
+    if (!type) return null;
+    const f = REGISTRY_KEY_FIELDS[type];
+    const name = normName(rec[f.last], rec[f.first]);
+    const date = normDateKey(rec[f.date]);
+    if (!name || !date) return null;
+    return `${type}|${name}|${date}`;
+  }
+  if (module === 'directory') {
+    // Mapped rows use the addressBarangay target field; Family records store barangay.
+    const name = normText(rec.familyName);
+    const barangay = normText(rec.addressBarangay ?? rec.barangay);
+    if (!name) return null;
+    return `family|${name}|${barangay}`;
+  }
+  if (module === 'finance') {
+    const date = normDateKey(rec.date);
+    const desc = normText(rec.description);
+    const amount = financeAmountOf(rec);
+    if (!date || !desc || !amount) return null;
+    return `entry|${date}|${desc}|${amount}`;
+  }
+  return null; // calendar: no dedup rule
+}
+
+function recordLabel(rec: Record<string, any>, module: ImportTarget): string {
+  if (module === 'registry') {
+    const type = registryTypeOf(rec) ?? 'record';
+    return rec.registryNumber ? `${type} #${rec.registryNumber}` : type;
+  }
+  if (module === 'directory') {
+    return `family "${rec.familyName}"${rec.barangay ? ` (${rec.barangay})` : ''}`;
+  }
+  if (module === 'finance') {
+    return `journal entry${rec.reference ? ` ${rec.reference}` : ''} on ${rec.date}`;
+  }
+  return 'record';
+}
+
+// Flags mapped rows that collide with an existing ChurchOS record OR with an
+// earlier row in the same file. The first in-file occurrence is not flagged.
+export function detectDuplicates(
+  mappedRows: Record<string, any>[],
+  existingRecords: Record<string, any>[],
+  module: ImportTarget,
+): DuplicateInfo[] {
+  const existingByKey = new Map<string, Record<string, any>>();
+  for (const rec of existingRecords) {
+    const key = dedupKey(rec, module);
+    if (key && !existingByKey.has(key)) existingByKey.set(key, rec);
+  }
+
+  const seenInFile = new Map<string, number>();
+  const duplicates: DuplicateInfo[] = [];
+  mappedRows.forEach((row, i) => {
+    const key = dedupKey(row, module);
+    if (!key) return;
+    const existing = existingByKey.get(key);
+    if (existing) {
+      duplicates.push({
+        rowIndex: i, kind: 'existing', key,
+        reason: `matches existing ${recordLabel(existing, module)}`,
+      });
+      return;
+    }
+    const firstAt = seenInFile.get(key);
+    if (firstAt !== undefined) {
+      duplicates.push({
+        rowIndex: i, kind: 'in_file', key,
+        reason: `duplicate of row ${firstAt + 1} in this file`,
+      });
+    } else {
+      seenInFile.set(key, i);
+    }
+  });
+  return duplicates;
 }
 
 // ── Import History ──

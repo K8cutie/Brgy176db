@@ -6,9 +6,15 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
-  MoreHorizontal,
   ArrowUpDown,
 } from 'lucide-react';
+import {
+  cellText,
+  filterRows,
+  paginateRows,
+  pageItems,
+  PAGE_SIZE_OPTIONS,
+} from '@/lib/tablePaging';
 
 export interface Column<T> {
   key: string;
@@ -30,29 +36,14 @@ interface DataTableProps<T> {
   data: T[];
   sortable?: boolean;
   filterable?: boolean;
+  /** Pagination is on by default; pass false for small always-visible tables. */
   paginated?: boolean;
+  /** Initial rows per page — the user can change it via the footer selector. */
   pageSize?: number;
   actionsColumn?: (row: T) => React.ReactNode;
   onRowClick?: (row: T) => void;
   loading?: boolean;
   emptyMessage?: string;
-}
-
-// The text used to search/sort a cell: explicit searchValue, else the render
-// output when it's a string/number (so composed columns like `${first} ${last}`
-// are matchable), else the raw key value. JSX-returning renders (e.g. a status
-// badge) fall back to row[key], which holds the value in those cases.
-function cellText<T extends Record<string, any>>(col: Column<T>, row: T): unknown {
-  if (col.searchValue) return col.searchValue(row);
-  if (col.render) {
-    try {
-      const out = col.render(row);
-      if (typeof out === 'string' || typeof out === 'number') return out;
-    } catch {
-      /* fall through to key value */
-    }
-  }
-  return row[col.key];
 }
 
 export default function DataTable<T extends Record<string, any>>({
@@ -61,7 +52,7 @@ export default function DataTable<T extends Record<string, any>>({
   sortable = true,
   filterable = true,
   paginated = true,
-  pageSize = 10,
+  pageSize = 50,
   actionsColumn,
   onRowClick,
   loading = false,
@@ -71,20 +62,21 @@ export default function DataTable<T extends Record<string, any>>({
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(pageSize);
 
-  const filteredData = useMemo(() => {
-    if (!searchQuery) return data;
-    const q = searchQuery.toLowerCase();
-    return data.filter((row) =>
-      columns.some((col) => {
-        // Search the text the user actually SEES (see cellText) — previously render
-        // columns were skipped entirely, so name/parents/date columns returned
-        // "0 records" for on-screen text.
-        const val = cellText(col, row);
-        return val != null && String(val).toLowerCase().includes(q);
-      })
-    );
-  }, [data, searchQuery, columns]);
+  // Callers pass memoized arrays, so a new `data` identity means the upstream
+  // filters really changed → jump back to page 1 (adjusted during render, per
+  // the React "storing information from previous renders" pattern).
+  const [prevData, setPrevData] = useState(data);
+  if (prevData !== data) {
+    setPrevData(data);
+    setCurrentPage(1);
+  }
+
+  const filteredData = useMemo(
+    () => filterRows(data, columns, searchQuery),
+    [data, searchQuery, columns]
+  );
 
   const sortedData = useMemo(() => {
     if (!sortable || !sortKey) return filteredData;
@@ -104,11 +96,18 @@ export default function DataTable<T extends Record<string, any>>({
     });
   }, [filteredData, sortKey, sortDir, sortable, columns]);
 
-  const totalPages = Math.max(1, Math.ceil(sortedData.length / pageSize));
-  const safePage = Math.min(currentPage, totalPages);
-  const paginatedData = paginated
-    ? sortedData.slice((safePage - 1) * pageSize, safePage * pageSize)
-    : sortedData;
+  const { pageRows, totalPages, safePage, start, end } = useMemo(
+    () => paginateRows(sortedData, currentPage, rowsPerPage),
+    [sortedData, currentPage, rowsPerPage]
+  );
+  const paginatedData = paginated ? pageRows : sortedData;
+
+  // Offer the standard sizes plus the caller's initial size when it's custom
+  // (e.g. a table pinned to 8 rows still gets a sensible selector).
+  const sizeOptions = useMemo(
+    () => Array.from(new Set([...PAGE_SIZE_OPTIONS, pageSize])).sort((a, b) => a - b),
+    [pageSize]
+  );
 
   const handleSort = (key: string) => {
     if (!sortable) return;
@@ -204,7 +203,8 @@ export default function DataTable<T extends Record<string, any>>({
                   key={i}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  transition={{ duration: 0.2, delay: i * 0.03 }}
+                  // Cap the stagger so a 100-row page doesn't fade in for 3s.
+                  transition={{ duration: 0.2, delay: Math.min(i, 10) * 0.03 }}
                   className={onRowClick ? 'cursor-pointer' : ''}
                   onClick={() => onRowClick?.(row)}
                 >
@@ -225,28 +225,62 @@ export default function DataTable<T extends Record<string, any>>({
         </table>
       </div>
 
-      {/* Pagination */}
-      {paginated && totalPages > 1 && (
-        <div className="flex items-center justify-between px-5 py-3 border-t border-parchment/40 dark:border-dm-border">
-          <button
-            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-            disabled={safePage <= 1}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm text-warm-gray hover:bg-cream-dark disabled:opacity-30 disabled:cursor-not-allowed transition-all dark:text-dm-text-muted dark:hover:bg-dm-surface-raised"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            Prev
-          </button>
+      {/* Pagination footer */}
+      {paginated && sortedData.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-t border-parchment/40 dark:border-dm-border">
           <span className="text-sm text-warm-gray dark:text-dm-text-muted">
-            Page {safePage} of {totalPages}
+            Showing {start + 1}–{end} of {sortedData.length}
           </span>
-          <button
-            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-            disabled={safePage >= totalPages}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm text-warm-gray hover:bg-cream-dark disabled:opacity-30 disabled:cursor-not-allowed transition-all dark:text-dm-text-muted dark:hover:bg-dm-surface-raised"
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              aria-label="Previous page"
+              className="p-1.5 rounded-lg text-warm-gray hover:bg-cream-dark disabled:opacity-30 disabled:cursor-not-allowed transition-all dark:text-dm-text-muted dark:hover:bg-dm-surface-raised"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            {pageItems(totalPages, safePage).map((item, idx) =>
+              item === '…' ? (
+                <span key={`gap-${idx}`} className="px-1 text-sm text-warm-gray dark:text-dm-text-muted">
+                  …
+                </span>
+              ) : (
+                <button
+                  key={item}
+                  onClick={() => setCurrentPage(item)}
+                  aria-current={item === safePage ? 'page' : undefined}
+                  className={`min-w-[32px] h-8 px-1.5 rounded-lg text-sm transition-all ${
+                    item === safePage
+                      ? 'bg-gold text-white font-semibold'
+                      : 'text-warm-gray hover:bg-cream-dark dark:text-dm-text-muted dark:hover:bg-dm-surface-raised'
+                  }`}
+                >
+                  {item}
+                </button>
+              )
+            )}
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage >= totalPages}
+              aria-label="Next page"
+              className="p-1.5 rounded-lg text-warm-gray hover:bg-cream-dark disabled:opacity-30 disabled:cursor-not-allowed transition-all dark:text-dm-text-muted dark:hover:bg-dm-surface-raised"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          <select
+            value={rowsPerPage}
+            onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+            aria-label="Rows per page"
+            className="h-8 rounded-lg border border-parchment bg-cream px-2 text-sm text-warm-gray focus:outline-none focus:border-gold cursor-pointer dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text-muted"
           >
-            Next
-            <ChevronRight className="w-4 h-4" />
-          </button>
+            {sizeOptions.map((n) => (
+              <option key={n} value={n}>{n} / page</option>
+            ))}
+          </select>
         </div>
       )}
     </div>

@@ -6,16 +6,14 @@
 // aggregating queries against the cloud Postgres — the whole point of going
 // SaaS: the roll-up that an offline install can never do.
 //
-// This is the SaaS build's /diocese route. It is intentionally NOT wired into
-// the offline desktop app (which has no cloud + one parish), so the Supabase
-// import never reaches the desktop bundle.
+// This is the SaaS build's /diocese route (lazy + cloud/role-gated in App.tsx,
+// so this chunk never loads on the offline desktop app). Uses the SHARED
+// Supabase client so the queries carry the logged-in session — a fresh client
+// here would hit RLS anonymously and see nothing.
 // ═══════════════════════════════════════════════════════════
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-const env = (import.meta as unknown as { env: Record<string, string | undefined> }).env;
-const supabase = createClient(env?.VITE_SUPABASE_URL ?? '', env?.VITE_SUPABASE_ANON_KEY ?? '');
+import { getSupabase } from '@/lib/supabaseClient';
 
 const peso = (n: number) => '₱' + Math.round(n).toLocaleString();
 
@@ -38,6 +36,7 @@ export default function DioceseCockpit() {
         // RLS scopes this to the bishop's diocese. We read the monthly financial
         // PACKETS (diocese_reports) parishes push — NOT raw records. Parishioner
         // PII never reaches the cloud.
+        const supabase = await getSupabase();
         const [{ data: parishes }, { data: reports }] = await Promise.all([
           supabase.from('parishes').select('id,name'),
           supabase.from('diocese_reports').select('parish_id,period,collections_total,expense_total,by_mass_time,by_category,flagged_waivers'),

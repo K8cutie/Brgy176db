@@ -31,18 +31,12 @@ describe("getFeeSchedule", () => {
     expect(getFeeSchedule()).not.toBe(DEFAULT_FEE_SCHEDULE)
     expect(getFeeSchedule()).not.toBe(getFeeSchedule())
   })
-  it("NOTE: the default copy is shallow — item objects are shared by reference", () => {
-    // KNOWN SHARED-REFERENCE behavior (not fixed here — would touch source logic).
-    // getFeeSchedule() does `[...DEFAULT_FEE_SCHEDULE]`, so the element objects are
-    // the same references. A caller that mutates an item in place will corrupt the
-    // canonical default for the rest of the process. Callers should treat the
-    // returned items as read-only or clone before editing. Test asserts the actual
-    // behavior so a future deep-copy fix will (intentionally) flip this expectation.
+  it("returns a DEEP copy — mutating an item cannot corrupt the defaults", () => {
     const a = getFeeSchedule()
     a[0].ceremonyFee = 99999
-    expect(DEFAULT_FEE_SCHEDULE[0].ceremonyFee).toBe(99999)
-    // restore so test order can't leak into sibling tests
-    DEFAULT_FEE_SCHEDULE[0].ceremonyFee = 300
+    expect(DEFAULT_FEE_SCHEDULE[0].ceremonyFee).toBe(300)
+    // a second read is also unaffected by the first caller's mutation
+    expect(getFeeSchedule()[0].ceremonyFee).toBe(300)
   })
   it("returns the stored schedule when present", () => {
     const custom: FeeScheduleItem[] = [

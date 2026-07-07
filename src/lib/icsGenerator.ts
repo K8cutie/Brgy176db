@@ -2,7 +2,11 @@
 // Produces standard RFC 5545 output that imports into iPhone/Android calendars
 
 import { getParishConfig, getPriestName } from './parishConfig';
+import { getJSON } from './storageNamespaced';
+import { KEYS } from './storageKeys';
+import { SAMPLE_EVENTS } from './calendarData';
 import type { CalendarEvent } from './calendarData';
+import { baptismRecords, marriageRecords, confirmationRecords, deathRecords } from './registryData';
 import { getFeeForSacrament } from './feeSchedule';
 
 export interface PriestScheduleEvent {
@@ -14,6 +18,22 @@ export interface PriestScheduleEvent {
   description: string;
   type: string;
   uid?: string;
+}
+
+// Registry rows are read defensively field-by-field, so a loose shape suffices.
+type RegistryRecord = Record<string, unknown>;
+export type SacramentTable = 'baptism' | 'marriage' | 'confirmation' | 'death';
+
+/**
+ * Live data for the generator. Callers that already hold the data (e.g.
+ * CalendarPage's persisted events) pass it here; anything not provided is
+ * read through the parish-namespaced storage seam with the same seeds the
+ * pages use. Bare localStorage keys are never read.
+ */
+export interface PriestScheduleData {
+  events?: CalendarEvent[];
+  massSchedule?: MassTime[];
+  registryRecords?: Partial<Record<SacramentTable, RegistryRecord[]>>;
 }
 
 /* ── Mass schedule from parish config ── */
@@ -36,12 +56,17 @@ const DEFAULT_MASS_SCHEDULE: MassTime[] = [
   { day: 'Saturday', time: '6:00 AM', type: 'Daily Mass' },
 ];
 
+// Short key under the parish namespace (listed in parishIdentity's
+// migrateToNamespacedStorage key set).
+const MASS_SCHEDULE_KEY = 'mass_schedule';
+
 function getMassSchedule(): MassTime[] {
-  try {
-    const raw = localStorage.getItem('churchos_mass_schedule');
-    if (raw) return JSON.parse(raw) as MassTime[];
-  } catch { /* ignore */ }
-  return DEFAULT_MASS_SCHEDULE;
+  return getJSON<MassTime[]>(MASS_SCHEDULE_KEY, DEFAULT_MASS_SCHEDULE);
+}
+
+/* ── Normalize "9:00 AM" style times to 24h "09:00" ── */
+function normalizeTime(time: string): string {
+  return /am|pm/i.test(time) ? convertTo24h(time) : time;
 }
 
 /* ── Day name to number (0=Sunday) ── */
@@ -128,7 +153,7 @@ export interface PriestScheduleOptions {
   priestName?: string;       // Filter by priest (default: current parish priest)
 }
 
-export function generatePriestIcs(opts: PriestScheduleOptions): string {
+export function generatePriestIcs(opts: PriestScheduleOptions, data?: PriestScheduleData): string {
   const config = getParishConfig();
   const priestName = opts.priestName || getPriestName();
   const now = new Date();
@@ -139,20 +164,21 @@ export function generatePriestIcs(opts: PriestScheduleOptions): string {
 
   /* ── 1. Mass Schedule (recurring) ── */
   if (opts.includeMass) {
-    const massSchedule = getMassSchedule();
+    const massSchedule = data?.massSchedule ?? getMassSchedule();
     for (const mass of massSchedule) {
+      const start = normalizeTime(mass.time);
       const dates = getDatesForDay(mass.day, now, endDate);
       for (const d of dates) {
         const dateStr = d.toISOString().split('T')[0];
         events.push({
           title: `${mass.type} — ${config.parishShortName}`,
           date: dateStr,
-          startTime: mass.time,
-          endTime: addMinutes(mass.time, 60),
+          startTime: start,
+          endTime: addMinutes(start, 60),
           location: config.parishName,
           description: `Presider: ${priestName}\nType: ${mass.type}\nParish: ${config.parishName}`,
           type: 'Mass',
-          uid: `churchos-mass-${mass.day}-${mass.time.replace(':', '')}-${dateStr}@churchos.local`,
+          uid: `churchos-mass-${mass.day}-${start.replace(':', '')}-${dateStr}@churchos.local`,
         });
       }
     }
@@ -160,85 +186,74 @@ export function generatePriestIcs(opts: PriestScheduleOptions): string {
 
   /* ── 2. Sacrament Ceremonies from Registry ── */
   if (opts.includeSacraments) {
-    const sacramentSources: { key: string; label: string; table: string }[] = [
-      { key: 'churchos_baptism_records', label: 'Baptism', table: 'baptism' },
-      { key: 'churchos_marriage_records', label: 'Marriage', table: 'marriage' },
-      { key: 'churchos_confirmation_records', label: 'Confirmation', table: 'confirmation' },
-      { key: 'churchos_death_records', label: 'Burial', table: 'death' },
+    // Seeds match RegistryPage's usePersistedState defaults, so the export
+    // agrees with what the app shows before the registry is first persisted.
+    const sacramentSources: { storageKey: string; label: string; feeKey: 'Baptism' | 'Marriage' | 'Confirmation' | 'Death'; table: SacramentTable; seed: RegistryRecord[] }[] = [
+      { storageKey: KEYS.baptismRecords, label: 'Baptism', feeKey: 'Baptism', table: 'baptism', seed: baptismRecords as unknown as RegistryRecord[] },
+      { storageKey: KEYS.marriageRecords, label: 'Marriage', feeKey: 'Marriage', table: 'marriage', seed: marriageRecords as unknown as RegistryRecord[] },
+      { storageKey: KEYS.confirmationRecords, label: 'Confirmation', feeKey: 'Confirmation', table: 'confirmation', seed: confirmationRecords as unknown as RegistryRecord[] },
+      { storageKey: KEYS.deathRecords, label: 'Burial', feeKey: 'Death', table: 'death', seed: deathRecords as unknown as RegistryRecord[] },
     ];
 
     for (const src of sacramentSources) {
-      try {
-        const raw = localStorage.getItem(src.key);
-        if (!raw) continue;
-        const records = JSON.parse(raw) as Array<Record<string, unknown>>;
-        for (const r of records) {
-          const schedOff = (r.scheduledOfficiant as string) || (r.officiant as string);
-          if (!schedOff || !schedOff.includes(priestName.split(' ').pop() || priestName)) continue;
+      const records = data?.registryRecords?.[src.table]
+        ?? getJSON<RegistryRecord[]>(src.storageKey, src.seed);
+      for (const r of records) {
+        const schedOff = (r.scheduledOfficiant as string) || (r.officiant as string);
+        if (!schedOff || !schedOff.includes(priestName.split(' ').pop() || priestName)) continue;
 
-          const schedDate = (r.scheduledDate as string) || (r.dateOfBaptism as string) || (r.dateOfMarriage as string) || (r.dateOfConfirmation as string) || (r.dateOfBurial as string);
-          const schedTime = (r.scheduledTime as string) || '09:00';
-          if (!schedDate) continue;
+        const schedDate = (r.scheduledDate as string) || (r.dateOfBaptism as string) || (r.dateOfMarriage as string) || (r.dateOfConfirmation as string) || (r.dateOfBurial as string);
+        const schedTime = (r.scheduledTime as string) || '09:00';
+        if (!schedDate) continue;
 
-          // Only include future events within range
-          const eventDate = new Date(schedDate + 'T00:00:00');
-          if (eventDate < now || eventDate > endDate) continue;
+        // Only include future events within range
+        const eventDate = new Date(schedDate + 'T00:00:00');
+        if (eventDate < now || eventDate > endDate) continue;
 
-          const personName = src.table === 'baptism'
-            ? `${r.childFirstName || ''} ${r.childLastName || ''}`
-            : src.table === 'marriage'
-            ? `${r.groomFirstName || ''} ${r.groomLastName || ''} & ${r.brideFirstName || ''} ${r.brideLastName || ''}`
-            : src.table === 'confirmation'
-            ? `${r.confirmandFirstName || ''} ${r.confirmandLastName || ''}`
-            : `${r.deceasedFirstName || ''} ${r.deceasedLastName || ''}`;
+        const personName = src.table === 'baptism'
+          ? `${r.childFirstName || ''} ${r.childLastName || ''}`
+          : src.table === 'marriage'
+          ? `${r.groomFirstName || ''} ${r.groomLastName || ''} & ${r.brideFirstName || ''} ${r.brideLastName || ''}`
+          : src.table === 'confirmation'
+          ? `${r.confirmandFirstName || ''} ${r.confirmandLastName || ''}`
+          : `${r.deceasedFirstName || ''} ${r.deceasedLastName || ''}`;
 
-          const feeItem = getFeeForSacrament(src.label as 'Baptism' | 'Marriage' | 'Confirmation' | 'Death');
-          const fee = feeItem?.ceremonyFee || 0;
+        const feeItem = getFeeForSacrament(src.feeKey);
+        const fee = feeItem?.ceremonyFee || 0;
 
-          events.push({
-            title: `${src.label}: ${personName.trim()}`,
-            date: schedDate,
-            startTime: schedTime.includes('AM') || schedTime.includes('PM')
-              ? convertTo24h(schedTime)
-              : schedTime,
-            endTime: addMinutes(
-              schedTime.includes('AM') || schedTime.includes('PM')
-                ? convertTo24h(schedTime)
-                : schedTime,
-              src.table === 'marriage' ? 90 : src.table === 'burial' ? 60 : 45
-            ),
-            location: (r.scheduledLocation as string) || config.parishName,
-            description: `Sacrament: ${src.label}\nCelebrant: ${schedOff}\nCandidate: ${personName.trim()}\nRegistry: ${r.registryNumber || 'N/A'}\nFee: ₱${fee.toLocaleString()}`,
-            type: src.label,
-            uid: `churchos-${src.table}-${r.id || r.registryNumber}@churchos.local`,
-          });
-        }
-      } catch { /* skip malformed */ }
+        const startTime = normalizeTime(schedTime);
+        events.push({
+          title: `${src.label}: ${personName.trim()}`,
+          date: schedDate,
+          startTime,
+          endTime: addMinutes(startTime, src.table === 'marriage' ? 90 : src.table === 'death' ? 60 : 45),
+          location: (r.scheduledLocation as string) || config.parishName,
+          description: `Sacrament: ${src.label}\nCelebrant: ${schedOff}\nCandidate: ${personName.trim()}\nRegistry: ${r.registryNumber || 'N/A'}\nFee: ₱${fee.toLocaleString()}`,
+          type: src.label,
+          uid: `churchos-${src.table}-${r.id || r.registryNumber}@churchos.local`,
+        });
+      }
     }
   }
 
   /* ── 3. Calendar Events ── */
   if (opts.includeEvents) {
-    try {
-      const raw = localStorage.getItem('churchos_calendar_events');
-      const calEvents: CalendarEvent[] = raw ? JSON.parse(raw) : [];
-      // Also try the module-level import if available
-      for (const evt of calEvents) {
-        if (evt.officiant && !evt.officiant.includes(priestName.split(' ').pop() || priestName)) continue;
-        const eventDate = new Date(evt.date + 'T00:00:00');
-        if (eventDate < now || eventDate > endDate) continue;
-        events.push({
-          title: evt.title,
-          date: evt.date,
-          startTime: evt.startTime,
-          endTime: evt.endTime,
-          location: evt.location,
-          description: `${evt.description || ''}\nType: ${evt.type}\n${evt.officiant ? 'Officiant: ' + evt.officiant : ''}`,
-          type: evt.type,
-          uid: `churchos-cal-${evt.id}@churchos.local`,
-        });
-      }
-    } catch { /* skip */ }
+    const calEvents = data?.events ?? getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
+    for (const evt of calEvents) {
+      if (evt.officiant && !evt.officiant.includes(priestName.split(' ').pop() || priestName)) continue;
+      const eventDate = new Date(evt.date + 'T00:00:00');
+      if (eventDate < now || eventDate > endDate) continue;
+      events.push({
+        title: evt.title,
+        date: evt.date,
+        startTime: evt.startTime,
+        endTime: evt.endTime,
+        location: evt.location,
+        description: `${evt.description || ''}\nType: ${evt.type}\n${evt.officiant ? 'Officiant: ' + evt.officiant : ''}`,
+        type: evt.type,
+        uid: `churchos-cal-${evt.id}@churchos.local`,
+      });
+    }
   }
 
   /* ── Sort by date/time ── */
@@ -285,10 +300,10 @@ function convertTo24h(time12: string): string {
    Generate plain-text summary for WhatsApp/SMS copy-paste
    ═══════════════════════════════════════════════════════════ */
 
-export function generateTextSummary(opts: PriestScheduleOptions): string {
+export function generateTextSummary(opts: PriestScheduleOptions, data?: PriestScheduleData): string {
   const config = getParishConfig();
   const priestName = opts.priestName || getPriestName();
-  const ics = generatePriestIcs(opts);
+  const ics = generatePriestIcs(opts, data);
 
   // Parse events from the .ics for text format
   const eventMatches = ics.match(/BEGIN:VEVENT\r?\n([\s\S]*?)END:VEVENT/g) || [];

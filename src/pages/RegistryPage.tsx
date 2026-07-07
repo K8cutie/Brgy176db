@@ -430,8 +430,9 @@ export default function RegistryPage() {
     [statusFilter, officiantFilter, yearFilter],
   );
 
-  /* filtered data */
-  const baptismFiltered = bData.filter((r) => {
+  /* filtered data — memoized so identities only change when the rows/filters
+     actually change (DataTable resets to page 1 on a new data identity). */
+  const baptismFiltered = useMemo(() => bData.filter((r) => {
     if (!matchesFilters(r, r.dateOfBaptism)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -443,9 +444,9 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  });
+  }), [bData, matchesFilters, searchQuery]);
 
-  const marriageFiltered = mData.filter((r) => {
+  const marriageFiltered = useMemo(() => mData.filter((r) => {
     if (!matchesFilters(r, r.dateOfMarriage)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -456,9 +457,9 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  });
+  }), [mData, matchesFilters, searchQuery]);
 
-  const confirmationFiltered = cData.filter((r) => {
+  const confirmationFiltered = useMemo(() => cData.filter((r) => {
     if (!matchesFilters(r, r.dateOfConfirmation)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -468,9 +469,9 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  });
+  }), [cData, matchesFilters, searchQuery]);
 
-  const deathFiltered = dData.filter((r) => {
+  const deathFiltered = useMemo(() => dData.filter((r) => {
     if (!matchesFilters(r, r.dateOfDeath)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -480,7 +481,7 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  });
+  }), [dData, matchesFilters, searchQuery]);
 
   /* actions */
   const handleEdit = useCallback(

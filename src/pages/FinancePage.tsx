@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -14,14 +14,17 @@ import EmptyState from '@/components/EmptyState';
 import AnalyticsDashboard from '@/components/AnalyticsDashboard';
 import { getLabel } from '@/lib/friendlyLabels';
 import {
-  chartOfAccounts, journalEntries, collectionsData, budgetData, approvalItems,
+  journalEntries, collectionsData, budgetData,
   getLeafAccounts, formatPeso, formatPesoWhole,
-  getAmountApprovalLevel,
+  getAmountApprovalLevel, canApproveLevel,
 } from '@/lib/financeData';
-import type { Account, JournalEntry, JournalLine, Collection, BudgetItem, ApprovalItem } from '@/lib/financeData';
+import type { Account, JournalEntry, JournalLine, Collection, BudgetItem, ApprovalItem, ApprovalHistoryStep } from '@/lib/financeData';
+import { deriveAccountBalances, deriveIncomeStatement, deriveBudgetActuals } from '@/lib/ledger';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { KEYS } from '@/lib/storageKeys';
-import { getCurrentUserName } from '@/lib/session';
+import { getJSON, setJSON } from '@/lib/storageNamespaced';
+import { getCurrentUserName, getCurrentUserRole } from '@/lib/session';
+import type { AuditLogEntry } from '@/lib/settingsData';
 
 // ============================================
 // Types
@@ -56,6 +59,61 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
 }
 
 // ============================================
+// Audit trail — append finance actions to the persisted 'audit_log' store
+// (the key parishIdentity migrates) through the storage seam.
+// ============================================
+function appendFinanceAudit(action: string, recordId: string, details: string): void {
+  const log = getJSON<AuditLogEntry[]>('audit_log', []);
+  const entry: AuditLogEntry = {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    user: getCurrentUserName(),
+    action,
+    table: 'Finance',
+    recordId,
+    details,
+    ipAddress: 'local',
+  };
+  setJSON('audit_log', [entry, ...log]);
+}
+
+// ============================================
+// Approve/Reject a Pending journal entry — THE single decision path shared by
+// the Journal tab and the Approvals tab. Transitions the status, appends to
+// the entry's approval history, and records the decision in the audit log.
+// Returns true when a decision was actually recorded.
+// ============================================
+function decideJournalEntry(
+  entries: JournalEntry[],
+  setEntries: Dispatch<SetStateAction<JournalEntry[]>>,
+  role: string,
+  id: string,
+  decision: 'Approved' | 'Rejected',
+  comment?: string,
+): boolean {
+  const target = entries.find((e) => e.id === id);
+  if (!target || target.status !== 'Pending') return false;
+  if (!canApproveLevel(role, target.requiredApproval)) {
+    toast.error('Your role cannot approve this entry');
+    return false;
+  }
+  const step: ApprovalHistoryStep = {
+    action: decision,
+    by: getCurrentUserName(),
+    date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+    comment: comment?.trim() || undefined,
+  };
+  setEntries((prev) => prev.map((e) => e.id === id
+    ? { ...e, status: decision === 'Approved' ? 'Posted' : 'Rejected', approvalHistory: [...(e.approvalHistory ?? []), step] }
+    : e));
+  appendFinanceAudit(decision, id,
+    `${decision} journal entry ${formatPeso(target.totalDr)} (${target.requiredApproval})${step.comment ? ` — "${step.comment}"` : ''}`);
+  if (decision === 'Approved') toast.success('Entry approved and posted to ledger');
+  else toast.error('Entry rejected');
+  return true;
+}
+
+// ============================================
 // FinancePage — Main Component
 // ============================================
 const VALID_TABS: TabId[] = ['coa', 'journal', 'collections', 'budget', 'analytics', 'approvals'];
@@ -63,6 +121,10 @@ const VALID_TABS: TabId[] = ['coa', 'journal', 'collections', 'budget', 'analyti
 export default function FinancePage() {
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabId>('coa');
+  // Single source of truth for every tab AND the KPI cards — lifted here so a
+  // post in one tab immediately updates all derived views on this page.
+  const [entries, setEntries] = usePersistedState<JournalEntry[]>(KEYS.journalEntries, journalEntries);
+  const [collections, setCollections] = usePersistedState<Collection[]>(KEYS.collections, collectionsData);
 
   // Honor an inbound ?tab=<name> (e.g. ?tab=collections) on mount / when it changes.
   useEffect(() => {
@@ -72,12 +134,40 @@ export default function FinancePage() {
     }
   }, [searchParams]);
 
-  // KPI Card data
+  // KPI Card data — derived live from the ledger, never hardcoded.
+  const kpi = useMemo(() => {
+    const accounts = deriveAccountBalances(entries, collections);
+    const leafBalance = (code: string): number => {
+      let found = 0;
+      const walk = (accs: Account[]) => {
+        for (const a of accs) {
+          if (a.children && a.children.length > 0) walk(a.children);
+          else if (a.code === code) found = a.balance;
+        }
+      };
+      walk(accounts);
+      return found;
+    };
+    const income = deriveIncomeStatement(entries, collections);
+    const pending = entries.filter((e) => e.status === 'Pending');
+    return {
+      totalAssets: accounts.find((a) => a.type === 'ASSET')?.balance ?? 0,
+      cash: leafBalance('1000') + leafBalance('1010'),
+      totalIncome: income.totalRevenue,
+      pendingCount: pending.length,
+      pendingTotal: pending.reduce((s, e) => s + e.totalDr, 0),
+    };
+  }, [entries, collections]);
+
   const kpiCards = [
-    { title: 'Total Assets', value: '₱2,456,789', icon: DollarSign, trend: { value: '+3.2%', direction: 'up' as const }, onClick: () => setActiveTab('coa') },
-    { title: 'Cash on Hand', value: '₱245,680', icon: DollarSign, trend: { value: '+1.8%', direction: 'up' as const, isAlert: true }, onClick: () => setActiveTab('collections') },
-    { title: 'YTD Income', value: '₱1,847,350', icon: TrendingUp, trend: { value: '+8.5%', direction: 'up' as const }, onClick: () => setActiveTab('budget') },
-    { title: 'Pending Approvals', value: '3', icon: AlertCircle, trend: { value: '₱180K council review, ₱320K consent needed, ₱650K bishop approval', direction: 'neutral' as const, isAlert: true }, onClick: () => setActiveTab('approvals') },
+    { title: 'Total Assets', value: formatPesoWhole(kpi.totalAssets), icon: DollarSign, onClick: () => setActiveTab('coa') },
+    { title: 'Cash & Bank', value: formatPesoWhole(kpi.cash), icon: DollarSign, onClick: () => setActiveTab('collections') },
+    { title: 'Total Income', value: formatPesoWhole(kpi.totalIncome), icon: TrendingUp, onClick: () => setActiveTab('budget') },
+    {
+      title: 'Pending Approvals', value: String(kpi.pendingCount), icon: AlertCircle,
+      trend: { value: kpi.pendingCount > 0 ? `${formatPesoWhole(kpi.pendingTotal)} awaiting approval` : 'Approval queue clear', direction: 'neutral' as const, isAlert: kpi.pendingCount > 0 },
+      onClick: () => setActiveTab('journal'),
+    },
   ];
 
   const tabs: { id: TabId; label: string }[] = [
@@ -139,12 +229,12 @@ export default function FinancePage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] }}
         >
-          {activeTab === 'coa' && <ChartOfAccountsTab />}
-          {activeTab === 'journal' && <JournalTab />}
-          {activeTab === 'collections' && <CollectionsTab />}
-          {activeTab === 'budget' && <BudgetTab />}
+          {activeTab === 'coa' && <ChartOfAccountsTab entries={entries} collections={collections} />}
+          {activeTab === 'journal' && <JournalTab entries={entries} setEntries={setEntries} />}
+          {activeTab === 'collections' && <CollectionsTab collections={collections} setCollections={setCollections} />}
+          {activeTab === 'budget' && <BudgetTab entries={entries} collections={collections} />}
           {activeTab === 'analytics' && <AnalyticsDashboard />}
-          {activeTab === 'approvals' && <ApprovalsTab />}
+          {activeTab === 'approvals' && <ApprovalsTab entries={entries} setEntries={setEntries} />}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -154,13 +244,16 @@ export default function FinancePage() {
 // ============================================
 // Tab 1 — Chart of Accounts (Tree View)
 // ============================================
-function ChartOfAccountsTab() {
+function ChartOfAccountsTab({ entries, collections }: { entries: JournalEntry[]; collections: Collection[] }) {
   const [expanded, setExpanded] = useState<ExpandedState>({
     '1000': true, '1100': true, '1200': false,
     '2000': false, '3000': false, '4000': false, '5000': false,
   });
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Static chart balances are opening balances; show current = opening + postings.
+  const derivedChart = useMemo(() => deriveAccountBalances(entries, collections), [entries, collections]);
 
   const toggle = (code: string) => setExpanded((prev) => ({ ...prev, [code]: !prev[code] }));
 
@@ -171,7 +264,7 @@ function ChartOfAccountsTab() {
         if (a.children) { all[a.code] = true; mark(a.children); }
       }
     }
-    mark(chartOfAccounts);
+    mark(derivedChart);
     setExpanded(all);
   };
 
@@ -179,7 +272,7 @@ function ChartOfAccountsTab() {
 
   // Filter accounts by search
   const filteredAccounts = useMemo(() => {
-    if (!searchQuery.trim()) return chartOfAccounts;
+    if (!searchQuery.trim()) return derivedChart;
     const q = searchQuery.toLowerCase();
     function filter(accs: Account[]): Account[] {
       return accs.map((a) => {
@@ -192,8 +285,8 @@ function ChartOfAccountsTab() {
         return null;
       }).filter(Boolean) as Account[];
     }
-    return filter(chartOfAccounts);
-  }, [searchQuery]);
+    return filter(derivedChart);
+  }, [searchQuery, derivedChart]);
 
   // Show all expanded when searching
   if (searchQuery.trim()) {
@@ -300,7 +393,7 @@ function ChartOfAccountsTab() {
                 <div className="pt-3 border-t border-parchment/40">
                   <p className="label text-warm-gray mb-2">Recent Transactions</p>
                   <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {journalEntries
+                    {entries
                       .filter((je) => je.lines.some((l) => l.accountCode === selectedAccount.code || l.accountName === selectedAccount.name))
                       .slice(0, 5)
                       .map((je) => (
@@ -319,7 +412,7 @@ function ChartOfAccountsTab() {
                           </div>
                         </div>
                       ))}
-                    {journalEntries.filter((je) => je.lines.some((l) => l.accountCode === selectedAccount.code || l.accountName === selectedAccount.name)).length === 0 && (
+                    {entries.filter((je) => je.lines.some((l) => l.accountCode === selectedAccount.code || l.accountName === selectedAccount.name)).length === 0 && (
                       <p className="text-xs text-warm-gray italic">No recent transactions</p>
                     )}
                   </div>
@@ -394,13 +487,21 @@ function AccountTreeNode({
 // ============================================
 // Tab 2 — Journal (General Ledger)
 // ============================================
-function JournalTab() {
+function JournalTab({ entries, setEntries }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>> }) {
   const [showModal, setShowModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [entries, setEntries] = usePersistedState<JournalEntry[]>(KEYS.journalEntries, journalEntries);
   // Draft entries persist separately so an interrupted "Save as Draft" is not lost.
   const [drafts, setDrafts] = usePersistedState<JournalEntry[]>('finance_journal_drafts', []);
   const [viewEntry, setViewEntry] = useState<JournalEntry | null>(null);
+
+  const role = getCurrentUserRole();
+
+  // Approve/Reject a Pending entry via the shared decision path.
+  const decideEntry = (id: string, decision: 'Approved' | 'Rejected', comment?: string) => {
+    if (decideJournalEntry(entries, setEntries, role, id, decision, comment)) {
+      setViewEntry(null);
+    }
+  };
 
   const handleExport = () => {
     const headers = ['Entry ID', 'Date', 'Reference', 'Description', 'Total Debits', 'Total Credits', 'Status', 'Posted By'];
@@ -496,7 +597,11 @@ function JournalTab() {
       {/* Journal Entries List */}
       <div className="space-y-3">
         {tableData.map((row, i) => (
-          <JournalEntryCard key={row.id} entry={row.raw} index={i} onView={() => setViewEntry(row.raw)} />
+          <JournalEntryCard
+            key={row.id} entry={row.raw} index={i} onView={() => setViewEntry(row.raw)}
+            canDecide={row.raw.status === 'Pending' && canApproveLevel(role, row.raw.requiredApproval)}
+            onDecide={(decision) => decideEntry(row.raw.id, decision)}
+          />
         ))}
         {tableData.length === 0 && (
           <EmptyState
@@ -516,7 +621,14 @@ function JournalTab() {
         {showModal && (
           <TransactionModal
             onClose={() => setShowModal(false)}
-            onPost={(entry) => setEntries((prev) => [entry, ...prev])}
+            onPost={(entry) => {
+              setEntries((prev) => [entry, ...prev]);
+              if (entry.status === 'Pending') {
+                appendFinanceAudit('Submitted', entry.id, `Journal entry ${formatPeso(entry.totalDr)} awaiting ${entry.requiredApproval} — ${entry.description}`);
+              } else {
+                appendFinanceAudit('Created', entry.id, `Posted journal entry ${formatPeso(entry.totalDr)} — ${entry.description}`);
+              }
+            }}
             onSaveDraft={(draft) => setDrafts((prev) => [draft, ...prev])}
           />
         )}
@@ -525,15 +637,40 @@ function JournalTab() {
       {/* View Entry Detail Modal */}
       <AnimatePresence>
         {viewEntry && (
-          <JournalViewModal entry={viewEntry} onClose={() => setViewEntry(null)} />
+          <JournalViewModal
+            entry={viewEntry}
+            onClose={() => setViewEntry(null)}
+            canDecide={viewEntry.status === 'Pending' && canApproveLevel(role, viewEntry.requiredApproval)}
+            onDecide={(decision, comment) => decideEntry(viewEntry.id, decision, comment)}
+          />
         )}
       </AnimatePresence>
     </div>
   );
 }
 
-// Read-only detail view of a posted journal entry.
-function JournalViewModal({ entry, onClose }: { entry: JournalEntry; onClose: () => void }) {
+const STATUS_BADGE: Record<JournalEntry['status'], string> = {
+  Posted: 'bg-success/10 text-success',
+  Pending: 'bg-warning/10 text-warning',
+  Draft: 'bg-cream-dark text-warm-gray',
+  Rejected: 'bg-error/10 text-error',
+};
+
+const STATUS_BORDER: Record<JournalEntry['status'], string> = {
+  Posted: 'border-l-success',
+  Pending: 'border-l-warning',
+  Draft: 'border-l-warm-gray',
+  Rejected: 'border-l-error',
+};
+
+// Detail view of a journal entry; approvers can decide Pending entries here.
+function JournalViewModal({ entry, onClose, canDecide, onDecide }: {
+  entry: JournalEntry;
+  onClose: () => void;
+  canDecide: boolean;
+  onDecide: (decision: 'Approved' | 'Rejected', comment?: string) => void;
+}) {
+  const [comment, setComment] = useState('');
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -566,7 +703,10 @@ function JournalViewModal({ entry, onClose }: { entry: JournalEntry; onClose: ()
             </div>
             <div>
               <p className="label text-warm-gray mb-1">Status</p>
-              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">{entry.status}</span>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_BADGE[entry.status]}`}>{entry.status}</span>
+              {entry.requiredApproval && entry.status === 'Pending' && (
+                <span className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">{entry.requiredApproval}</span>
+              )}
             </div>
             <div>
               <p className="label text-warm-gray mb-1">Posted By</p>
@@ -610,16 +750,67 @@ function JournalViewModal({ entry, onClose }: { entry: JournalEntry; onClose: ()
               </tfoot>
             </table>
           </div>
+
+          {/* Approval history */}
+          {entry.approvalHistory && entry.approvalHistory.length > 0 && (
+            <div>
+              <p className="label text-warm-gray mb-2">Approval History</p>
+              <div className="space-y-2">
+                {entry.approvalHistory.map((step, si) => (
+                  <div key={si} className="p-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-charcoal dark:text-dm-text">{step.action}</span>
+                      <span className="text-warm-gray">{step.date}</span>
+                    </div>
+                    <p className="text-warm-gray mt-0.5 flex items-center gap-1"><User className="w-3 h-3" /> {step.by}</p>
+                    {step.comment && <p className="text-warm-gray mt-0.5 italic">"{step.comment}"</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Decision comment (approvers only) */}
+          {canDecide && (
+            <div>
+              <label className="label text-warm-gray mb-1 block">Decision Comment</label>
+              <textarea rows={2} placeholder="Optional comment recorded with your decision..." value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-parchment bg-cream text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold resize-none dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text" />
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border shrink-0">
           <button onClick={onClose} className="cos-btn cos-btn-secondary text-sm">Close</button>
+          {canDecide && (
+            <>
+              <button
+                onClick={() => onDecide('Rejected', comment)}
+                className="cos-btn bg-error text-white hover:bg-[#991B1B] text-sm flex items-center gap-1"
+              >
+                <X className="w-4 h-4" /> Reject
+              </button>
+              <button
+                onClick={() => onDecide('Approved', comment)}
+                className="cos-btn bg-success text-white hover:bg-forest-green text-sm flex items-center gap-1"
+              >
+                <Check className="w-4 h-4" /> Approve
+              </button>
+            </>
+          )}
         </div>
       </motion.div>
     </motion.div>
   );
 }
 
-function JournalEntryCard({ entry, index, onView }: { entry: JournalEntry; index: number; onView: () => void }) {
+function JournalEntryCard({ entry, index, onView, canDecide, onDecide }: {
+  entry: JournalEntry;
+  index: number;
+  onView: () => void;
+  canDecide: boolean;
+  onDecide: (decision: 'Approved' | 'Rejected') => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -627,7 +818,7 @@ function JournalEntryCard({ entry, index, onView }: { entry: JournalEntry; index
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, delay: index * 0.03 }}
-      className="cos-card p-0 overflow-hidden border-l-4 border-l-success"
+      className={`cos-card p-0 overflow-hidden border-l-4 ${STATUS_BORDER[entry.status]}`}
     >
       {/* Header */}
       <div
@@ -638,7 +829,10 @@ function JournalEntryCard({ entry, index, onView }: { entry: JournalEntry; index
           <span className="font-mono text-sm text-gold font-medium">{entry.id}</span>
           <span className="text-sm text-warm-gray">{entry.date}</span>
           <span className="body-sm text-charcoal dark:text-dm-text font-medium">{entry.reference}</span>
-          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">{entry.status}</span>
+          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_BADGE[entry.status]}`}>{entry.status}</span>
+          {entry.status === 'Pending' && entry.requiredApproval && (
+            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">{entry.requiredApproval}</span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-warm-gray">By: {entry.postedBy}</span>
@@ -696,6 +890,22 @@ function JournalEntryCard({ entry, index, onView }: { entry: JournalEntry; index
                 >
                   <Eye className="w-3 h-3" /> View
                 </button>
+                {canDecide && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDecide('Approved'); }}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-success text-white hover:bg-forest-green transition-all flex items-center gap-1"
+                    >
+                      <Check className="w-3 h-3" /> Approve
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDecide('Rejected'); }}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-error text-white hover:bg-[#991B1B] transition-all flex items-center gap-1"
+                    >
+                      <X className="w-3 h-3" /> Reject
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </motion.div>
@@ -727,10 +937,17 @@ function TransactionModal({ onClose, onPost, onSaveDraft }: { onClose: () => voi
     setAttachments((prev) => [...prev, ...names]);
   };
 
-  const totalDr = lines.reduce((s, l) => s + (l.debit || 0), 0);
-  const totalCr = lines.reduce((s, l) => s + (l.credit || 0), 0);
-  const isBalanced = Math.abs(totalDr - totalCr) < 0.01 && totalDr > 0;
-  const diff = Math.abs(totalDr - totalCr);
+  // Balance is validated in INTEGER CENTAVOS — the exact arithmetic every
+  // derived report (trial balance, balance sheet) uses. A float "< 0.01"
+  // tolerance here let entries through that the reports then flagged as
+  // permanently Unbalanced.
+  const toCent = (v: number) => Math.round((v || 0) * 100);
+  const totalDrCent = lines.reduce((s, l) => s + toCent(l.debit), 0);
+  const totalCrCent = lines.reduce((s, l) => s + toCent(l.credit), 0);
+  const totalDr = totalDrCent / 100;
+  const totalCr = totalCrCent / 100;
+  const isBalanced = totalDrCent === totalCrCent && totalDrCent > 0;
+  const diff = Math.abs(totalDrCent - totalCrCent) / 100;
 
   const approvalLevel = getAmountApprovalLevel(Math.max(totalDr, totalCr));
 
@@ -744,7 +961,12 @@ function TransactionModal({ onClose, onPost, onSaveDraft }: { onClose: () => voi
         const acct = leafAccounts.find((a) => a.code === value);
         return { ...l, accountCode: value as string, accountName: acct?.name || '' };
       }
-      return { ...l, [field]: value };
+      // Amounts are stored rounded to the centavo so the posted lines are
+      // exactly what the ledger's per-line centavo rounding will see.
+      if (field === 'debit' || field === 'credit') {
+        return { ...l, [field]: Math.round(((value as number) || 0) * 100) / 100 };
+      }
+      return { ...l, [field]: value } as JournalLine;
     }));
   };
 
@@ -772,19 +994,34 @@ function TransactionModal({ onClose, onPost, onSaveDraft }: { onClose: () => voi
       toast.error('Cannot post unbalanced entry');
       return;
     }
+    // Amounts at/above the approval thresholds are saved as Pending and are
+    // excluded from all derived reports until an approver posts them.
+    const requiresApproval = approvalLevel.label !== 'Direct Post';
     const entry: JournalEntry = {
       id: `JE-${Date.now()}`,
       date,
       reference: reference.trim() || `REF-${Date.now()}`,
       description: description.trim(),
       lines: lines.filter((l) => l.accountCode),
-      status: 'Posted',
+      status: requiresApproval ? 'Pending' : 'Posted',
       postedBy: getCurrentUserName(),
       totalDr,
       totalCr,
+      ...(requiresApproval
+        ? {
+            requiredApproval: approvalLevel.label,
+            approvalHistory: [{
+              action: 'Submitted',
+              by: getCurrentUserName(),
+              date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+              comment: `Requires ${approvalLevel.label}`,
+            }],
+          }
+        : {}),
     };
     onPost(entry);
-    toast.success('Transaction posted to ledger');
+    if (requiresApproval) toast(`Entry saved as Pending — ${approvalLevel.label}`);
+    else toast.success('Transaction posted to ledger');
     onClose();
   };
 
@@ -1005,14 +1242,13 @@ function TransactionModal({ onClose, onPost, onSaveDraft }: { onClose: () => voi
 // ============================================
 // Tab 3 — Sunday Collections
 // ============================================
-function CollectionsTab() {
+function CollectionsTab({ collections, setCollections }: { collections: Collection[]; setCollections: Dispatch<SetStateAction<Collection[]>> }) {
   const [collectionDate, setCollectionDate] = useState('2025-01-05');
   const [massTime, setMassTime] = useState('8:00 AM');
   const [cashAmount, setCashAmount] = useState('');
   const [checksAmount, setChecksAmount] = useState('');
   const [digitalAmount, setDigitalAmount] = useState('');
   const [showPostDialog, setShowPostDialog] = useState(false);
-  const [collections, setCollections] = usePersistedState<Collection[]>(KEYS.collections, collectionsData);
 
   const total = (parseFloat(cashAmount) || 0) + (parseFloat(checksAmount) || 0) + (parseFloat(digitalAmount) || 0);
 
@@ -1237,23 +1473,27 @@ function CollectionsTab() {
 // Page-local extension of BudgetItem that also carries the user's notes.
 type BudgetItemExt = BudgetItem & { notes?: string };
 
-function BudgetTab() {
+function BudgetTab({ entries, collections }: { entries: JournalEntry[]; collections: Collection[] }) {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editAccount, setEditAccount] = useState<BudgetItemExt | null>(null);
   const [items, setItems] = usePersistedState<BudgetItemExt[]>(KEYS.budgetItems, budgetData);
 
-  const incomeItems = items.filter((b) => b.category === 'Income');
-  const expenseItems = items.filter((b) => b.category === 'Expense');
+  // Budget TARGETS are stored and editable; actual/variance/status are ALWAYS
+  // derived from the live ledger (the stored actualYTD is ignored by design).
+  const derivedItems = useMemo(() => deriveBudgetActuals(entries, collections, items), [entries, collections, items]);
 
-  const totalBudget = items.reduce((s, b) => s + b.budgetYTD, 0);
-  const totalActual = items.reduce((s, b) => s + b.actualYTD, 0);
+  const incomeItems = derivedItems.filter((b) => b.category === 'Income');
+  const expenseItems = derivedItems.filter((b) => b.category === 'Expense');
+
+  const totalBudget = derivedItems.reduce((s, b) => s + b.budgetYTD, 0);
+  const totalActual = derivedItems.reduce((s, b) => s + b.actualYTD, 0);
   const totalVariance = totalBudget - totalActual;
 
   const handleSaveBudget = (accountCode: string, budgetYTD: number, notes?: string) => {
     setItems((prev) =>
       prev.map((b) =>
         b.accountCode === accountCode
-          ? { ...b, budgetYTD, variance: budgetYTD - b.actualYTD, variancePercent: budgetYTD > 0 ? ((budgetYTD - b.actualYTD) / budgetYTD) * 100 : 0, ...(notes !== undefined ? { notes } : {}) }
+          ? { ...b, budgetYTD, ...(notes !== undefined ? { notes } : {}) }
           : b,
       ),
     );
@@ -1531,26 +1771,52 @@ function BudgetEditModal({ account, existingCodes, onClose, onSave, onCreate }: 
 // ============================================
 // Tab 5 — Approvals
 // ============================================
-// A persisted approval decision: the resolved status plus an optional comment.
-interface ApprovalDecision { status: 'Approved' | 'Rejected'; comment?: string; }
-type ApprovalDecisions = Record<string, ApprovalDecision>;
+// Driven by the SAME live journal entries as the Journal tab: it lists the
+// real Pending entries and routes every decision through decideJournalEntry,
+// so an approval here posts to the ledger and hits the audit log. (It used to
+// render a static fixture whose "decisions" touched nothing.)
 
-function ApprovalsTab() {
+// Map an entry's required approval level onto the display category.
+function approvalCategoryOf(requiredApproval?: string): ApprovalItem['category'] {
+  if (requiredApproval === 'Bishop Approval Required') return 'Bishop Approval';
+  if (requiredApproval === 'Council Consent Required') return 'Council Consent';
+  return 'Council Review';
+}
+
+function ApprovalsTab({ entries, setEntries }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>> }) {
   const [filter, setFilter] = useState<'All' | 'Council Review' | 'Council Consent' | 'Bishop Approval'>('All');
-  const [selectedApproval, setSelectedApproval] = useState<ApprovalItem | null>(null);
-  // Persist approve/reject decisions so they survive filter changes, tab switches, and reloads.
-  const [decisions, setDecisions] = usePersistedState<ApprovalDecisions>('finance_approval_decisions', {});
+  const [selectedApprovalId, setSelectedApprovalId] = useState<string | null>(null);
+  const role = getCurrentUserRole();
 
-  const recordDecision = (id: string, status: 'Approved' | 'Rejected', comment?: string) => {
-    setDecisions((prev) => ({ ...prev, [id]: { status, comment: comment?.trim() || undefined } }));
-  };
-
-  const statusOf = (item: ApprovalItem): ApprovalItem['status'] => decisions[item.id]?.status ?? item.status;
+  // Present the live Pending entries in the approval-card shape.
+  const pendingItems = useMemo<ApprovalItem[]>(() =>
+    entries
+      .filter((e) => e.status === 'Pending')
+      .map((e) => ({
+        id: e.id,
+        title: e.description,
+        amount: e.totalDr,
+        requester: e.postedBy,
+        date: e.date,
+        category: approvalCategoryOf(e.requiredApproval),
+        description: `${e.reference} — ${e.lines.filter((l) => l.accountCode).map((l) => l.accountName).join(', ')}`,
+        status: 'Pending' as const,
+        history: e.approvalHistory,
+      })),
+  [entries]);
 
   const filteredItems = useMemo(() => {
-    if (filter === 'All') return approvalItems;
-    return approvalItems.filter((a) => a.category === filter);
-  }, [filter]);
+    if (filter === 'All') return pendingItems;
+    return pendingItems.filter((a) => a.category === filter);
+  }, [filter, pendingItems]);
+
+  const decide = (id: string, status: 'Approved' | 'Rejected', comment?: string) => {
+    decideJournalEntry(entries, setEntries, role, id, status, comment);
+  };
+
+  const selectedApproval = selectedApprovalId
+    ? filteredItems.find((a) => a.id === selectedApprovalId) ?? null
+    : null;
 
   const filterTabs: ('All' | 'Council Review' | 'Council Consent' | 'Bishop Approval')[] = ['All', 'Council Review', 'Council Consent', 'Bishop Approval'];
 
@@ -1580,15 +1846,16 @@ function ApprovalsTab() {
           <ApprovalCard
             key={item.id}
             item={item}
-            status={statusOf(item)}
-            onView={() => setSelectedApproval(item)}
-            onDecision={(status) => recordDecision(item.id, status)}
+            status={item.status}
+            onView={() => setSelectedApprovalId(item.id)}
+            onDecision={(status) => decide(item.id, status)}
           />
         ))}
         {filteredItems.length === 0 && (
           <div className="cos-card p-12 text-center">
             <CheckCircle2 className="w-12 h-12 text-success/30 mx-auto mb-3" />
             <p className="text-warm-gray">No pending approvals in this category.</p>
+            <p className="text-xs text-warm-gray/70 mt-1">Journal entries of ₱100,000 and above appear here until an approver decides them.</p>
           </div>
         )}
       </div>
@@ -1598,10 +1865,10 @@ function ApprovalsTab() {
         {selectedApproval && (
           <ApprovalDetailModal
             item={selectedApproval}
-            status={statusOf(selectedApproval)}
-            existingComment={decisions[selectedApproval.id]?.comment ?? ''}
-            onDecision={(status, comment) => recordDecision(selectedApproval.id, status, comment)}
-            onClose={() => setSelectedApproval(null)}
+            status={selectedApproval.status}
+            existingComment=""
+            onDecision={(status, comment) => decide(selectedApproval.id, status, comment)}
+            onClose={() => setSelectedApprovalId(null)}
           />
         )}
       </AnimatePresence>
@@ -1620,15 +1887,11 @@ function ApprovalCard({ item, status, onView, onDecision }: {
     item.category === 'Council Consent' ? 'bg-orange-100 text-orange-700' :
     'bg-purple-100 text-purple-700';
 
-  const handleApprove = () => {
-    onDecision('Approved');
-    toast.success(`${item.title} approved`);
-  };
-
-  const handleReject = () => {
-    onDecision('Rejected');
-    toast.error(`${item.title} rejected`);
-  };
+  // Success/failure feedback comes from the shared decision path
+  // (decideJournalEntry) — no local toasts, so a role-blocked decision
+  // cannot claim success.
+  const handleApprove = () => onDecision('Approved');
+  const handleReject = () => onDecision('Rejected');
 
   return (
     <motion.div
@@ -1827,13 +2090,13 @@ function ApprovalDetailModal({ item, status, existingComment, onDecision, onClos
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-parchment dark:border-dm-border">
           <button onClick={onClose} className="cos-btn cos-btn-secondary text-sm">Close</button>
           <button
-            onClick={() => { onDecision('Rejected', comment); toast.error(`${item.title} rejected`); onClose(); }}
+            onClick={() => { onDecision('Rejected', comment); onClose(); }}
             className="cos-btn bg-error text-white hover:bg-[#991B1B] text-sm flex items-center gap-1"
           >
             <X className="w-4 h-4" /> Reject
           </button>
           <button
-            onClick={() => { onDecision('Approved', comment); toast.success(`${item.title} approved`); onClose(); }}
+            onClick={() => { onDecision('Approved', comment); onClose(); }}
             className="cos-btn bg-success text-white hover:bg-forest-green text-sm flex items-center gap-1"
           >
             <Check className="w-4 h-4" /> Approve

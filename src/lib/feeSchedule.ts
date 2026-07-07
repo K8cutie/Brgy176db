@@ -22,7 +22,9 @@ export function getFeeSchedule(): FeeScheduleItem[] {
     const raw = localStorage.getItem(FEE_SCHEDULE_KEY);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
-  return [...DEFAULT_FEE_SCHEDULE];
+  // Deep copy — callers may mutate items in place; a shallow copy would let
+  // that corrupt the canonical defaults for the rest of the process.
+  return DEFAULT_FEE_SCHEDULE.map((item) => ({ ...item }));
 }
 
 export function setFeeSchedule(schedule: FeeScheduleItem[]) {

@@ -3,7 +3,13 @@
 // Six Sigma-inspired: Pareto analysis, drill-down, comparisons
 // ═══════════════════════════════════════════════════════════
 
-import { journalEntries as seedJournalEntries, type JournalEntry } from './financeData';
+import {
+  journalEntries as seedJournalEntries,
+  collectionsData as seedCollections,
+  type JournalEntry,
+  type Collection,
+} from './financeData';
+import { collectionsAsEntries } from './ledger';
 import { getJSON } from './storageNamespaced';
 import { KEYS } from './storageKeys';
 
@@ -18,6 +24,24 @@ function getJournalEntries(): JournalEntry[] {
   const stored = getJSON<JournalEntry[]>(KEYS.journalEntries, []);
   if (Array.isArray(stored) && stored.length > 0) return stored;
   return seedJournalEntries;
+}
+
+// Same seam + seed fallback for collections (KEYS.collections is what the
+// Collections tab writes through usePersistedState).
+function getCollections(): Collection[] {
+  const stored = getJSON<Collection[]>(KEYS.collections, []);
+  if (Array.isArray(stored) && stored.length > 0) return stored;
+  return seedCollections;
+}
+
+// The full analytic entry set = journal entries PLUS the implicit postings for
+// collections that were never journalized (collectionsAsEntries — the exact
+// same derivation ledger.ts feeds to the Income Statement / KPI cards).
+// Without this, the Analytics tab silently disagreed with the Finance KPIs by
+// every peso ever posted through the Collections tab.
+function getAnalyticEntries(): JournalEntry[] {
+  const entries = getJournalEntries();
+  return [...entries, ...collectionsAsEntries(entries, getCollections())];
 }
 
 // ── Sub-category classification rules ──
@@ -163,7 +187,7 @@ export interface AnalyticLine {
 export function getAnalyticLines(type?: 'revenue' | 'expense'): AnalyticLine[] {
   const lines: AnalyticLine[] = [];
 
-  for (const entry of getJournalEntries()) {
+  for (const entry of getAnalyticEntries()) {
     // Entries in the journal ledger are POSTED by definition — drafts live in a
     // separate store (finance_journal_drafts). Real posted entries (and the app's
     // own GL-booked entries) carry NO `status` field, so a `!== 'Posted'` filter

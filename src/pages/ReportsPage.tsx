@@ -1,4 +1,4 @@
-import { Fragment, useState, useRef, useCallback } from 'react';
+import { Fragment, useState, useRef, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -23,16 +23,28 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts';
-import {
-  reports,
-  trialBalanceData,
-  incomeStatementData,
-  balanceSheetData,
-  budgetVsActualData,
-  sacramentalStatsData,
-  collectionSummaryData,
-} from '@/lib/reportData';
+import { reports, sacramentalStatsData } from '@/lib/reportData';
 import type { ReportType } from '@/lib/reportData';
+// Financial reports derive LIVE from the same persisted stores FinancePage
+// writes (same KEYS + same seed fallbacks, so the two pages always agree).
+import { journalEntries, collectionsData, budgetData } from '@/lib/financeData';
+import type { JournalEntry, Collection, BudgetItem } from '@/lib/financeData';
+import {
+  deriveTrialBalance,
+  deriveIncomeStatement,
+  deriveBalanceSheet,
+  deriveBudgetActuals,
+  deriveCollectionSummary,
+} from '@/lib/ledger';
+import type {
+  Period,
+  TrialBalanceResult,
+  IncomeStatementResult,
+  BalanceSheetResult,
+  CollectionSummaryRow,
+} from '@/lib/ledger';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { KEYS } from '@/lib/storageKeys';
 import EmptyState from '@/components/EmptyState';
 import { getLabel } from '@/lib/friendlyLabels';
 
@@ -47,12 +59,35 @@ const reportIconMap: Record<string, typeof Scale> = {
 
 /* ─── Period Options ─── */
 const periodOptions = [
+  'All Time',
   'This Month',
   'Last Month',
   'This Quarter',
   'This Year',
   'Custom Range',
 ];
+
+function localISO(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Resolve a period option to an inclusive date range; undefined = all time.
+function resolvePeriod(option: string, customFrom: string, customTo: string): Period | undefined {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  switch (option) {
+    case 'This Month': return { from: localISO(new Date(y, m, 1)), to: localISO(new Date(y, m + 1, 0)) };
+    case 'Last Month': return { from: localISO(new Date(y, m - 1, 1)), to: localISO(new Date(y, m, 0)) };
+    case 'This Quarter': {
+      const qStart = Math.floor(m / 3) * 3;
+      return { from: localISO(new Date(y, qStart, 1)), to: localISO(new Date(y, qStart + 3, 0)) };
+    }
+    case 'This Year': return { from: `${y}-01-01`, to: `${y}-12-31` };
+    case 'Custom Range': return customFrom && customTo ? { from: customFrom, to: customTo } : undefined;
+    default: return undefined; // All Time
+  }
+}
 
 /* ─── Pie chart colors ─── */
 const PIE_COLORS = ['#C9963B', '#1B2A4A', '#2D6A4F'];
@@ -62,11 +97,26 @@ export default function ReportsPage() {
   const [activeFilter, setActiveFilter] = useState<'All' | 'Financial' | 'Sacramental'>('All');
   const [genReport, setGenReport] = useState<ReportType | null>(null);
   const [previewReport, setPreviewReport] = useState<ReportType | null>(null);
-  const [previewPeriod, setPreviewPeriod] = useState('This Quarter');
+  const [previewPeriod, setPreviewPeriod] = useState('All Time');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [customError, setCustomError] = useState('');
   const previewRef = useRef<HTMLDivElement>(null);
+
+  // The same stores FinancePage writes; seeds match so both pages agree.
+  const [entries] = usePersistedState<JournalEntry[]>(KEYS.journalEntries, journalEntries);
+  const [collections] = usePersistedState<Collection[]>(KEYS.collections, collectionsData);
+  const [budgetItems] = usePersistedState<BudgetItem[]>(KEYS.budgetItems, budgetData);
+
+  const period = useMemo(() => resolvePeriod(previewPeriod, customFrom, customTo), [previewPeriod, customFrom, customTo]);
+  const trialBalance = useMemo(() => deriveTrialBalance(entries, collections, period), [entries, collections, period]);
+  const incomeStatement = useMemo(() => deriveIncomeStatement(entries, collections, period), [entries, collections, period]);
+  const balanceSheet = useMemo(() => deriveBalanceSheet(entries, collections, period), [entries, collections, period]);
+  const budgetActuals = useMemo(() => deriveBudgetActuals(entries, collections, budgetItems, period), [entries, collections, budgetItems, period]);
+  const collectionRows = useMemo(() => deriveCollectionSummary(collections, period), [collections, period]);
+
+  // "As of" label for point-in-time statements.
+  const asOfLabel = formatDate(period?.to ?? localISO(new Date()));
 
   const filteredReports = reports.filter((r) => {
     if (activeFilter === 'All') return true;
@@ -101,22 +151,22 @@ export default function ReportsPage() {
     let csv = '';
     switch (previewReport) {
       case 'trial-balance':
-        csv = generateTrialBalanceCSV();
+        csv = generateTrialBalanceCSV(trialBalance);
         break;
       case 'income-statement':
-        csv = generateIncomeStatementCSV();
+        csv = generateIncomeStatementCSV(incomeStatement);
         break;
       case 'balance-sheet':
-        csv = generateBalanceSheetCSV();
+        csv = generateBalanceSheetCSV(balanceSheet);
         break;
       case 'budget-vs-actual':
-        csv = generateBudgetActualCSV();
+        csv = generateBudgetActualCSV(budgetActuals);
         break;
       case 'sacramental-statistics':
         csv = generateSacramentalCSV();
         break;
       case 'collection-summary':
-        csv = generateCollectionCSV();
+        csv = generateCollectionCSV(collectionRows);
         break;
     }
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -126,7 +176,7 @@ export default function ReportsPage() {
     link.download = `${previewReport.replace(/-/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
     URL.revokeObjectURL(url);
-  }, [previewReport]);
+  }, [previewReport, trialBalance, incomeStatement, balanceSheet, budgetActuals, collectionRows]);
 
   const handlePrint = useCallback(() => {
     const content = previewRef.current;
@@ -414,12 +464,12 @@ export default function ReportsPage() {
               {/* Preview Body */}
               <div className="px-6 py-6 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 80px)' }}>
                 <div ref={previewRef}>
-                  {previewReport === 'trial-balance' && <TrialBalancePreview />}
-                  {previewReport === 'income-statement' && <IncomeStatementPreview />}
-                  {previewReport === 'balance-sheet' && <BalanceSheetPreview />}
-                  {previewReport === 'budget-vs-actual' && <BudgetVsActualPreview />}
+                  {previewReport === 'trial-balance' && <TrialBalancePreview data={trialBalance} asOfLabel={asOfLabel} />}
+                  {previewReport === 'income-statement' && <IncomeStatementPreview data={incomeStatement} periodLabel={periodLabel} />}
+                  {previewReport === 'balance-sheet' && <BalanceSheetPreview data={balanceSheet} asOfLabel={asOfLabel} />}
+                  {previewReport === 'budget-vs-actual' && <BudgetVsActualPreview data={budgetActuals} periodLabel={periodLabel} />}
                   {previewReport === 'sacramental-statistics' && <SacramentalPreview />}
-                  {previewReport === 'collection-summary' && <CollectionPreview />}
+                  {previewReport === 'collection-summary' && <CollectionPreview rows={collectionRows} periodLabel={periodLabel} />}
                 </div>
               </div>
             </motion.div>
@@ -449,19 +499,13 @@ function ReportHeader({ title, subtitle }: { title: string; subtitle?: string })
 }
 
 /* ─── 1. Trial Balance ─── */
-function TrialBalancePreview() {
-  const grouped = groupBy(trialBalanceData, 'type');
-  let totalDebit = 0;
-  let totalCredit = 0;
-  trialBalanceData.forEach((a) => {
-    totalDebit += a.debit;
-    totalCredit += a.credit;
-  });
-  const balanced = Math.abs(totalDebit - totalCredit) < 0.01;
+function TrialBalancePreview({ data, asOfLabel }: { data: TrialBalanceResult; asOfLabel: string }) {
+  const nonZero = data.rows.filter((r) => r.debit !== 0 || r.credit !== 0);
+  const grouped = groupBy(nonZero, 'type');
 
   return (
     <div>
-      <ReportHeader title="TRIAL BALANCE" subtitle="As of May 31, 2026" />
+      <ReportHeader title="TRIAL BALANCE" subtitle={`As of ${asOfLabel}`} />
       <table className="w-full text-sm">
         <thead>
           <tr>
@@ -489,12 +533,12 @@ function TrialBalancePreview() {
           ))}
           <tr className="total-row">
             <td colSpan={2} className="text-right pr-4">TOTAL</td>
-            <td className="text-right font-mono">{formatPeso(totalDebit)}</td>
-            <td className="text-right font-mono">{formatPeso(totalCredit)}</td>
+            <td className="text-right font-mono">{formatPeso(data.totalDebit)}</td>
+            <td className="text-right font-mono">{formatPeso(data.totalCredit)}</td>
           </tr>
           <tr>
             <td colSpan={4} className="text-center py-3">
-              {balanced ? (
+              {data.balanced ? (
                 <span className="inline-flex items-center gap-1.5 text-success">
                   <CheckCircle className="w-4 h-4" />
                   <span className="font-medium">Balanced — Debits equal Credits</span>
@@ -502,7 +546,7 @@ function TrialBalancePreview() {
               ) : (
                 <span className="inline-flex items-center gap-1.5 text-error">
                   <X className="w-4 h-4" />
-                  <span className="font-medium">Unbalanced — Difference: {formatPeso(Math.abs(totalDebit - totalCredit))}</span>
+                  <span className="font-medium">Unbalanced — Difference: {formatPeso(Math.abs(data.totalDebit - data.totalCredit))}</span>
                 </span>
               )}
             </td>
@@ -525,27 +569,29 @@ function TrialBalancePreview() {
 }
 
 /* ─── 2. Income Statement ─── */
-function IncomeStatementPreview() {
-  const totalRevenue = incomeStatementData.revenue.reduce((s, r) => s + r.amount, 0);
-  const totalExpenses = incomeStatementData.expenses.reduce((s, e) => s + e.amount, 0);
-  const netIncome = totalRevenue - totalExpenses;
+function IncomeStatementPreview({ data, periodLabel }: { data: IncomeStatementResult; periodLabel: string }) {
+  const revenue = data.revenue.filter((r) => r.amount !== 0);
+  const expenses = data.expenses.filter((e) => e.amount !== 0);
 
   return (
     <div>
-      <ReportHeader title="INCOME STATEMENT" subtitle={incomeStatementData.period} />
+      <ReportHeader title="INCOME STATEMENT" subtitle={periodLabel} />
       {/* Revenue */}
       <h3 className="heading-sm text-deep-navy dark:text-dm-text mb-2">REVENUE</h3>
       <table className="w-full text-sm mb-4">
         <tbody>
-          {incomeStatementData.revenue.map((r, idx) => (
+          {revenue.map((r, idx) => (
             <tr key={idx}>
               <td className="pl-4">{r.name}</td>
               <td className="text-right font-mono">{formatPeso(r.amount)}</td>
             </tr>
           ))}
+          {revenue.length === 0 && (
+            <tr><td className="pl-4 text-warm-gray italic" colSpan={2}>No revenue posted in this period</td></tr>
+          )}
           <tr className="total-row">
             <td className="font-semibold">Total Revenue</td>
-            <td className="text-right font-mono font-semibold">{formatPeso(totalRevenue)}</td>
+            <td className="text-right font-mono font-semibold">{formatPeso(data.totalRevenue)}</td>
           </tr>
         </tbody>
       </table>
@@ -554,15 +600,18 @@ function IncomeStatementPreview() {
       <h3 className="heading-sm text-deep-navy dark:text-dm-text mb-2">EXPENSES</h3>
       <table className="w-full text-sm mb-4">
         <tbody>
-          {incomeStatementData.expenses.map((e, idx) => (
+          {expenses.map((e, idx) => (
             <tr key={idx}>
               <td className="pl-4">{e.name}</td>
               <td className="text-right font-mono">{formatPeso(e.amount)}</td>
             </tr>
           ))}
+          {expenses.length === 0 && (
+            <tr><td className="pl-4 text-warm-gray italic" colSpan={2}>No expenses posted in this period</td></tr>
+          )}
           <tr className="total-row">
             <td className="font-semibold">Total Expenses</td>
-            <td className="text-right font-mono font-semibold">{formatPeso(totalExpenses)}</td>
+            <td className="text-right font-mono font-semibold">{formatPeso(data.totalExpenses)}</td>
           </tr>
         </tbody>
       </table>
@@ -571,10 +620,10 @@ function IncomeStatementPreview() {
       <div className="cos-card p-4 bg-cream dark:bg-dm-surface-raised mt-4">
         <div className="flex items-center justify-between">
           <span className="heading-sm text-charcoal dark:text-dm-text">
-            {netIncome >= 0 ? 'Net Surplus' : 'Net Deficit'}
+            {data.netIncome >= 0 ? 'Net Surplus' : 'Net Deficit'}
           </span>
-          <span className={`text-2xl font-bold font-mono ${netIncome >= 0 ? 'text-success' : 'text-error'}`}>
-            {formatPeso(Math.abs(netIncome))}
+          <span className={`text-2xl font-bold font-mono ${data.netIncome >= 0 ? 'text-success' : 'text-error'}`}>
+            {formatPeso(Math.abs(data.netIncome))}
           </span>
         </div>
       </div>
@@ -594,24 +643,20 @@ function IncomeStatementPreview() {
 }
 
 /* ─── 3. Balance Sheet ─── */
-function BalanceSheetPreview() {
-  const totalCurrentAssets = balanceSheetData.assets.current.reduce((s, a) => s + a.amount, 0);
-  const totalFixedAssets = balanceSheetData.assets.fixed.reduce((s, a) => s + a.amount, 0);
-  const totalAssets = totalCurrentAssets + totalFixedAssets;
-  const totalLiabilities = balanceSheetData.liabilities.reduce((s, l) => s + l.amount, 0);
-  const totalEquity = balanceSheetData.equity.reduce((s, e) => s + e.amount, 0);
-  const liabilitiesPlusEquity = totalLiabilities + totalEquity;
-  const balanced = Math.abs(totalAssets - liabilitiesPlusEquity) < 0.01;
+function BalanceSheetPreview({ data, asOfLabel }: { data: BalanceSheetResult; asOfLabel: string }) {
+  const totalCurrentAssets = data.assets.current.reduce((s, a) => s + a.amount, 0);
+  const totalFixedAssets = data.assets.fixed.reduce((s, a) => s + a.amount, 0);
+  const liabilitiesPlusEquity = data.totalLiabilities + data.totalEquity;
 
   return (
     <div>
-      <ReportHeader title="BALANCE SHEET" subtitle={`As of ${balanceSheetData.date}`} />
+      <ReportHeader title="BALANCE SHEET" subtitle={`As of ${asOfLabel}`} />
       {/* Assets */}
       <h3 className="heading-sm text-deep-navy dark:text-dm-text mb-2">ASSETS</h3>
       <p className="text-xs text-warm-gray dark:text-dm-text-muted uppercase tracking-wide mb-1">Current Assets</p>
       <table className="w-full text-sm mb-2">
         <tbody>
-          {balanceSheetData.assets.current.map((a, idx) => (
+          {data.assets.current.map((a, idx) => (
             <tr key={idx}><td className="pl-4">{a.name}</td><td className="text-right font-mono">{formatPeso(a.amount)}</td></tr>
           ))}
           <tr className="font-medium"><td className="pl-8">Total Current Assets</td><td className="text-right font-mono font-semibold">{formatPeso(totalCurrentAssets)}</td></tr>
@@ -620,7 +665,7 @@ function BalanceSheetPreview() {
       <p className="text-xs text-warm-gray dark:text-dm-text-muted uppercase tracking-wide mb-1 mt-3">Fixed Assets</p>
       <table className="w-full text-sm mb-2">
         <tbody>
-          {balanceSheetData.assets.fixed.map((a, idx) => (
+          {data.assets.fixed.map((a, idx) => (
             <tr key={idx}><td className="pl-4">{a.name}</td><td className="text-right font-mono">{formatPeso(a.amount)}</td></tr>
           ))}
           <tr className="font-medium"><td className="pl-8">Total Fixed Assets</td><td className="text-right font-mono font-semibold">{formatPeso(totalFixedAssets)}</td></tr>
@@ -629,7 +674,7 @@ function BalanceSheetPreview() {
       <div className="cos-card p-3 bg-cream dark:bg-dm-surface-raised mb-4">
         <div className="flex justify-between font-semibold">
           <span>TOTAL ASSETS</span>
-          <span className="font-mono">{formatPeso(totalAssets)}</span>
+          <span className="font-mono">{formatPeso(data.totalAssets)}</span>
         </div>
       </div>
 
@@ -637,10 +682,10 @@ function BalanceSheetPreview() {
       <h3 className="heading-sm text-deep-navy dark:text-dm-text mb-2 mt-6">LIABILITIES</h3>
       <table className="w-full text-sm mb-2">
         <tbody>
-          {balanceSheetData.liabilities.map((l, idx) => (
+          {data.liabilities.map((l, idx) => (
             <tr key={idx}><td className="pl-4">{l.name}</td><td className="text-right font-mono">{formatPeso(l.amount)}</td></tr>
           ))}
-          <tr className="font-medium"><td className="pl-8">Total Liabilities</td><td className="text-right font-mono font-semibold">{formatPeso(totalLiabilities)}</td></tr>
+          <tr className="font-medium"><td className="pl-8">Total Liabilities</td><td className="text-right font-mono font-semibold">{formatPeso(data.totalLiabilities)}</td></tr>
         </tbody>
       </table>
 
@@ -648,10 +693,10 @@ function BalanceSheetPreview() {
       <h3 className="heading-sm text-deep-navy dark:text-dm-text mb-2 mt-4">EQUITY</h3>
       <table className="w-full text-sm mb-2">
         <tbody>
-          {balanceSheetData.equity.map((e, idx) => (
+          {data.equity.map((e, idx) => (
             <tr key={idx}><td className="pl-4">{e.name}</td><td className="text-right font-mono">{formatPeso(e.amount)}</td></tr>
           ))}
-          <tr className="font-medium"><td className="pl-8">Total Equity</td><td className="text-right font-mono font-semibold">{formatPeso(totalEquity)}</td></tr>
+          <tr className="font-medium"><td className="pl-8">Total Equity</td><td className="text-right font-mono font-semibold">{formatPeso(data.totalEquity)}</td></tr>
         </tbody>
       </table>
       <div className="cos-card p-3 bg-cream dark:bg-dm-surface-raised mb-4">
@@ -663,13 +708,13 @@ function BalanceSheetPreview() {
 
       {/* Check */}
       <div className="text-center py-2">
-        {balanced ? (
+        {data.balanced ? (
           <span className="inline-flex items-center gap-1.5 text-success">
             <CheckCircle className="w-4 h-4" />
             <span className="font-medium">Assets = Liabilities + Equity — Balanced</span>
           </span>
         ) : (
-          <span className="text-error font-medium">Imbalance: {formatPeso(Math.abs(totalAssets - liabilitiesPlusEquity))}</span>
+          <span className="text-error font-medium">Imbalance: {formatPeso(Math.abs(data.totalAssets - liabilitiesPlusEquity))}</span>
         )}
       </div>
 
@@ -688,56 +733,65 @@ function BalanceSheetPreview() {
 }
 
 /* ─── 4. Budget vs Actual ─── */
-function BudgetVsActualPreview() {
+function BudgetVsActualPreview({ data, periodLabel }: { data: BudgetItem[]; periodLabel: string }) {
+  const income = data.filter((b) => b.category === 'Income');
+  const expense = data.filter((b) => b.category === 'Expense');
+
+  const renderRows = (rows: BudgetItem[]) =>
+    rows.map((row) => {
+      const overBudget = row.status === 'Over Budget';
+      const underBudget = row.status === 'Under Budget';
+      return (
+        <tr key={row.accountCode}>
+          <td><span className="font-mono text-xs mr-2">{row.accountCode}</span>{row.accountName}</td>
+          <td className="text-right font-mono">{formatPeso(row.budgetYTD)}</td>
+          <td className="text-right font-mono">{formatPeso(row.actualYTD)}</td>
+          <td className={`text-right font-mono ${overBudget ? 'text-error' : underBudget ? 'text-warm-gray' : 'text-success'}`}>
+            {row.variance >= 0 ? '+' : ''}{formatPeso(row.variance)}
+          </td>
+          <td className={`text-right font-mono ${overBudget ? 'text-error' : underBudget ? 'text-warm-gray' : 'text-success'}`}>
+            {row.variancePercent >= 0 ? '+' : ''}{row.variancePercent.toFixed(1)}%
+          </td>
+          <td className="text-center">{row.status}</td>
+        </tr>
+      );
+    });
+
   return (
     <div>
-      <ReportHeader title="BUDGET VS ACTUAL REPORT" subtitle="Year to Date — January to May 2026" />
+      <ReportHeader title="BUDGET VS ACTUAL REPORT" subtitle={periodLabel} />
       <table className="w-full text-sm">
         <thead>
           <tr>
             <th className="text-left">Account</th>
-            <th className="text-right">Annual Budget</th>
-            <th className="text-right">YTD Budget</th>
-            <th className="text-right">YTD Actual</th>
+            <th className="text-right">Budget (YTD)</th>
+            <th className="text-right">Actual (derived)</th>
             <th className="text-right">Variance (₱)</th>
             <th className="text-right">Variance (%)</th>
+            <th className="text-center">Status</th>
           </tr>
         </thead>
         <tbody>
-          {budgetVsActualData.map((row, idx) => {
-            const variance = row.ytdActual - row.ytdBudget;
-            const variancePct = row.ytdBudget !== 0 ? (variance / row.ytdBudget) * 100 : 0;
-            const isRev = row.annualBudget >= 100000;
-            const underBudget = isRev ? variance > 0 : variance < 0;
-            const overBudget = isRev ? variance < 0 : variance > 0;
-
-            return (
-              <tr key={idx}>
-                <td>{row.account}</td>
-                <td className="text-right font-mono">{formatPeso(row.annualBudget)}</td>
-                <td className="text-right font-mono">{formatPeso(row.ytdBudget)}</td>
-                <td className="text-right font-mono">{formatPeso(row.ytdActual)}</td>
-                <td className={`text-right font-mono ${overBudget ? 'text-error' : underBudget ? 'text-success' : ''}`}>
-                  {variance >= 0 ? '+' : ''}{formatPeso(variance)}
-                </td>
-                <td className={`text-right font-mono ${overBudget ? 'text-error' : underBudget ? 'text-success' : ''}`}>
-                  {variancePct >= 0 ? '+' : ''}{variancePct.toFixed(1)}%
-                </td>
-              </tr>
-            );
-          })}
+          <tr className="section-header">
+            <td colSpan={6} className="font-semibold text-deep-navy dark:text-dm-text py-2">Income</td>
+          </tr>
+          {renderRows(income)}
+          <tr className="section-header">
+            <td colSpan={6} className="font-semibold text-deep-navy dark:text-dm-text py-2">Expenses</td>
+          </tr>
+          {renderRows(expense)}
         </tbody>
       </table>
 
       {/* Progress bars */}
       <div className="space-y-3 mt-4">
-        {budgetVsActualData.slice(0, 6).map((row, idx) => {
-          const pct = row.annualBudget > 0 ? (row.ytdActual / row.annualBudget) * 100 : 0;
+        {data.slice(0, 6).map((row) => {
+          const pct = row.budgetYTD > 0 ? (row.actualYTD / row.budgetYTD) * 100 : 0;
           return (
-            <div key={idx}>
+            <div key={row.accountCode}>
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-charcoal dark:text-dm-text">{row.account}</span>
-                <span className="text-warm-gray dark:text-dm-text-muted">{pct.toFixed(0)}% of annual</span>
+                <span className="text-charcoal dark:text-dm-text">{row.accountName}</span>
+                <span className="text-warm-gray dark:text-dm-text-muted">{pct.toFixed(0)}% of budget</span>
               </div>
               <div className="w-full h-2 rounded-full bg-parchment dark:bg-dm-border overflow-hidden">
                 <div
@@ -778,6 +832,10 @@ function SacramentalPreview() {
         </div>
         <h2 className="font-playfair text-xl font-bold text-deep-navy dark:text-dm-text">SACRAMENTAL STATISTICS</h2>
         <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-1">{sacramentalStatsData.quarter} 2026</p>
+        {/* Registry-derived statistics live in the Registry module; this CBCP form is illustrative. */}
+        <span className="inline-block mt-2 px-3 py-1 rounded-full text-xs font-semibold bg-warning/15 text-[#9A7B3D]">
+          SAMPLE DATA — not derived from your registry records yet
+        </span>
       </div>
 
       {/* Parish Info */}
@@ -877,11 +935,11 @@ function SacramentalPreview() {
 }
 
 /* ─── 6. Collection Summary ─── */
-function CollectionPreview() {
-  const totalCash = collectionSummaryData.reduce((s, r) => s + r.cashTotal, 0);
-  const totalChecks = collectionSummaryData.reduce((s, r) => s + r.checkTotal, 0);
-  const totalDigital = collectionSummaryData.reduce((s, r) => s + r.digitalTotal, 0);
-  const grandTotal = totalCash + totalChecks + totalDigital;
+function CollectionPreview({ rows, periodLabel }: { rows: CollectionSummaryRow[]; periodLabel: string }) {
+  const totalCash = rows.reduce((s, r) => s + r.cashTotal, 0);
+  const totalChecks = rows.reduce((s, r) => s + r.checkTotal, 0);
+  const totalDigital = rows.reduce((s, r) => s + r.digitalTotal, 0);
+  const grandTotal = rows.reduce((s, r) => s + r.total, 0);
 
   const pieData = [
     { name: 'Cash', value: totalCash },
@@ -893,20 +951,20 @@ function CollectionPreview() {
   // Weekly-Total column and the Grand Total (no hardcoded drift).
   const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const monthlyMap = new Map<string, { month: string; cash: number; checks: number; digital: number }>();
-  collectionSummaryData.forEach((r) => {
+  rows.forEach((r) => {
     const key = r.date.slice(0, 7); // YYYY-MM
-    const monthName = MONTH_NAMES[Number(r.date.slice(5, 7)) - 1];
+    const monthName = `${MONTH_NAMES[Number(r.date.slice(5, 7)) - 1]} ${r.date.slice(0, 4)}`;
     const entry = monthlyMap.get(key) ?? { month: monthName, cash: 0, checks: 0, digital: 0 };
     entry.cash += r.cashTotal;
     entry.checks += r.checkTotal;
     entry.digital += r.digitalTotal;
     monthlyMap.set(key, entry);
   });
-  const monthlySubtotals = Array.from(monthlyMap.values());
+  const monthlySubtotals = Array.from(monthlyMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
 
   return (
     <div>
-      <ReportHeader title="SUNDAY COLLECTION SUMMARY" subtitle="January — May 2026" />
+      <ReportHeader title="SUNDAY COLLECTION SUMMARY" subtitle={periodLabel} />
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
@@ -942,25 +1000,25 @@ function CollectionPreview() {
             </tr>
           </thead>
           <tbody>
-            {collectionSummaryData.map((r, idx) => {
-              const weekly = r.mass6am + r.mass8am + r.mass10am + r.mass6pm;
-              return (
-                <tr key={idx}>
-                  <td>{formatDate(r.date)}</td>
-                  <td className="text-right font-mono">{formatPeso(r.mass6am)}</td>
-                  <td className="text-right font-mono">{formatPeso(r.mass8am)}</td>
-                  <td className="text-right font-mono">{formatPeso(r.mass10am)}</td>
-                  <td className="text-right font-mono">{formatPeso(r.mass6pm)}</td>
-                  <td className="text-right font-mono font-semibold">{formatPeso(weekly)}</td>
-                </tr>
-              );
-            })}
+            {rows.map((r, idx) => (
+              <tr key={idx}>
+                <td>{formatDate(r.date)}</td>
+                <td className="text-right font-mono">{formatPeso(r.mass6am)}</td>
+                <td className="text-right font-mono">{formatPeso(r.mass8am)}</td>
+                <td className="text-right font-mono">{formatPeso(r.mass10am)}</td>
+                <td className="text-right font-mono">{formatPeso(r.mass6pm)}</td>
+                <td className="text-right font-mono font-semibold">{formatPeso(r.total)}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={6} className="text-center text-warm-gray italic py-4">No posted collections in this period</td></tr>
+            )}
             <tr className="total-row">
               <td className="font-semibold">Grand Total</td>
-              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass6am, 0))}</td>
-              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass8am, 0))}</td>
-              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass10am, 0))}</td>
-              <td className="text-right font-mono font-semibold">{formatPeso(collectionSummaryData.reduce((s, r) => s + r.mass6pm, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(rows.reduce((s, r) => s + r.mass6am, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(rows.reduce((s, r) => s + r.mass8am, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(rows.reduce((s, r) => s + r.mass10am, 0))}</td>
+              <td className="text-right font-mono font-semibold">{formatPeso(rows.reduce((s, r) => s + r.mass6pm, 0))}</td>
               <td className="text-right font-mono font-semibold">{formatPeso(grandTotal)}</td>
             </tr>
           </tbody>
@@ -1029,7 +1087,7 @@ function CollectionPreview() {
               <span className="body-sm text-charcoal dark:text-dm-text w-16">{entry.name}</span>
               <span className="body-sm font-mono font-medium text-charcoal dark:text-dm-text">{formatPeso(entry.value)}</span>
               <span className="text-xs text-warm-gray dark:text-dm-text-muted">
-                ({((entry.value / grandTotal) * 100).toFixed(1)}%)
+                ({(grandTotal > 0 ? (entry.value / grandTotal) * 100 : 0).toFixed(1)}%)
               </span>
             </div>
           ))}
@@ -1054,38 +1112,44 @@ function CollectionPreview() {
    CSV GENERATORS
    ═══════════════════════════════════════════════ */
 
-function generateTrialBalanceCSV() {
+function generateTrialBalanceCSV(data: TrialBalanceResult) {
   let csv = 'Account Code,Account Name,Type,Debit,Credit\n';
-  trialBalanceData.forEach((a) => {
+  data.rows.filter((a) => a.debit !== 0 || a.credit !== 0).forEach((a) => {
     csv += `${a.code},"${a.name}",${a.type},${a.debit},${a.credit}\n`;
   });
+  csv += `,TOTAL,,${data.totalDebit},${data.totalCredit}\n`;
   return csv;
 }
 
-function generateIncomeStatementCSV() {
+function generateIncomeStatementCSV(data: IncomeStatementResult) {
   let csv = 'Category,Item,Amount\n';
-  incomeStatementData.revenue.forEach((r) => {
+  data.revenue.filter((r) => r.amount !== 0).forEach((r) => {
     csv += `Revenue,"${r.name}",${r.amount}\n`;
   });
-  incomeStatementData.expenses.forEach((e) => {
+  data.expenses.filter((e) => e.amount !== 0).forEach((e) => {
     csv += `Expense,"${e.name}",${e.amount}\n`;
   });
+  csv += `Total,"Total Revenue",${data.totalRevenue}\n`;
+  csv += `Total,"Total Expenses",${data.totalExpenses}\n`;
+  csv += `Total,"Net ${data.netIncome >= 0 ? 'Surplus' : 'Deficit'}",${data.netIncome}\n`;
   return csv;
 }
 
-function generateBalanceSheetCSV() {
+function generateBalanceSheetCSV(data: BalanceSheetResult) {
   let csv = 'Category,Item,Amount\n';
-  balanceSheetData.assets.current.forEach((a) => { csv += `Current Assets,"${a.name}",${a.amount}\n`; });
-  balanceSheetData.assets.fixed.forEach((a) => { csv += `Fixed Assets,"${a.name}",${a.amount}\n`; });
-  balanceSheetData.liabilities.forEach((l) => { csv += `Liabilities,"${l.name}",${l.amount}\n`; });
-  balanceSheetData.equity.forEach((e) => { csv += `Equity,"${e.name}",${e.amount}\n`; });
+  data.assets.current.forEach((a) => { csv += `Current Assets,"${a.name}",${a.amount}\n`; });
+  data.assets.fixed.forEach((a) => { csv += `Fixed Assets,"${a.name}",${a.amount}\n`; });
+  data.liabilities.forEach((l) => { csv += `Liabilities,"${l.name}",${l.amount}\n`; });
+  data.equity.forEach((e) => { csv += `Equity,"${e.name}",${e.amount}\n`; });
+  csv += `Total,"Total Assets",${data.totalAssets}\n`;
+  csv += `Total,"Total Liabilities + Equity",${data.totalLiabilities + data.totalEquity}\n`;
   return csv;
 }
 
-function generateBudgetActualCSV() {
-  let csv = 'Account,Annual Budget,YTD Budget,YTD Actual\n';
-  budgetVsActualData.forEach((r) => {
-    csv += `"${r.account}",${r.annualBudget},${r.ytdBudget},${r.ytdActual}\n`;
+function generateBudgetActualCSV(data: BudgetItem[]) {
+  let csv = 'Account Code,Account,Category,Budget YTD,Actual YTD,Variance,Variance %,Status\n';
+  data.forEach((r) => {
+    csv += `${r.accountCode},"${r.accountName}",${r.category},${r.budgetYTD},${r.actualYTD},${r.variance},${r.variancePercent.toFixed(1)},"${r.status}"\n`;
   });
   return csv;
 }
@@ -1098,10 +1162,10 @@ function generateSacramentalCSV() {
   return csv;
 }
 
-function generateCollectionCSV() {
-  let csv = 'Date,6AM Mass,8AM Mass,10AM Mass,6PM Mass,Cash,Checks,Digital\n';
-  collectionSummaryData.forEach((r) => {
-    csv += `${r.date},${r.mass6am},${r.mass8am},${r.mass10am},${r.mass6pm},${r.cashTotal},${r.checkTotal},${r.digitalTotal}\n`;
+function generateCollectionCSV(rows: CollectionSummaryRow[]) {
+  let csv = 'Date,6AM Mass,8AM Mass,10AM Mass,6PM Mass,Cash,Checks,Digital,Total\n';
+  rows.forEach((r) => {
+    csv += `${r.date},${r.mass6am},${r.mass8am},${r.mass10am},${r.mass6pm},${r.cashTotal},${r.checkTotal},${r.digitalTotal},${r.total}\n`;
   });
   return csv;
 }

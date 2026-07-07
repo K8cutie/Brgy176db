@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { formatPeso, formatPesoWhole, getAmountApprovalLevel } from "./financeData"
+import { formatPeso, formatPesoWhole, getAmountApprovalLevel, canApproveLevel } from "./financeData"
 
 describe("formatPeso", () => {
   it("formats with the peso sign, separators, and 2 decimals", () => {
@@ -44,5 +44,24 @@ describe("getAmountApprovalLevel", () => {
     const lvl = getAmountApprovalLevel(50_000)
     expect(lvl.color).toBeTruthy()
     expect(lvl.bgColor).toBeTruthy()
+  })
+})
+
+describe("canApproveLevel", () => {
+  it("lets council-tier roles decide council levels but not bishop level", () => {
+    for (const role of ["priest", "parish_priest", "finance_council"]) {
+      expect(canApproveLevel(role, "Council Review Required")).toBe(true)
+      expect(canApproveLevel(role, "Council Consent Required")).toBe(true)
+      expect(canApproveLevel(role, "Bishop Approval Required")).toBe(false)
+    }
+  })
+  it("lets the bishop decide every level", () => {
+    expect(canApproveLevel("bishop", "Council Review Required")).toBe(true)
+    expect(canApproveLevel("bishop", "Bishop Approval Required")).toBe(true)
+  })
+  it("denies non-approver roles and Direct Post / missing levels", () => {
+    expect(canApproveLevel("secretary", "Council Review Required")).toBe(false)
+    expect(canApproveLevel("priest", "Direct Post")).toBe(false)
+    expect(canApproveLevel("priest", undefined)).toBe(false)
   })
 })
