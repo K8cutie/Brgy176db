@@ -6,12 +6,14 @@ import {
   CheckCircle2, AlertCircle, FileText, Download, Eye,
   TrendingUp, Calendar, Clock, User, Search,
   Check, Trash2, Edit3, BookOpen,
+  Users, Printer, ShieldCheck, ShieldAlert,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import StatCard from '@/components/StatCard';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
 import EmptyState from '@/components/EmptyState';
 import AnalyticsDashboard from '@/components/AnalyticsDashboard';
+import DataTable, { type Column } from '@/components/DataTable';
 import { getLabel } from '@/lib/friendlyLabels';
 import {
   journalEntries, collectionsData, budgetData,
@@ -24,12 +26,24 @@ import { usePersistedState } from '@/hooks/usePersistedState';
 import { KEYS } from '@/lib/storageKeys';
 import { getJSON, setJSON } from '@/lib/storageNamespaced';
 import { getCurrentUserName, getCurrentUserRole } from '@/lib/session';
+import { todayISO } from '@/lib/massIntentions';
 import type { AuditLogEntry } from '@/lib/settingsData';
+import {
+  getDonors, addDonor, getCampaigns, addCampaign, getPledges, addPledge,
+  getContributions, recordContribution, donorPledgeProgress, summarizeCampaigns,
+  buildDonorStatement, recordFeeWaiver, getFeeOverrideChain, verifyFeeOverrideChain,
+  isSelfApprovedWaiver, flagSelfApprovals, SELF_APPROVAL_FLAG_THRESHOLD,
+} from '@/lib/donors';
+import type { Donor, Campaign, Pledge, Contribution, ContributionMethod, PledgeFrequency, FeeOverrideChainEntry } from '@/lib/donors';
+import { fromCentavos } from '@/lib/ledger';
+import { getParishConfig } from '@/lib/parishConfig';
+import { buildParishionerLookupFrom, families as seedFamilies, type Family, type ParishionerLookup } from '@/lib/directoryData';
+import { liveOnly } from '@/lib/registryData';
 
 // ============================================
 // Types
 // ============================================
-type TabId = 'coa' | 'journal' | 'collections' | 'budget' | 'analytics' | 'approvals';
+type TabId = 'coa' | 'journal' | 'collections' | 'donors' | 'waivers' | 'budget' | 'analytics' | 'approvals';
 
 interface ExpandedState { [key: string]: boolean }
 
@@ -116,7 +130,7 @@ function decideJournalEntry(
 // ============================================
 // FinancePage — Main Component
 // ============================================
-const VALID_TABS: TabId[] = ['coa', 'journal', 'collections', 'budget', 'analytics', 'approvals'];
+const VALID_TABS: TabId[] = ['coa', 'journal', 'collections', 'donors', 'waivers', 'budget', 'analytics', 'approvals'];
 
 export default function FinancePage() {
   const [searchParams] = useSearchParams();
@@ -174,6 +188,8 @@ export default function FinancePage() {
     { id: 'coa', label: 'Chart of Accounts' },
     { id: 'journal', label: 'Journal' },
     { id: 'collections', label: 'Collections' },
+    { id: 'donors', label: 'Donors' },
+    { id: 'waivers', label: 'Waivers' },
     { id: 'budget', label: 'Budget' },
     { id: 'analytics', label: 'Analytics' },
     { id: 'approvals', label: 'Approvals' },
@@ -232,6 +248,8 @@ export default function FinancePage() {
           {activeTab === 'coa' && <ChartOfAccountsTab entries={entries} collections={collections} />}
           {activeTab === 'journal' && <JournalTab entries={entries} setEntries={setEntries} />}
           {activeTab === 'collections' && <CollectionsTab collections={collections} setCollections={setCollections} />}
+          {activeTab === 'donors' && <DonorsTab entries={entries} setEntries={setEntries} />}
+          {activeTab === 'waivers' && <WaiversTab />}
           {activeTab === 'budget' && <BudgetTab entries={entries} collections={collections} />}
           {activeTab === 'analytics' && <AnalyticsDashboard />}
           {activeTab === 'approvals' && <ApprovalsTab entries={entries} setEntries={setEntries} />}
@@ -917,7 +935,7 @@ function JournalEntryCard({ entry, index, onView, canDecide, onDecide }: {
 
 // Transaction Entry Modal (800px wide)
 function TransactionModal({ onClose, onPost, onSaveDraft }: { onClose: () => void; onPost: (entry: JournalEntry) => void; onSaveDraft: (draft: JournalEntry) => void }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = todayISO(); // local date — UTC would be yesterday before 8 AM PH time
   const [date, setDate] = useState(today);
   const [reference, setReference] = useState('');
   const [description, setDescription] = useState('');
@@ -2105,5 +2123,939 @@ function ApprovalDetailModal({ item, status, existingComment, onDecision, onClos
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+// ============================================
+// Tab — Donors (donor book, pledges, contributions, Official Receipts)
+// ============================================
+const FIELD_CLS = 'h-10 w-full px-3 rounded-lg border border-parchment bg-cream text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text';
+
+function escHtml(s: string | number): string {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function pesoHtml(amount: number): string {
+  return `&#8369;${Number(amount).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// Shared print-window scaffold — same new-window + print CSS pattern as
+// IntentionsPage's register and RegistryPage's certificates.
+function openPrintWindow(title: string, bodyHtml: string): void {
+  const win = window.open('', '_blank');
+  if (!win) {
+    toast.error('Unable to open print window — please allow pop-ups');
+    return;
+  }
+  const parish = getParishConfig();
+  win.document.write(`
+    <html><head><title>${escHtml(title)}</title>
+    <style>
+      body{font-family:Georgia,serif;margin:32px;color:#3D3A36;}
+      .head h1{font-size:20px;margin:0 0 2px;}
+      .head div{font-size:12px;color:#5B5649;}
+      h2{font-size:15px;letter-spacing:2px;margin:18px 0 8px;}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;}
+      th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top;}
+      th{background:#F2EFE8;}
+      .meta{font-size:12px;color:#8C8374;margin-bottom:8px;}
+      .or{font-family:monospace;font-size:16px;font-weight:bold;color:#8B0000;}
+      .amount{font-size:18px;font-weight:bold;}
+      .sig{margin-top:48px;font-size:13px;}
+      .sig .line{display:inline-block;min-width:220px;border-top:1px solid #3D3A36;padding-top:4px;text-align:center;}
+      @media print{body{margin:12mm;}}
+    </style></head>
+    <body>
+      <div class="head">
+        <h1>${escHtml(parish.parishName)}</h1>
+        <div>${escHtml(parish.address)}</div>
+        <div>${escHtml(parish.contactNumber)}${parish.email ? ' &middot; ' + escHtml(parish.email) : ''}</div>
+      </div>
+      ${bodyHtml}
+    </body></html>
+  `);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); }, 300);
+}
+
+function printReceipt(contribution: Contribution, donor: Donor, campaignName?: string): void {
+  openPrintWindow(`Official Receipt ${contribution.orNumber ?? ''}`, `
+    <h2>OFFICIAL RECEIPT</h2>
+    <div class="or">No. ${escHtml(contribution.orNumber ?? '—')}</div>
+    <table>
+      <tr><th style="width:180px">Date</th><td>${escHtml(contribution.date)}</td></tr>
+      <tr><th>Received from</th><td>${escHtml(donor.name)}${donor.address ? '<br/><span style="color:#8C8374">' + escHtml(donor.address) + '</span>' : ''}</td></tr>
+      <tr><th>Amount</th><td class="amount">${pesoHtml(contribution.amount)}</td></tr>
+      <tr><th>Payment method</th><td>${escHtml(contribution.method)}</td></tr>
+      <tr><th>Purpose</th><td>${escHtml(campaignName ?? 'General donation')}</td></tr>
+    </table>
+    <div class="sig"><span class="line">${escHtml(getCurrentUserName())}<br/>Received by</span></div>
+  `);
+}
+
+function printStatement(
+  stmt: { donor: Donor; from?: string; to?: string; rows: Contribution[]; totalCent: number },
+  campaignName: (id?: string) => string | undefined,
+): void {
+  const range = `${stmt.from ?? 'beginning'} to ${stmt.to ?? 'present'}`;
+  openPrintWindow(`Donor Statement — ${stmt.donor.name}`, `
+    <h2>DONOR STATEMENT</h2>
+    <div class="meta">${escHtml(stmt.donor.name)} &middot; ${escHtml(range)} &middot; printed ${escHtml(new Date().toLocaleDateString('en-PH', { year: 'numeric', month: 'long', day: 'numeric' }))}</div>
+    <table>
+      <thead><tr><th>Date</th><th>OR No.</th><th>Purpose</th><th>Method</th><th style="text-align:right">Amount</th></tr></thead>
+      <tbody>
+        ${stmt.rows.map((r) => `<tr><td>${escHtml(r.date)}</td><td>${escHtml(r.orNumber ?? '—')}</td><td>${escHtml(campaignName(r.campaignId) ?? 'General donation')}</td><td>${escHtml(r.method)}</td><td style="text-align:right">${pesoHtml(r.amount)}</td></tr>`).join('')}
+        <tr><th colspan="4">Total</th><th style="text-align:right">${pesoHtml(fromCentavos(stmt.totalCent))}</th></tr>
+      </tbody>
+    </table>
+  `);
+}
+
+interface DonorRow extends Donor {
+  pledged: number;
+  given: number;
+  percent: number | null;
+  lastGift: string;
+  [key: string]: unknown;
+}
+
+function DonorsTab({ entries, setEntries }: { entries: JournalEntry[]; setEntries: Dispatch<SetStateAction<JournalEntry[]>> }) {
+  // The donors module writes through the seam; a version counter re-reads
+  // after every mutation (same reread pattern as IntentionsPage).
+  const [version, setVersion] = useState(0);
+  const bump = () => setVersion((v) => v + 1);
+  const donors = useMemo(() => getDonors(), [version]);
+  const campaigns = useMemo(() => getCampaigns(), [version]);
+  const pledges = useMemo(() => getPledges(), [version]);
+  const contributions = useMemo(() => getContributions(), [version]);
+
+  const [showDonorModal, setShowDonorModal] = useState(false);
+  const [showCampaignModal, setShowCampaignModal] = useState(false);
+  const [selectedDonorId, setSelectedDonorId] = useState<string | null>(null);
+  const selectedDonor = donors.find((d) => d.id === selectedDonorId) ?? null;
+
+  const campaignSummaries = useMemo(
+    () => summarizeCampaigns({ campaigns, contributions }),
+    [campaigns, contributions],
+  );
+  const campaignName = (id?: string) => campaigns.find((c) => c.id === id)?.name;
+
+  // FinancePage's lifted journal state stays the single journal writer while
+  // this page is mounted — the donors module posts THROUGH it (see JournalDeps).
+  const journalDeps = {
+    journal: entries,
+    appendJournalEntry: (e: JournalEntry) => setEntries((prev) => [e, ...prev]),
+  };
+
+  const tableData: DonorRow[] = useMemo(() => donors.map((d) => {
+    const progress = donorPledgeProgress(d.id, { pledges, contributions });
+    const lastGift = contributions
+      .filter((c) => c.donorId === d.id)
+      .reduce((latest, c) => (c.date > latest ? c.date : latest), '');
+    return {
+      ...d,
+      pledged: fromCentavos(progress.pledgedCent),
+      given: fromCentavos(progress.givenCent),
+      percent: progress.percent,
+      lastGift,
+    };
+  }), [donors, pledges, contributions]);
+
+  const columns: Column<DonorRow>[] = [
+    { key: 'name', header: 'Donor' },
+    { key: 'contact', header: 'Contact', render: (r) => r.contact || <span className="text-warm-gray">—</span>, searchValue: (r) => r.contact },
+    { key: 'pledged', header: 'Pledged', width: '120px', render: (r) => <span className="font-mono">{formatPeso(r.pledged)}</span> },
+    { key: 'given', header: 'Given', width: '120px', render: (r) => <span className="font-mono">{formatPeso(r.given)}</span> },
+    {
+      key: 'percent', header: 'Pledge Progress', width: '160px', sortable: false,
+      render: (r) => r.percent === null
+        ? <span className="text-warm-gray text-xs">No pledge</span>
+        : (
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-2 rounded-full bg-cream-dark dark:bg-dm-surface-raised overflow-hidden">
+              <div className="h-full rounded-full bg-gold" style={{ width: `${Math.min(100, r.percent)}%` }} />
+            </div>
+            <span className="text-xs text-warm-gray w-10 text-right">{Math.round(r.percent)}%</span>
+          </div>
+        ),
+      searchValue: () => '',
+    },
+    { key: 'lastGift', header: 'Last Gift', width: '110px', render: (r) => r.lastGift || <span className="text-warm-gray">—</span> },
+  ];
+
+  return (
+    <div className="space-y-4">
+      {/* Campaign summary cards */}
+      {campaignSummaries.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {campaignSummaries.map(({ campaign, raisedCent, goalCent, percent }) => (
+            <div key={campaign.id} className="cos-card">
+              <div className="flex items-center justify-between mb-1">
+                <p className="body-md font-medium text-charcoal dark:text-dm-text">{campaign.name}</p>
+                {!campaign.active && <span className="px-2 py-0.5 rounded-full text-xs bg-cream-dark text-warm-gray dark:bg-dm-surface-raised">Closed</span>}
+              </div>
+              <p className="font-mono text-lg text-charcoal dark:text-dm-text">{formatPeso(fromCentavos(raisedCent))}
+                {goalCent !== null && <span className="text-sm text-warm-gray"> / {formatPeso(fromCentavos(goalCent))}</span>}
+              </p>
+              {percent !== null ? (
+                <div className="mt-2 h-2 rounded-full bg-cream-dark dark:bg-dm-surface-raised overflow-hidden">
+                  <div className={`h-full rounded-full ${percent >= 100 ? 'bg-success' : 'bg-gold'}`} style={{ width: `${Math.min(100, percent)}%` }} />
+                </div>
+              ) : (
+                <p className="text-xs text-warm-gray mt-2">No goal set — open-ended drive</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="body-sm text-warm-gray dark:text-dm-text-muted">
+          {donors.length} donor{donors.length !== 1 ? 's' : ''} · {contributions.length} contribution{contributions.length !== 1 ? 's' : ''} receipted
+        </p>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowCampaignModal(true)} className="cos-btn cos-btn-secondary text-sm flex items-center gap-1.5">
+            <TrendingUp className="w-4 h-4" /> New Campaign
+          </button>
+          <button onClick={() => setShowDonorModal(true)} className="cos-btn cos-btn-primary text-sm flex items-center gap-1.5">
+            <Plus className="w-4 h-4" /> Add Donor
+          </button>
+        </div>
+      </div>
+
+      {/* Donor list */}
+      {donors.length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No donors yet"
+          description="Add donors to track pledges and contributions, and issue Official Receipts for every donation."
+          actionLabel="Add Donor"
+          actionIcon={Plus}
+          onAction={() => setShowDonorModal(true)}
+        />
+      ) : (
+        <DataTable columns={columns} data={tableData} onRowClick={(row) => setSelectedDonorId(row.id)} emptyMessage="No donors found" />
+      )}
+
+      <AnimatePresence>
+        {showDonorModal && (
+          <AddDonorModal onClose={() => setShowDonorModal(false)} onAdded={() => { bump(); setShowDonorModal(false); }} />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showCampaignModal && (
+          <AddCampaignModal onClose={() => setShowCampaignModal(false)} onAdded={() => { bump(); setShowCampaignModal(false); }} />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {selectedDonor && (
+          <DonorDetailModal
+            donor={selectedDonor}
+            campaigns={campaigns}
+            pledges={pledges.filter((p) => p.donorId === selectedDonor.id)}
+            contributions={contributions.filter((c) => c.donorId === selectedDonor.id)}
+            campaignName={campaignName}
+            journalDeps={journalDeps}
+            onChanged={bump}
+            onClose={() => setSelectedDonorId(null)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// Shared modal chrome for the small donor forms.
+function SmallModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+        className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-lg overflow-hidden flex flex-col"
+        style={{ maxHeight: '90vh' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border shrink-0">
+          <h2 className="heading-md text-charcoal dark:text-dm-text">{title}</h2>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:text-dm-text-muted dark:hover:text-dm-text">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="px-6 py-5 overflow-y-auto">{children}</div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function AddDonorModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [name, setName] = useState('');
+  const [contact, setContact] = useState('');
+  const [address, setAddress] = useState('');
+  const [notes, setNotes] = useState('');
+  const [parishionerQuery, setParishionerQuery] = useState('');
+  const [parishionerId, setParishionerId] = useState('');
+
+  /* Live parishioner directory — same lookup RegistryPage's pickers search,
+     built from the persisted families store so archived families never appear. */
+  const parishioners = useMemo(
+    () => buildParishionerLookupFrom(liveOnly(getJSON<Family[]>(KEYS.families, seedFamilies))),
+    [],
+  );
+  const matches = useMemo(() => {
+    const q = parishionerQuery.trim().toLowerCase();
+    if (!q || parishionerId) return [];
+    return parishioners.filter((p) => p.fullName.toLowerCase().includes(q)).slice(0, 8);
+  }, [parishionerQuery, parishionerId, parishioners]);
+
+  const pickParishioner = (p: ParishionerLookup) => {
+    setParishionerId(p.id);
+    setParishionerQuery(p.fullName);
+    if (!name.trim()) setName(`${p.firstName} ${p.lastName}`);
+    if (!address.trim()) setAddress(p.address);
+    if (!contact.trim() && p.contact) setContact(p.contact);
+  };
+
+  const handleAdd = () => {
+    if (!name.trim()) {
+      toast.error('Donor name is required');
+      return;
+    }
+    const donor = addDonor({
+      name, contact, address, notes,
+      parishionerId: parishionerId || undefined,
+    });
+    if (donor) {
+      toast.success(`Donor "${donor.name}" added`);
+      onAdded();
+    } else {
+      toast.error('Could not add donor');
+    }
+  };
+
+  return (
+    <SmallModal title="Add Donor" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="relative">
+          <label className="label text-warm-gray mb-1 block">Link to parishioner (optional)</label>
+          <input
+            type="text" value={parishionerQuery}
+            onChange={(e) => { setParishionerQuery(e.target.value); setParishionerId(''); }}
+            placeholder="Type to search parishioners..."
+            className={FIELD_CLS}
+          />
+          {parishionerId && (
+            <p className="text-xs text-success mt-1 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Linked to the parishioner directory</p>
+          )}
+          {matches.length > 0 && (
+            <div className="absolute z-10 left-0 right-0 mt-1 bg-white dark:bg-dm-surface border border-parchment dark:border-dm-border rounded-lg shadow-modal max-h-48 overflow-y-auto">
+              {matches.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => pickParishioner(p)}
+                  className="w-full text-left px-3 py-2 text-sm text-charcoal dark:text-dm-text hover:bg-gold-glow/50 transition-colors"
+                >
+                  {p.fullName}
+                  <span className="block text-xs text-warm-gray">{p.familyName} family · {p.address}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="label text-warm-gray mb-1 block">Name *</label>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" className={FIELD_CLS} />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label text-warm-gray mb-1 block">Contact</label>
+            <input type="text" value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Phone / email" className={FIELD_CLS} />
+          </div>
+          <div>
+            <label className="label text-warm-gray mb-1 block">Address</label>
+            <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Address" className={FIELD_CLS} />
+          </div>
+        </div>
+        <div>
+          <label className="label text-warm-gray mb-1 block">Notes</label>
+          <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional notes" className={FIELD_CLS} />
+        </div>
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={onClose} className="cos-btn cos-btn-secondary text-sm">Cancel</button>
+          <button onClick={handleAdd} className="cos-btn cos-btn-primary text-sm">Add Donor</button>
+        </div>
+      </div>
+    </SmallModal>
+  );
+}
+
+function AddCampaignModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [name, setName] = useState('');
+  const [goal, setGoal] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  const handleAdd = () => {
+    if (!name.trim()) {
+      toast.error('Campaign name is required');
+      return;
+    }
+    const campaign = addCampaign({
+      name,
+      goal: parseFloat(goal) || undefined,
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+    });
+    if (campaign) {
+      toast.success(`Campaign "${campaign.name}" created`);
+      onAdded();
+    } else {
+      toast.error('Could not create campaign');
+    }
+  };
+
+  return (
+    <SmallModal title="New Campaign" onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label className="label text-warm-gray mb-1 block">Name *</label>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Church Roof Repair" className={FIELD_CLS} />
+        </div>
+        <div>
+          <label className="label text-warm-gray mb-1 block">Goal (₱, optional)</label>
+          <input type="number" min="0" step="0.01" value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="0.00" className={FIELD_CLS} />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label text-warm-gray mb-1 block">Start date</label>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={FIELD_CLS} />
+          </div>
+          <div>
+            <label className="label text-warm-gray mb-1 block">End date</label>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={FIELD_CLS} />
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={onClose} className="cos-btn cos-btn-secondary text-sm">Cancel</button>
+          <button onClick={handleAdd} className="cos-btn cos-btn-primary text-sm">Create Campaign</button>
+        </div>
+      </div>
+    </SmallModal>
+  );
+}
+
+function DonorDetailModal({ donor, campaigns, pledges, contributions, campaignName, journalDeps, onChanged, onClose }: {
+  donor: Donor;
+  campaigns: Campaign[];
+  pledges: Pledge[];
+  contributions: Contribution[];
+  campaignName: (id?: string) => string | undefined;
+  journalDeps: { journal: JournalEntry[]; appendJournalEntry: (e: JournalEntry) => void };
+  onChanged: () => void;
+  onClose: () => void;
+}) {
+  const progress = useMemo(
+    () => donorPledgeProgress(donor.id, { pledges, contributions }),
+    [donor.id, pledges, contributions],
+  );
+
+  // Record-contribution form
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState<ContributionMethod>('cash');
+  const [campaignId, setCampaignId] = useState('');
+  // Local-timezone default: toISOString() is UTC and lands on YESTERDAY before
+  // 8 AM in the Philippines — on Jan 1 that issues the OR into last year's series.
+  const [date, setDate] = useState(todayISO());
+
+  // Pledge form
+  const [pledgeAmount, setPledgeAmount] = useState('');
+  const [pledgeFrequency, setPledgeFrequency] = useState<PledgeFrequency>('one-time');
+  const [pledgeCampaignId, setPledgeCampaignId] = useState('');
+
+  // Statement range
+  const [stmtFrom, setStmtFrom] = useState('');
+  const [stmtTo, setStmtTo] = useState('');
+
+  const handleRecord = () => {
+    const value = parseFloat(amount);
+    if (!value || value <= 0) {
+      toast.error('Contribution amount must be greater than zero');
+      return;
+    }
+    const res = recordContribution(
+      { donorId: donor.id, campaignId: campaignId || undefined, date, amount: value, method },
+      journalDeps,
+    );
+    if (res.status !== 'recorded') {
+      toast.error('Could not record the contribution');
+      return;
+    }
+    toast.success(`Official Receipt ${res.contribution.orNumber} issued and posted to the ledger`);
+    setAmount('');
+    onChanged();
+    printReceipt(res.contribution, donor, campaignName(res.contribution.campaignId));
+  };
+
+  const handleAddPledge = () => {
+    const value = parseFloat(pledgeAmount);
+    if (!value || value <= 0) {
+      toast.error('Pledge amount must be greater than zero');
+      return;
+    }
+    const pledge = addPledge({
+      donorId: donor.id,
+      campaignId: pledgeCampaignId || undefined,
+      amount: value,
+      frequency: pledgeFrequency,
+    });
+    if (pledge) {
+      toast.success('Pledge recorded');
+      setPledgeAmount('');
+      onChanged();
+    } else {
+      toast.error('Could not record the pledge');
+    }
+  };
+
+  const statement = () => buildDonorStatement(donor.id, {
+    from: stmtFrom || undefined,
+    to: stmtTo || undefined,
+  });
+
+  const handleStatementPrint = () => {
+    const stmt = statement();
+    if (!stmt || stmt.rows.length === 0) {
+      toast.error('No contributions in the selected range');
+      return;
+    }
+    printStatement(stmt, campaignName);
+  };
+
+  const handleStatementCsv = () => {
+    const stmt = statement();
+    if (!stmt || stmt.rows.length === 0) {
+      toast.error('No contributions in the selected range');
+      return;
+    }
+    downloadCsv(
+      `donor-statement-${donor.name.replace(/\W+/g, '-').toLowerCase()}-${new Date().toISOString().split('T')[0]}.csv`,
+      ['Date', 'OR Number', 'Purpose', 'Method', 'Amount'],
+      [
+        ...stmt.rows.map((r) => [r.date, r.orNumber ?? '', campaignName(r.campaignId) ?? 'General donation', r.method, r.amount]),
+        ['', '', '', 'Total', fromCentavos(stmt.totalCent)],
+      ],
+    );
+    toast.success(`Exported ${stmt.rows.length} contribution${stmt.rows.length === 1 ? '' : 's'}`);
+  };
+
+  const sortedContributions = useMemo(
+    () => [...contributions].sort((a, b) => b.date.localeCompare(a.date)),
+    [contributions],
+  );
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+        className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full overflow-hidden flex flex-col"
+        style={{ maxWidth: 780, maxHeight: '90vh' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border shrink-0">
+          <div>
+            <h2 className="heading-md text-charcoal dark:text-dm-text flex items-center gap-2">
+              {donor.name}
+              {donor.parishionerId && (
+                <span title="Linked to the parishioner directory" className="inline-flex"><CheckCircle2 className="w-4 h-4 text-success" /></span>
+              )}
+            </h2>
+            <p className="text-xs text-warm-gray">{[donor.contact, donor.address].filter(Boolean).join(' · ') || 'No contact details'}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:text-dm-text-muted dark:hover:text-dm-text">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 overflow-y-auto space-y-6">
+          {/* Pledge vs given */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="label text-warm-gray">Pledge Progress</p>
+              <p className="text-sm font-mono text-charcoal dark:text-dm-text">
+                {formatPeso(fromCentavos(progress.givenCent))}
+                {progress.pledgedCent > 0 && <span className="text-warm-gray"> of {formatPeso(fromCentavos(progress.pledgedCent))} pledged</span>}
+              </p>
+            </div>
+            {progress.percent !== null ? (
+              <div className="h-2.5 rounded-full bg-cream-dark dark:bg-dm-surface-raised overflow-hidden">
+                <div className={`h-full rounded-full ${progress.percent >= 100 ? 'bg-success' : 'bg-gold'}`} style={{ width: `${Math.min(100, progress.percent)}%` }} />
+              </div>
+            ) : (
+              <p className="text-xs text-warm-gray">No pledges yet — total given is shown above.</p>
+            )}
+          </div>
+
+          {/* Record contribution */}
+          <div className="p-4 rounded-lg border border-parchment dark:border-dm-border bg-cream-dark/30 dark:bg-dm-surface-raised/30">
+            <p className="label text-warm-gray mb-3">Record Contribution (issues Official Receipt)</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <label className="label text-warm-gray mb-1 block">Amount (₱)</label>
+                <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className={FIELD_CLS} />
+              </div>
+              <div>
+                <label className="label text-warm-gray mb-1 block">Method</label>
+                <select value={method} onChange={(e) => setMethod(e.target.value as ContributionMethod)} className={FIELD_CLS}>
+                  <option value="cash">Cash</option>
+                  <option value="check">Check</option>
+                  <option value="digital">Digital</option>
+                </select>
+              </div>
+              <div>
+                <label className="label text-warm-gray mb-1 block">Campaign</label>
+                <select value={campaignId} onChange={(e) => setCampaignId(e.target.value)} className={FIELD_CLS}>
+                  <option value="">General donation</option>
+                  {campaigns.filter((c) => c.active).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label text-warm-gray mb-1 block">Date</label>
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={FIELD_CLS} />
+              </div>
+            </div>
+            <div className="flex justify-end mt-3">
+              <button onClick={handleRecord} className="cos-btn cos-btn-primary text-sm flex items-center gap-1.5">
+                <Printer className="w-4 h-4" /> Record &amp; Print Receipt
+              </button>
+            </div>
+          </div>
+
+          {/* Pledges */}
+          <div>
+            <p className="label text-warm-gray mb-2">Pledges</p>
+            {pledges.length === 0
+              ? <p className="text-sm text-warm-gray italic mb-2">No pledges recorded.</p>
+              : (
+                <div className="space-y-1.5 mb-3">
+                  {pledges.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between p-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50 text-sm">
+                      <span className="text-charcoal dark:text-dm-text">
+                        {campaignName(p.campaignId) ?? 'General'} · <span className="text-warm-gray">{p.frequency}</span>
+                      </span>
+                      <span className="font-mono text-charcoal dark:text-dm-text">{formatPeso(p.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
+              <div>
+                <label className="label text-warm-gray mb-1 block">Pledge (₱)</label>
+                <input type="number" min="0" step="0.01" value={pledgeAmount} onChange={(e) => setPledgeAmount(e.target.value)} placeholder="0.00" className={FIELD_CLS} />
+              </div>
+              <div>
+                <label className="label text-warm-gray mb-1 block">Frequency</label>
+                <select value={pledgeFrequency} onChange={(e) => setPledgeFrequency(e.target.value as PledgeFrequency)} className={FIELD_CLS}>
+                  <option value="one-time">One-time</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <div>
+                <label className="label text-warm-gray mb-1 block">Campaign</label>
+                <select value={pledgeCampaignId} onChange={(e) => setPledgeCampaignId(e.target.value)} className={FIELD_CLS}>
+                  <option value="">General</option>
+                  {campaigns.filter((c) => c.active).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <button onClick={handleAddPledge} className="cos-btn cos-btn-secondary text-sm h-10">Add Pledge</button>
+            </div>
+          </div>
+
+          {/* Contributions */}
+          <div>
+            <p className="label text-warm-gray mb-2">Contributions</p>
+            {sortedContributions.length === 0
+              ? <p className="text-sm text-warm-gray italic">No contributions yet.</p>
+              : (
+                <div className="border border-parchment rounded-lg overflow-hidden dark:border-dm-border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-cream-dark dark:bg-dm-surface-raised">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium text-warm-gray text-xs">Date</th>
+                        <th className="text-left px-3 py-2 font-medium text-warm-gray text-xs">OR No.</th>
+                        <th className="text-left px-3 py-2 font-medium text-warm-gray text-xs">Purpose</th>
+                        <th className="text-left px-3 py-2 font-medium text-warm-gray text-xs">Method</th>
+                        <th className="text-right px-3 py-2 font-medium text-warm-gray text-xs">Amount</th>
+                        <th className="w-10" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedContributions.map((c) => (
+                        <tr key={c.id} className="border-b border-parchment/40 last:border-0">
+                          <td className="px-3 py-2 text-charcoal dark:text-dm-text">{c.date}</td>
+                          <td className="px-3 py-2 font-mono text-gold">{c.orNumber ?? '—'}</td>
+                          <td className="px-3 py-2 text-charcoal dark:text-dm-text">{campaignName(c.campaignId) ?? 'General'}</td>
+                          <td className="px-3 py-2 text-warm-gray capitalize">{c.method}</td>
+                          <td className="px-3 py-2 text-right font-mono text-charcoal dark:text-dm-text">{formatPeso(c.amount)}</td>
+                          <td className="px-2 py-2">
+                            <button
+                              onClick={() => printReceipt(c, donor, campaignName(c.campaignId))}
+                              className="p-1 rounded text-warm-gray hover:text-gold transition-colors"
+                              title="Reprint receipt"
+                              aria-label={`Reprint receipt ${c.orNumber ?? ''}`}
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+          </div>
+
+          {/* Donor statement */}
+          <div className="p-4 rounded-lg border border-parchment dark:border-dm-border">
+            <p className="label text-warm-gray mb-3">Donor Statement</p>
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="label text-warm-gray mb-1 block">From</label>
+                <input type="date" value={stmtFrom} onChange={(e) => setStmtFrom(e.target.value)} className={FIELD_CLS} />
+              </div>
+              <div>
+                <label className="label text-warm-gray mb-1 block">To</label>
+                <input type="date" value={stmtTo} onChange={(e) => setStmtTo(e.target.value)} className={FIELD_CLS} />
+              </div>
+              <button onClick={handleStatementPrint} className="cos-btn cos-btn-secondary text-sm h-10 flex items-center gap-1.5">
+                <Printer className="w-4 h-4" /> Print
+              </button>
+              <button onClick={handleStatementCsv} className="cos-btn cos-btn-secondary text-sm h-10 flex items-center gap-1.5">
+                <Download className="w-4 h-4" /> CSV
+              </button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ============================================
+// Tab — Waivers (fee-override hash chain UI)
+// ============================================
+const WAIVER_SACRAMENTS = ['Baptism', 'Marriage', 'Confirmation', 'Funeral', 'Mass Intention', 'Certificate', 'Other'];
+
+interface WaiverRow extends FeeOverrideChainEntry {
+  chainIndex: number;
+  [key: string]: unknown;
+}
+
+function WaiversTab() {
+  const [version, setVersion] = useState(0);
+  const chain = useMemo(() => getFeeOverrideChain(), [version]);
+  const verdict = useMemo(() => verifyFeeOverrideChain(chain), [chain]);
+  const flags = useMemo(() => flagSelfApprovals(chain), [chain]);
+  const flaggedApprovers = useMemo(() => new Set(flags.map((f) => f.by.toLowerCase())), [flags]);
+
+  const [sacrament, setSacrament] = useState(WAIVER_SACRAMENTS[0]);
+  const [personName, setPersonName] = useState('');
+  const [originalFee, setOriginalFee] = useState('');
+  const [waivedAmount, setWaivedAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [approvedBy, setApprovedBy] = useState('');
+
+  const handleRecord = () => {
+    const res = recordFeeWaiver({
+      sacrament,
+      personName,
+      originalFee: parseFloat(originalFee),
+      waivedAmount: parseFloat(waivedAmount),
+      reason,
+      approvedBy,
+    });
+    if (!res.ok) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success('Waiver recorded in the tamper-evident audit chain');
+    setPersonName('');
+    setOriginalFee('');
+    setWaivedAmount('');
+    setReason('');
+    setApprovedBy('');
+    setVersion((v) => v + 1);
+  };
+
+  // Newest first for display; chainIndex keeps the verification position.
+  const rows: WaiverRow[] = useMemo(
+    () => chain.map((e, i) => ({ ...e, chainIndex: i })).reverse(),
+    [chain],
+  );
+
+  const columns: Column<WaiverRow>[] = [
+    { key: 'timestamp', header: 'When', width: '110px', render: (r) => r.timestamp.split('T')[0] },
+    { key: 'sacrament', header: 'Sacrament', width: '120px', render: (r) => <span className="capitalize">{r.sacrament}</span> },
+    { key: 'personName', header: 'For' },
+    {
+      key: 'overrideType', header: 'Type', width: '100px',
+      render: (r) => (
+        <span className={
+          'px-2 py-0.5 rounded-full text-xs font-medium ' +
+          (r.overrideType === 'waived' ? 'bg-warning/10 text-warning'
+            : r.overrideType === 'bill_later' ? 'bg-info/10 text-info'
+            : 'bg-success/10 text-success')
+        }>
+          {r.overrideType === 'bill_later' ? 'bill later' : r.overrideType}
+        </span>
+      ),
+    },
+    {
+      key: 'amount', header: 'Amount', width: '130px',
+      render: (r) => (
+        <span className="font-mono">
+          {formatPeso(r.amount)}
+          {typeof r.originalFee === 'number' && r.originalFee !== r.amount && (
+            <span className="text-xs text-warm-gray"> / {formatPeso(r.originalFee)}</span>
+          )}
+        </span>
+      ),
+    },
+    { key: 'reason', header: 'Reason', render: (r) => <span className="block max-w-[220px] truncate" title={r.reason}>{r.reason}</span>, searchValue: (r) => r.reason },
+    {
+      key: 'approvedBy', header: 'Approved By', width: '150px',
+      render: (r) => {
+        const self = isSelfApprovedWaiver(r);
+        const flagged = self && !!r.approvedBy && flaggedApprovers.has(r.approvedBy.toLowerCase());
+        return (
+          <span className="flex items-center gap-1">
+            {r.approvedBy ?? r.recordedBy}
+            {flagged && (
+              <span title={`Self-approved — this approver's self-approved waivers total ≥ ${formatPesoWhole(SELF_APPROVAL_FLAG_THRESHOLD)}`}>
+                <ShieldAlert className="w-3.5 h-3.5 text-error" />
+              </span>
+            )}
+            {self && !flagged && (
+              <span title="Self-approved (recorded and approved by the same person)">
+                <AlertCircle className="w-3.5 h-3.5 text-warning" />
+              </span>
+            )}
+          </span>
+        );
+      },
+      searchValue: (r) => r.approvedBy ?? r.recordedBy,
+    },
+    {
+      key: 'chainIndex', header: 'Chain', width: '70px', sortable: false,
+      render: (r) => verdict.intact || r.chainIndex < verdict.brokenAt
+        ? <span title="Entry verified against the hash chain"><ShieldCheck className="w-4 h-4 text-success" /></span>
+        : <span title="At or after the break point — history was edited or deleted outside the app"><ShieldAlert className="w-4 h-4 text-error" /></span>,
+      searchValue: () => '',
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      {/* Chain verification banner */}
+      <div className={
+        'flex items-center gap-3 p-4 rounded-lg border ' +
+        (verdict.intact
+          ? 'border-success/30 bg-success/5 text-success'
+          : 'border-error/30 bg-error/5 text-error')
+      }>
+        {verdict.intact ? <ShieldCheck className="w-5 h-5 shrink-0" /> : <ShieldAlert className="w-5 h-5 shrink-0" />}
+        <div>
+          <p className="text-sm font-medium">
+            {verdict.intact
+              ? `Audit chain intact — ${chain.length} entr${chain.length === 1 ? 'y' : 'ies'} verified`
+              : `Audit chain BROKEN at entry #${verdict.brokenAt + 1} — history was edited or deleted outside the app`}
+          </p>
+          <p className="text-xs opacity-80">
+            Every waiver is hash-chained to the one before it (shared with the Registry fee-override trail), so silent edits are detectable.
+          </p>
+        </div>
+      </div>
+
+      {/* Self-approval flags (diocese cockpit semantics) */}
+      {flags.length > 0 && (
+        <div className="p-4 rounded-lg border border-warning/40 bg-warning/5">
+          <p className="text-sm font-medium text-warning flex items-center gap-2 mb-2">
+            <AlertCircle className="w-4 h-4" /> Waivers to review — self-approved totaling ≥ {formatPesoWhole(SELF_APPROVAL_FLAG_THRESHOLD)}
+          </p>
+          <ul className="space-y-1">
+            {flags.map((f) => (
+              <li key={f.by} className="text-sm text-charcoal dark:text-dm-text">
+                {f.count} waiver{f.count > 1 ? 's' : ''} approved by <span className="font-medium">{f.by}</span> for themselves, totaling <span className="font-mono">{formatPeso(f.total)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Record waiver form */}
+      <div className="cos-card">
+        <p className="label text-warm-gray mb-3">Record Fee Waiver</p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div>
+            <label className="label text-warm-gray mb-1 block">Sacrament / service</label>
+            <select value={sacrament} onChange={(e) => setSacrament(e.target.value)} className={FIELD_CLS}>
+              {WAIVER_SACRAMENTS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="label text-warm-gray mb-1 block">For (person / family)</label>
+            <input type="text" value={personName} onChange={(e) => setPersonName(e.target.value)} placeholder="e.g. Dela Cruz family" className={FIELD_CLS} />
+          </div>
+          <div>
+            <label className="label text-warm-gray mb-1 block">Original fee (₱)</label>
+            <input type="number" min="0" step="0.01" value={originalFee} onChange={(e) => setOriginalFee(e.target.value)} placeholder="0.00" className={FIELD_CLS} />
+          </div>
+          <div>
+            <label className="label text-warm-gray mb-1 block">Waived amount (₱)</label>
+            <input type="number" min="0" step="0.01" value={waivedAmount} onChange={(e) => setWaivedAmount(e.target.value)} placeholder="0.00" className={FIELD_CLS} />
+          </div>
+          <div className="col-span-2">
+            <label className="label text-warm-gray mb-1 block">Reason (min 5 characters)</label>
+            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this fee being waived?" className={FIELD_CLS} />
+          </div>
+          <div className="col-span-2">
+            <label className="label text-warm-gray mb-1 block">Approved by</label>
+            <input type="text" value={approvedBy} onChange={(e) => setApprovedBy(e.target.value)} placeholder="Who authorized this waiver" className={FIELD_CLS} />
+          </div>
+        </div>
+        <div className="flex justify-end mt-3">
+          <button onClick={handleRecord} className="cos-btn cos-btn-primary text-sm">Record Waiver</button>
+        </div>
+      </div>
+
+      {/* Past waivers */}
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={ShieldCheck}
+          title="No fee overrides recorded"
+          description="Waivers recorded here (and fee overrides from the Registry) appear in one shared tamper-evident audit trail."
+        />
+      ) : (
+        <DataTable columns={columns} data={rows} emptyMessage="No waivers found" />
+      )}
+    </div>
   );
 }

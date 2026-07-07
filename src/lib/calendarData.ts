@@ -1,3 +1,5 @@
+import { isDuringLent, isTriduum, lentRange, getLiturgicalDay, formatLiturgicalDate } from './liturgicalCalendar';
+
 export type EventType = 'Mass' | 'Baptism' | 'Wedding' | 'Confirmation' | 'Death' | 'Ministry' | 'SSDM' | 'General';
 
 export interface CalendarEvent {
@@ -59,7 +61,10 @@ export const SCHEDULING_RULES = {
   wedding: {
     allowedDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
     preferredDays: ['Saturday'],
-    blockedPeriods: [{ name: 'Lent', start: '02-14', end: '04-05' }], // Ash Wed to Holy Saturday (approx)
+    // Lent (Ash Wednesday → Holy Saturday) is COMPUTED per event year via
+    // liturgicalCalendar's computus — see validateSchedulingRules. Never a
+    // fixed MM-DD window: Ash Wednesday moves by more than a month.
+    blocksLent: true,
     allowedTimes: ['09:00', '10:00', '11:00', '13:00', '14:00', '15:00'],
     locations: ['Main Church', 'Parish Hall'],
     notes: 'Saturdays preferred. Weddings prohibited during Lent (Ash Wednesday to Holy Saturday).',
@@ -329,13 +334,21 @@ export function validateSchedulingRules(
     warnings.push(`${rules.preferredDays.join(' / ')} is the preferred day for ${type === 'death' ? 'burial services' : type + 's'}.`);
   }
 
-  // Lent check for weddings
-  if (type === 'wedding' && 'blockedPeriods' in rules && rules.blockedPeriods) {
-    const mmdd = date.slice(5); // "MM-DD"
-    for (const period of rules.blockedPeriods) {
-      if (mmdd >= period.start && mmdd <= period.end) {
-        errors.push(`Weddings are prohibited during ${period.name} (${period.start} to ${period.end}).`);
-      }
+  // Lent check for weddings — Ash Wednesday → Holy Saturday computed from the
+  // EVENT's own year (computus), never a fixed MM-DD window.
+  if (type === 'wedding' && 'blocksLent' in rules && rules.blocksLent && isDuringLent(date)) {
+    const range = lentRange(parseInt(date.slice(0, 4), 10));
+    errors.push(`Weddings are prohibited during Lent — Ash Wednesday (${formatLiturgicalDate(range.start)}) to Holy Saturday (${formatLiturgicalDate(range.end)}).`);
+  }
+
+  // Easter Triduum blocks every sacrament celebration; solemnities warn.
+  if (isTriduum(date)) {
+    const lit = getLiturgicalDay(date);
+    errors.push(`${lit?.name || 'Easter Triduum'} — sacrament celebrations are not scheduled during the Easter Triduum.`);
+  } else {
+    const lit = getLiturgicalDay(date);
+    if (lit && lit.rank === 'solemnity') {
+      warnings.push(`${formatLiturgicalDate(date)} is ${lit.name} (solemnity) — parish Masses take priority; please confirm with the parish office.`);
     }
   }
 
@@ -398,21 +411,15 @@ export function getNextAvailableDay(
     const dayName = d.toLocaleDateString('en-US', { weekday: 'long' });
     const blocked = 'blockedDays' in rules ? ((rules.blockedDays as readonly string[] || [])).includes(dayName) : false;
     if (!blocked) {
-      const mmdd = formatMMDD(d);
-      let inBlockedPeriod = false;
-      if ('blockedPeriods' in rules && rules.blockedPeriods) {
-        for (const p of rules.blockedPeriods as ReadonlyArray<{ name: string; start: string; end: string }>) {
-          if (mmdd >= p.start && mmdd <= p.end) { inBlockedPeriod = true; break; }
-        }
-      }
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      // Computed liturgical blocks: Lent for weddings; the Triduum for everything.
+      const inBlockedPeriod =
+        (type === 'wedding' && 'blocksLent' in rules && rules.blocksLent && isDuringLent(iso)) ||
+        isTriduum(iso);
       if (!inBlockedPeriod) {
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        return iso;
       }
     }
   }
   return fromDate; // fallback
-}
-
-function formatMMDD(d: Date): string {
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }

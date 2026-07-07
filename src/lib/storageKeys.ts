@@ -24,11 +24,19 @@ export const KEYS = {
   accountsReceivable: 'accounts_receivable',
   feeOverrideAudit: 'fee_override_audit',
 
+  // Donors & pledges (see lib/donors.ts)
+  donors: 'donors',
+  donationCampaigns: 'donation_campaigns',
+  pledges: 'pledges',
+  contributions: 'contributions',
+  orSeries: 'or_series',
+
   // Directory
   families: 'families',
 
   // Calendar
   calendarEvents: 'calendar_events',
+  attendance: 'attendance_records',
 
   // Ministries
   ministries: 'ministries',

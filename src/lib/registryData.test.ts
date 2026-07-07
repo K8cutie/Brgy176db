@@ -10,6 +10,14 @@ import {
   replaceTokens,
   addAnnotation,
   buildAutoAnnotation,
+  annotationReferencesRecord,
+  buildArchiveCorrectionAnnotation,
+  voidAnnotation,
+  newlyVoidedAnnotations,
+  resolveBaptismForAnnotation,
+  to24Hour,
+  buildRegistryCalendarEvent,
+  mergeCertificateTemplates,
   liveOnly,
   softDelete,
   findBaptismCandidates,
@@ -21,6 +29,7 @@ import {
   type MarriageRecord,
   type ConfirmationRecord,
   type DeathRecord,
+  type CertificateTemplate,
 } from "./registryData"
 import { mergeFamilies, mergeParishioners, families, type Family, type Parishioner } from "./directoryData"
 
@@ -210,6 +219,155 @@ describe("certificate templates & tokens", () => {
     expect(isMarriageRecord(marriage())).toBe(true)
     expect(isConfirmationRecord(confirmation())).toBe(true)
     expect(isDeathRecord(death())).toBe(true)
+  })
+})
+
+describe("resolveBaptismForAnnotation", () => {
+  it("prefers the explicit directory link over name matching", () => {
+    const records = baptismRecords.map((r) => (r.id === "b2" ? { ...r, childParishionerId: "p-77" } : r))
+    const { target, ambiguous } = resolveBaptismForAnnotation(records, {
+      parishionerId: "p-77",
+      first: "Totally",
+      last: "Different",
+    })
+    expect(ambiguous).toBe(false)
+    expect(target?.id).toBe("b2")
+  })
+
+  it("falls back to an unambiguous exact-name match", () => {
+    const { target, ambiguous } = resolveBaptismForAnnotation(baptismRecords, { first: "Maria Clara", last: "Santos" })
+    expect(ambiguous).toBe(false)
+    expect(target?.id).toBe("b1")
+  })
+
+  it("flags namesakes as ambiguous instead of guessing", () => {
+    const twin = { ...baptismRecords[0], id: "b1-twin", registryNumber: "2024-0999" }
+    const res = resolveBaptismForAnnotation([...baptismRecords, twin], { first: "Maria Clara", last: "Santos" })
+    expect(res.ambiguous).toBe(true)
+    expect(res.target).toBeUndefined()
+  })
+
+  it("never targets soft-deleted records; no match means no target", () => {
+    const records = baptismRecords.map((r) =>
+      r.id === "b1" ? softDelete({ ...r, childParishionerId: "p-9" }, "x") : r,
+    )
+    expect(resolveBaptismForAnnotation(records, { parishionerId: "p-9", first: "Maria Clara", last: "Santos" }).target).toBeUndefined()
+    expect(resolveBaptismForAnnotation(baptismRecords, { first: "Nobody", last: "Nowhere" }).target).toBeUndefined()
+  })
+})
+
+describe("annotation corrections & voiding", () => {
+  it("buildArchiveCorrectionAnnotation uses the canonical strike-through wording", () => {
+    const ann = buildArchiveCorrectionAnnotation("marriage", "2024-0101", "2026-07-08", "Secretary")
+    expect(ann.type).toBe("correction")
+    expect(ann.text).toBe("Marriage record 2024-0101 archived on July 8, 2026 — previous note void")
+    expect(ann.by).toBe("Secretary")
+    expect(ann.date).toBe("2026-07-08")
+  })
+
+  it("annotationReferencesRecord matches only live auto-annotations for that registry number", () => {
+    const ann = buildAutoAnnotation("marriage", { date: "2024-06-15", spouse: "X", registryNumber: "2024-0101", by: "x" })
+    expect(annotationReferencesRecord(ann, "marriage", "2024-0101")).toBe(true)
+    expect(annotationReferencesRecord(ann, "confirmation", "2024-0101")).toBe(false)
+    expect(annotationReferencesRecord(ann, "marriage", "2024-0102")).toBe(false)
+    expect(annotationReferencesRecord({ ...ann, voided: true }, "marriage", "2024-0101")).toBe(false)
+    expect(annotationReferencesRecord(ann, "marriage", "")).toBe(false)
+  })
+
+  it("voidAnnotation strikes through without mutating or deleting", () => {
+    const ann = buildAutoAnnotation("note", { text: "hello", by: "x" })
+    const rec = addAnnotation(baptism(), ann)
+    const voided = voidAnnotation(rec, ann.id)
+    expect(voided.annotations).toHaveLength(1) // never erased
+    expect(voided.annotations![0].voided).toBe(true)
+    expect(rec.annotations![0].voided).toBeUndefined() // original untouched
+  })
+
+  it("newlyVoidedAnnotations diffs only fresh voids for the audit trail", () => {
+    const a = buildAutoAnnotation("note", { text: "a", by: "x" })
+    const b = buildAutoAnnotation("note", { text: "b", by: "x" })
+    const before = [{ ...a, voided: true }, b]
+    const after = [{ ...a, voided: true }, { ...b, voided: true }]
+    expect(newlyVoidedAnnotations(before, after).map((x) => x.id)).toEqual([b.id])
+    expect(newlyVoidedAnnotations(undefined, undefined)).toEqual([])
+    expect(newlyVoidedAnnotations([a, b], [a, b])).toEqual([])
+  })
+})
+
+describe("registry → calendar event", () => {
+  it("to24Hour converts the registry's 12-hour schedule times", () => {
+    expect(to24Hour("9:00 AM")).toBe("09:00")
+    expect(to24Hour("1:00 PM")).toBe("13:00")
+    expect(to24Hour("12:00 PM")).toBe("12:00")
+    expect(to24Hour("12:30 AM")).toBe("00:30")
+    expect(to24Hour("14:00")).toBe("14:00") // already 24h passes through
+    expect(to24Hour("garbage")).toBe("09:00") // safe fallback
+  })
+
+  it("buildRegistryCalendarEvent builds a PRIVATE, sacrament-linked event from the schedule fields", () => {
+    const ev = buildRegistryCalendarEvent(baptism())
+    expect(ev.type).toBe("Baptism")
+    expect(ev.date).toBe("2024-02-10")
+    expect(ev.startTime).toBe("09:00")
+    expect(ev.endTime).toBe("10:00") // one-hour ceremony, like RequestsPage
+    expect(ev.location).toBe("Baptistry")
+    expect(ev.officiant).toBe("Fr. Reyes")
+    expect(ev.isPublic).toBe(false) // names in the title — publishing is opt-in
+    expect(ev.sacramentRecordId).toBe("b1")
+    expect(ev.sacramentRecordType).toBe("baptism")
+    expect(ev.title).toBe("Baptism: Santos, Maria Clara Reyes")
+    expect(ev.id).toBeTruthy()
+  })
+
+  it("maps each sacrament to its calendar lane (marriage books Wedding)", () => {
+    const wed = buildRegistryCalendarEvent(marriage())
+    expect(wed.type).toBe("Wedding")
+    expect(wed.sacramentRecordType).toBe("marriage")
+    expect(wed.title).toBe("Wedding: Carlo Garcia & Maria Elena Lim")
+    const burial = buildRegistryCalendarEvent(death())
+    expect(burial.type).toBe("Death")
+    expect(burial.title).toBe("Burial: Eduardo Cruz Santos")
+    expect(buildRegistryCalendarEvent(confirmation()).type).toBe("Confirmation")
+  })
+})
+
+describe("mergeCertificateTemplates", () => {
+  const custom: CertificateTemplate = {
+    id: "tcustom-1",
+    name: "Standard Marriage (Custom)",
+    description: "copy",
+    sacrament: "marriage",
+    isDefault: false,
+    isSystem: false,
+    html: "<div>custom</div>",
+  }
+
+  it("returns fresh defaults when nothing is saved", () => {
+    const out = mergeCertificateTemplates(certificateTemplates, [])
+    expect(out.map((t) => t.id)).toEqual(certificateTemplates.map((t) => t.id))
+    expect(out[0]).not.toBe(certificateTemplates[0]) // copies, not shared refs
+  })
+
+  it("applies saved overrides by id AND preserves unknown (duplicated) ids", () => {
+    const out = mergeCertificateTemplates(certificateTemplates, [{ id: "t3", html: "<div>edited</div>" }, custom])
+    expect(out.find((t) => t.id === "t3")!.html).toBe("<div>edited</div>")
+    const kept = out.find((t) => t.id === "tcustom-1")!
+    expect(kept.name).toBe("Standard Marriage (Custom)")
+    expect(kept.sacrament).toBe("marriage")
+    expect(out).toHaveLength(certificateTemplates.length + 1)
+  })
+
+  it("custom templates can never become system/read-only or steal the default slot", () => {
+    const sneaky = { ...custom, isSystem: true, isDefault: true }
+    const kept = mergeCertificateTemplates(certificateTemplates, [sneaky]).find((t) => t.id === custom.id)!
+    expect(kept.isSystem).toBe(false)
+    expect(kept.isDefault).toBe(false)
+  })
+
+  it("drops malformed custom entries instead of crashing the loader", () => {
+    const out = mergeCertificateTemplates(certificateTemplates, [{ id: "tcustom-bad" }])
+    expect(out.some((t) => t.id === "tcustom-bad")).toBe(false)
+    expect(out).toHaveLength(certificateTemplates.length)
   })
 })
 

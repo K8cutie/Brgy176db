@@ -5,6 +5,8 @@ import { getJSON, setJSON } from './storageNamespaced';
 import { getCurrentUserName } from './session';
 import { getParishName, getFullAddress, getPriestName } from './parishConfig';
 import type { AuditLogEntry } from './settingsData';
+import type { CalendarEvent } from './calendarData';
+import { todayISO } from './massIntentions';
 
 /* ═══════════════════════════════════════════════════════════════════
    TYPES
@@ -20,6 +22,9 @@ export interface RegistryAnnotation {
   type: RegistryAnnotationType;
   text: string;
   by: string;
+  /** Canonical registers strike through, never erase: a voided annotation
+   *  stays in the margin, rendered struck-through. Absent = live. */
+  voided?: boolean;
 }
 
 // SHARED CONTRACT — soft delete. Absent fields = live record, so all stored
@@ -912,7 +917,7 @@ export function replaceTokens(template: string, record: RegistryRecord, opts?: R
     .replace(/\{\{parish_name\}\}/g, e(getParishName()))
     .replace(/\{\{parish_address\}\}/g, e(getFullAddress()))
     .replace(/\{\{priest_name\}\}/g, e(getPriestName()))
-    .replace(/\{\{date_today\}\}/g, lit(formatPhilippineDate(new Date().toISOString().split('T')[0])))
+    .replace(/\{\{date_today\}\}/g, lit(formatPhilippineDate(todayISO())))
     .replace(/\{\{copy_watermark\}\}/g, lit(opts?.isCopy ? COPY_WATERMARK_HTML : ''));
 
   if (isBaptismRecord(record)) {
@@ -1016,7 +1021,7 @@ export interface AutoAnnotationPayload {
 /** Canonical wording for auto-generated margin notes. Defensive: missing
  *  payload fields degrade to shorter sentences, never "undefined". */
 export function buildAutoAnnotation(type: RegistryAnnotationType, payload: AutoAnnotationPayload = {}): RegistryAnnotation {
-  const date = payload.date || new Date().toISOString().split('T')[0];
+  const date = payload.date || todayISO(); // local — UTC is a day off before 8 AM PH time
   const when = formatPhilippineDate(date);
   const at = payload.parish ? ` at ${payload.parish}` : '';
   const reg = payload.registryNumber ? ` (Reg. ${payload.registryNumber})` : '';
@@ -1048,6 +1053,63 @@ export function buildAutoAnnotation(type: RegistryAnnotationType, payload: AutoA
     text,
     by: payload.by || getCurrentUserName(),
   };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ANNOTATION CORRECTIONS & VOIDING — pure helpers
+   Canonical registers strike through, never erase: history is voided
+   (rendered struck-through) and corrected with a new dated note.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** True when `ann` is the LIVE auto-annotation that a confirmation/marriage/
+ *  death record with this registry number produced — the canonical wording
+ *  from buildAutoAnnotation embeds "(Reg. <n>)", which is the only reference
+ *  the margin note carries back to its source record. */
+export function annotationReferencesRecord(
+  ann: RegistryAnnotation,
+  type: RegistryAnnotationType,
+  registryNumber: string,
+): boolean {
+  if (!registryNumber) return false;
+  return ann.type === type && !ann.voided && ann.text.includes(`(Reg. ${registryNumber})`);
+}
+
+/** Margin note appended when the source record of an auto-annotation is
+ *  archived: the previous note is voided, never deleted. */
+export function buildArchiveCorrectionAnnotation(
+  sourceType: 'confirmation' | 'marriage' | 'death',
+  sourceRegistryNumber: string,
+  archivedOn?: string,
+  by?: string,
+): RegistryAnnotation {
+  const date = archivedOn || todayISO(); // local — UTC is a day off before 8 AM PH time
+  const label = sourceType.charAt(0).toUpperCase() + sourceType.slice(1);
+  return {
+    id: newAnnotationId(),
+    date,
+    type: 'correction',
+    text: `${label} record ${sourceRegistryNumber} archived on ${formatPhilippineDate(date)} — previous note void`,
+    by: by || getCurrentUserName(),
+  };
+}
+
+/** Returns a copy with the annotation marked voided (struck through). The
+ *  annotation is never removed; the original record is not mutated. */
+export function voidAnnotation<T extends Annotatable>(record: T, annotationId: string): T {
+  return {
+    ...record,
+    annotations: (record.annotations ?? []).map((a) => (a.id === annotationId ? { ...a, voided: true } : a)),
+  };
+}
+
+/** Annotations voided in `after` that were still live in `before` — voiding
+ *  is an audited action, so the caller writes one audit line per entry. */
+export function newlyVoidedAnnotations(
+  before: RegistryAnnotation[] | undefined,
+  after: RegistryAnnotation[] | undefined,
+): RegistryAnnotation[] {
+  const alreadyVoided = new Set((before ?? []).filter((a) => a.voided).map((a) => a.id));
+  return (after ?? []).filter((a) => a.voided && !alreadyVoided.has(a.id));
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1090,6 +1152,131 @@ export function findBaptismCandidates(
     if (aExact !== bExact) return aExact - bExact;
     return (b.dateOfBaptism || '').localeCompare(a.dateOfBaptism || '');
   });
+}
+
+/** Resolve the ONE baptism record a cross-record auto-annotation (marriage/
+ *  death) should land on. The explicit directory link wins; otherwise only an
+ *  UNAMBIGUOUS exact-name match — with namesakes we cannot know whose baptism
+ *  this is, so `ambiguous` is returned and annotation is left to the operator.
+ *  Soft-deleted records are never candidates. */
+export function resolveBaptismForAnnotation(
+  records: BaptismRecord[],
+  query: { parishionerId?: string; first: string; last: string },
+): { target?: BaptismRecord; ambiguous: boolean } {
+  const linked = query.parishionerId
+    ? records.find((b) => !b.isDeleted && b.childParishionerId === query.parishionerId)
+    : undefined;
+  if (linked) return { target: linked, ambiguous: false };
+  const exact = findBaptismCandidates(query.first, query.last, undefined, records).filter(
+    (b) => norm(b.childFirstName) === norm(query.first) && norm(b.childLastName) === norm(query.last),
+  );
+  if (exact.length > 1) return { ambiguous: true };
+  return { target: exact[0], ambiguous: false };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REGISTRY → PARISH CALENDAR — pure builder for the "Auto-add to parish
+   calendar" checkbox. Produces the exact CalendarEvent shape CalendarPage/
+   RequestsPage read from KEYS.calendarEvents; the caller appends it via the
+   storage seam and stores the REAL event id on the record.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** Registry schedule times are 12-hour ("9:00 AM"); CalendarEvent wants
+ *  24-hour "HH:MM". Unparseable input falls back to 09:00. */
+export function to24Hour(time: string): string {
+  const t = (time || '').trim();
+  const ampm = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(t);
+  if (ampm) {
+    let h = parseInt(ampm[1], 10) % 12;
+    if (ampm[3].toUpperCase() === 'PM') h += 12;
+    return `${String(h).padStart(2, '0')}:${ampm[2]}`;
+  }
+  const plain = /^(\d{1,2}):(\d{2})$/.exec(t);
+  if (plain) return `${plain[1].padStart(2, '0')}:${plain[2]}`;
+  return '09:00';
+}
+
+function addMinutesTo24h(hhmm: string, minutes: number): string {
+  const [h = 0, m = 0] = hhmm.split(':').map(Number);
+  const total = (((h * 60 + m + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+// Same titles the ScheduleSection checkbox previews (Event: "…").
+function registryEventTitle(r: RegistryRecord): string {
+  if (isBaptismRecord(r)) return `Baptism: ${r.childLastName}, ${[r.childFirstName, r.childMiddleName].filter(Boolean).join(' ')}`;
+  if (isMarriageRecord(r)) return `Wedding: ${r.groomFirstName} ${r.groomLastName} & ${r.brideFirstName} ${r.brideLastName}`;
+  if (isConfirmationRecord(r)) return `Confirmation: ${r.confirmandLastName}, ${[r.confirmandFirstName, r.confirmandMiddleName].filter(Boolean).join(' ')}`;
+  return `Burial: ${[r.deceasedFirstName, r.deceasedMiddleName, r.deceasedLastName].filter(Boolean).join(' ')}`;
+}
+
+function registryPersonSummary(r: RegistryRecord): string {
+  if (isBaptismRecord(r)) return `${r.childLastName}, ${r.childFirstName}`;
+  if (isMarriageRecord(r)) return `${r.groomFirstName} ${r.groomLastName} & ${r.brideFirstName} ${r.brideLastName}`;
+  if (isConfirmationRecord(r)) return `${r.confirmandLastName}, ${r.confirmandFirstName}`;
+  return `${r.deceasedLastName}, ${r.deceasedFirstName}`;
+}
+
+/** Build a real parish-calendar event from a registry record's schedule
+ *  fields. Always PRIVATE (isPublic false) — the title carries parishioner
+ *  names, so publishing to the public calendar stays opt-in on the Calendar
+ *  page. Ceremony duration defaults to one hour, like RequestsPage. */
+export function buildRegistryCalendarEvent(record: RegistryRecord): CalendarEvent {
+  const recordType: NonNullable<CalendarEvent['sacramentRecordType']> =
+    isBaptismRecord(record) ? 'baptism'
+    : isMarriageRecord(record) ? 'marriage'
+    : isConfirmationRecord(record) ? 'confirmation'
+    : 'death';
+  // Calendar lanes: a marriage books the Wedding lane; a death books Death.
+  const eventType: CalendarEvent['type'] =
+    recordType === 'baptism' ? 'Baptism'
+    : recordType === 'marriage' ? 'Wedding'
+    : recordType === 'confirmation' ? 'Confirmation'
+    : 'Death';
+  const startTime = to24Hour(record.scheduledTime);
+  return {
+    id: `evt-reg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: registryEventTitle(record),
+    type: eventType,
+    date: record.scheduledDate,
+    startTime,
+    endTime: addMinutesTo24h(startTime, 60),
+    location: record.scheduledLocation,
+    officiant: record.scheduledOfficiant,
+    description: `From the sacramental registry — Reg. ${record.registryNumber}`,
+    isPublic: false,
+    sacramentRecordId: record.id,
+    sacramentRecordType: recordType,
+    sacramentSummary: registryPersonSummary(record),
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CERTIFICATE TEMPLATE MERGE — pure core of the RegistryPage loader
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** Merge stored template edits/copies with the shipped defaults:
+ *  - saved entries whose id matches a default OVERRIDE that default;
+ *  - defaults with no saved entry ship as-is (new templates keep working);
+ *  - saved entries with UNKNOWN ids are user duplicates — preserved, but
+ *    forced editable (never system) and never allowed to steal the default
+ *    slot; malformed entries are dropped instead of crashing the loader. */
+export function mergeCertificateTemplates(
+  defaults: CertificateTemplate[],
+  saved: Partial<CertificateTemplate>[],
+): CertificateTemplate[] {
+  if (!saved.length) return defaults.map((t) => ({ ...t }));
+  const byId = new Map(saved.map((t) => [t.id, t]));
+  const defaultIds = new Set(defaults.map((t) => t.id));
+  const merged = defaults.map((t) => {
+    const override = byId.get(t.id);
+    return override ? { ...t, ...override } : { ...t };
+  });
+  const custom = saved.filter(
+    (t): t is CertificateTemplate =>
+      !!t.id && !defaultIds.has(t.id) && typeof t.name === 'string' && typeof t.html === 'string' && !!t.sacrament,
+  );
+  return [...merged, ...custom.map((t) => ({ ...t, description: t.description ?? '', isSystem: false, isDefault: false }))];
 }
 
 /* ═══════════════════════════════════════════════════════════════════

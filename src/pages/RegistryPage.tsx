@@ -32,6 +32,7 @@ import {
   Sparkles,
   Archive,
   Link2,
+  Ban,
 } from 'lucide-react';
 import DataTable from '@/components/DataTable';
 import type { Column } from '@/components/DataTable';
@@ -72,8 +73,16 @@ import {
   buildAutoAnnotation,
   newAnnotationId,
   findBaptismCandidates,
+  resolveBaptismForAnnotation,
+  annotationReferencesRecord,
+  buildArchiveCorrectionAnnotation,
+  voidAnnotation,
+  newlyVoidedAnnotations,
+  buildRegistryCalendarEvent,
+  mergeCertificateTemplates,
   appendRegistryAudit,
 } from '@/lib/registryData';
+import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
 import { getCertificateTokens, getCurrencySymbol, getParishName } from '@/lib/parishConfig';
 import {
   BARANGAYS,
@@ -94,6 +103,7 @@ import { usePersistedState } from '@/hooks/usePersistedState';
 import { KEYS } from '@/lib/storageKeys';
 import * as ns from '@/lib/storageNamespaced';
 import { getCurrentUserName } from '@/lib/session';
+import { todayISO } from '@/lib/massIntentions';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -356,8 +366,6 @@ function restoreRecord<T extends SoftDeletable>(r: T): T {
   return copy;
 }
 
-const normName = (s: string) => (s || '').trim().toLowerCase();
-
 const annotationTypeColors: Record<RegistryAnnotationType, string> = {
   confirmation: '#C9963B',
   marriage: '#6B2737',
@@ -387,28 +395,49 @@ type CertificateTemplate = (typeof certificateTemplates)[number];
 const CERT_TEMPLATES_KEY = 'certificate_templates';
 
 // Load templates: any edits saved by the user override the module defaults
-// (matched by id); new/unknown ids in the default set are always included so
-// shipping new templates keeps working. Returns a fresh array each call.
+// (matched by id); defaults without a saved entry are always included so
+// shipping new templates keeps working; saved templates with NON-default ids
+// (user duplicates) are preserved too. Returns a fresh array each call.
 function loadCertificateTemplates(): CertificateTemplate[] {
   const saved = ns.getJSON<Partial<CertificateTemplate>[]>(CERT_TEMPLATES_KEY, []);
-  if (!saved.length) return certificateTemplates.map((t) => ({ ...t }));
-  const byId = new Map(saved.map((t) => [t.id, t]));
-  return certificateTemplates.map((t) => {
-    const override = byId.get(t.id);
-    return override ? { ...t, ...override } : { ...t };
-  });
+  return mergeCertificateTemplates(certificateTemplates, saved);
 }
 
 function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
   return ns.setJSON(CERT_TEMPLATES_KEY, templates);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Auto-add to parish calendar                                        */
+/* ------------------------------------------------------------------ */
+// Writes a REAL CalendarEvent (same store + seed fallback CalendarPage and
+// RequestsPage use) and stores its id on the record. An existing link is
+// reused, never duplicated; unchecking the box does not delete a previously
+// created event — staff manage the calendar itself. Returns true only when
+// an event was actually created.
+function maybeAddToCalendar(record: RegistryRecord, autoCalendar: boolean): boolean {
+  if (!autoCalendar || record.calendarEventId) return false;
+  const ev = buildRegistryCalendarEvent(record);
+  const current = ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
+  ns.setJSON(KEYS.calendarEvents, [...current, ev]);
+  record.calendarEventId = ev.id;
+  return true;
+}
+
+// Honest toast: "calendar event created" is only claimed when one was written.
+const calendarSaveToast = (label: string, autoCal: boolean, created: boolean): [string, ToastType] =>
+  created
+    ? [`${label} recorded and calendar event created`, 'success']
+    : autoCal
+      ? [`${label} record saved (already linked to a calendar event)`, 'success']
+      : [`${label} record saved. You can schedule the ceremony later from the calendar.`, 'info'];
+
 const defaultPaymentInfo = (ceremonyFee: number): PaymentInfo => ({
   status: 'collect_now', // DEFAULT: always collect now; other options require override
   amount: ceremonyFee,
   method: 'Cash',
   receiptNumber: '',
-  date: new Date().toISOString().split('T')[0],
+  date: todayISO(), // local date — UTC default is yesterday before 8 AM PH time
   receivedBy: 'Secretary',
   waiveReason: 'Financial hardship',
   waiveApprovedBy: 'Fr. Reyes',
@@ -602,10 +631,48 @@ export default function RegistryPage() {
     const id = deleteDialog.id;
     const target = activeData().find((r) => r.id === id);
     const by = getCurrentUserName();
+    // NOTE: the linked calendar event (calendarEventId) is deliberately NOT
+    // removed here — the ceremony may proceed even when the register entry is
+    // archived (e.g. re-entered under a corrected name); staff manage the
+    // parish calendar itself.
     if (activeTab === 'baptism') setBData((prev) => prev.map((r) => (r.id === id ? softDelete(r, by) : r)));
     if (activeTab === 'marriage') setMData((prev) => prev.map((r) => (r.id === id ? softDelete(r, by) : r)));
     if (activeTab === 'confirmation') setCData((prev) => prev.map((r) => (r.id === id ? softDelete(r, by) : r)));
     if (activeTab === 'death') setDData((prev) => prev.map((r) => (r.id === id ? softDelete(r, by) : r)));
+
+    // Canonical registers strike through, never erase: if this confirmation/
+    // marriage/death record auto-annotated a baptism margin, void that note
+    // and append a dated correction instead of deleting history. (Restoring
+    // the record does NOT undo this — a fresh note is the canonical fix.)
+    if (target && activeTab !== 'baptism') {
+      const annType = activeTab; // 'marriage' | 'confirmation' | 'death' — all valid annotation types
+      const reg = target.registryNumber;
+      const affected = bData.filter(
+        (b) => !b.isDeleted && (b.annotations ?? []).some((a) => annotationReferencesRecord(a, annType, reg)),
+      );
+      if (affected.length) {
+        // Corrections are built OUTSIDE the updater so ids/audits stay stable
+        // even if React invokes the updater twice (StrictMode).
+        const correctionById = new Map(affected.map((b) => [b.id, buildArchiveCorrectionAnnotation(annType, reg)]));
+        setBData((prev) => prev.map((b) => {
+          const correction = correctionById.get(b.id);
+          if (!correction) return b;
+          let nextB = b;
+          for (const a of (b.annotations ?? []).filter((x) => annotationReferencesRecord(x, annType, reg))) {
+            nextB = voidAnnotation(nextB, a.id);
+          }
+          return addAnnotation(nextB, correction);
+        }));
+        for (const b of affected) {
+          appendRegistryAudit(
+            'Annotated',
+            b.id,
+            `Correction annotation added to baptism record ${b.registryNumber} — ${activeConfig.label.toLowerCase()} record ${reg} archived, previous note voided`,
+          );
+        }
+      }
+    }
+
     setDeleteDialog({ open: false, id: '' });
     appendRegistryAudit('Deleted', id, `Archived ${activeConfig.label.toLowerCase()} record${target ? ` for ${getPersonName(target, activeTab)}` : ''} (soft delete)`);
     addToast('Record archived — restore it any time from the Archived view', 'success');
@@ -654,17 +721,10 @@ export default function RegistryPage() {
         // Prefer the explicit directory link; otherwise only an UNAMBIGUOUS
         // exact-name match — with namesakes we cannot know whose baptism this
         // is, so annotation is left to the operator.
-        const linked = s.pid ? next.find((b) => !b.isDeleted && b.childParishionerId === s.pid) : undefined;
-        let target = linked;
-        if (!target) {
-          const exactMatches = findBaptismCandidates(s.first, s.last, undefined, next).filter(
-            (b) => normName(b.childFirstName) === normName(s.first) && normName(b.childLastName) === normName(s.last),
-          );
-          if (exactMatches.length > 1) {
-            addToast(`Multiple baptism records match ${s.first} ${s.last} — annotate manually`, 'warning');
-            continue;
-          }
-          target = exactMatches[0];
+        const { target, ambiguous } = resolveBaptismForAnnotation(next, { parishionerId: s.pid, first: s.first, last: s.last });
+        if (ambiguous) {
+          addToast(`Multiple baptism records match ${s.first} ${s.last} — annotate manually`, 'warning');
+          continue;
         }
         if (!target) continue;
         const ann = buildAutoAnnotation('marriage', {
@@ -680,6 +740,28 @@ export default function RegistryPage() {
         setBData(next);
         addToast(annotated === 1 ? 'Baptism record annotated' : 'Baptism records annotated (both spouses)', 'success');
       }
+    } else if (activeTab === 'death') {
+      const d = saved as DeathRecord;
+      // Same rule as the marriage path: the directory link wins; otherwise
+      // only an unambiguous exact-name match — namesakes are skipped loudly.
+      const { target, ambiguous } = resolveBaptismForAnnotation(bData, {
+        parishionerId: d.deceasedParishionerId,
+        first: d.deceasedFirstName,
+        last: d.deceasedLastName,
+      });
+      if (ambiguous) {
+        addToast(`Multiple baptism records match ${d.deceasedFirstName} ${d.deceasedLastName} — annotate manually`, 'warning');
+        return;
+      }
+      if (!target) return;
+      const ann = buildAutoAnnotation('death', {
+        date: d.dateOfDeath,
+        cemetery: d.cemetery,
+        registryNumber: d.registryNumber,
+      });
+      setBData((prev) => prev.map((b) => (b.id === target.id ? addAnnotation(b, ann) : b)));
+      appendRegistryAudit('Annotated', target.id, `Death annotation added to baptism record ${target.registryNumber}`);
+      addToast('Baptism record annotated', 'success');
     }
   };
 
@@ -752,6 +834,17 @@ export default function RegistryPage() {
       record.id,
       `${isEditSave ? 'Edited' : 'Created'} ${activeConfig.label.toLowerCase()} record for ${getPersonName(record, activeTab)}`,
     );
+    // Voiding a margin note is an audited action — one line per annotation
+    // struck through in this edit (they persist with the record, never erased).
+    if (isEditSave && editingRecord) {
+      for (const a of newlyVoidedAnnotations(editingRecord.annotations, record.annotations)) {
+        appendRegistryAudit(
+          'Annotation voided',
+          record.id,
+          `Voided ${a.type} annotation "${a.text}" on ${activeConfig.label.toLowerCase()} record for ${getPersonName(record, activeTab)}`,
+        );
+      }
+    }
     if (!isEditSave) autoAnnotateBaptisms(record);
     syncDirectorySacramentLinks(record);
 
@@ -2069,8 +2162,13 @@ function RecordModal({
   const handleAddAnnotation = (annType: RegistryAnnotationType, text: string) => {
     setAnnotations((prev) => [
       ...prev,
-      { id: newAnnotationId(), date: new Date().toISOString().split('T')[0], type: annType, text, by: getCurrentUserName() },
+      { id: newAnnotationId(), date: todayISO(), type: annType, text, by: getCurrentUserName() },
     ]);
+  };
+  // Void = strike through, never erase. Persisted with the record on Save;
+  // handleSaveRecord writes one audit line per newly-voided annotation.
+  const handleVoidAnnotation = (id: string) => {
+    setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, voided: true } : a)));
   };
 
   /* ── BAPTISM FORM STATE ── */
@@ -2418,13 +2516,14 @@ function RecordModal({
         notations: bForm.notations || '', status: (bForm.status as 'Active') || 'Active',
         scheduledDate: bForm.scheduledDate || bForm.dateOfBaptism!, scheduledTime: bForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: bForm.scheduledOfficiant || bForm.officiant!, scheduledLocation: bForm.scheduledLocation || baptismLocations[0],
-        calendarEventId: bAutoCalendar ? genId('cal') : undefined,
+        calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
+      const calCreated = maybeAddToCalendar(newRecord, bAutoCalendar);
       onSave(newRecord);
       processPayment(newRecord);
-      onToast(bAutoCalendar ? 'Baptism recorded and calendar event created' : 'Baptism record saved. You can schedule the ceremony later from the calendar.', bAutoCalendar ? 'success' : 'info');
+      onToast(...calendarSaveToast('Baptism', bAutoCalendar, calCreated));
     } else if (sacrament === 'marriage') {
       if (!validateMarriage()) return;
       const newRecord: MarriageRecord = {
@@ -2441,13 +2540,14 @@ function RecordModal({
         notations: mForm.notations || '', status: (mForm.status as 'Active') || 'Active',
         scheduledDate: mForm.scheduledDate || mForm.dateOfMarriage!, scheduledTime: mForm.scheduledTime || '10:00 AM',
         scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mForm.scheduledLocation || marriageLocations[0],
-        calendarEventId: mAutoCalendar ? genId('cal') : undefined,
+        calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
+      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar);
       onSave(newRecord);
       processPayment(newRecord);
-      onToast(mAutoCalendar ? 'Marriage recorded and calendar event created' : 'Marriage record saved. You can schedule the ceremony later from the calendar.', mAutoCalendar ? 'success' : 'info');
+      onToast(...calendarSaveToast('Marriage', mAutoCalendar, calCreated));
     } else if (sacrament === 'confirmation') {
       if (!validateConfirmation()) return;
       const newRecord: ConfirmationRecord = {
@@ -2463,13 +2563,14 @@ function RecordModal({
         notations: cForm.notations || '', status: (cForm.status as 'Active') || 'Active',
         scheduledDate: cForm.scheduledDate || cForm.dateOfConfirmation!, scheduledTime: cForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: cForm.scheduledOfficiant || cForm.officiant!, scheduledLocation: cForm.scheduledLocation || confirmationLocations[0],
-        calendarEventId: cAutoCalendar ? genId('cal') : undefined,
+        calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
+      const calCreated = maybeAddToCalendar(newRecord, cAutoCalendar);
       onSave(newRecord);
       processPayment(newRecord);
-      onToast(cAutoCalendar ? 'Confirmation recorded and calendar event created' : 'Confirmation record saved. You can schedule the ceremony later from the calendar.', cAutoCalendar ? 'success' : 'info');
+      onToast(...calendarSaveToast('Confirmation', cAutoCalendar, calCreated));
     } else if (sacrament === 'death') {
       if (!validateDeath()) return;
       const newRecord: DeathRecord = {
@@ -2483,13 +2584,14 @@ function RecordModal({
         notations: dForm.notations || '', status: (dForm.status as 'Active') || 'Active',
         scheduledDate: dForm.scheduledDate || dForm.dateOfBurial!, scheduledTime: dForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: dForm.scheduledOfficiant || dForm.officiant!, scheduledLocation: dForm.scheduledLocation || burialLocations[0],
-        calendarEventId: dAutoCalendar ? genId('cal') : undefined,
+        calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
+      const calCreated = maybeAddToCalendar(newRecord, dAutoCalendar);
       onSave(newRecord);
       processPayment(newRecord);
-      onToast(dAutoCalendar ? 'Burial recorded and calendar event created' : 'Burial record saved. You can schedule the ceremony later from the calendar.', dAutoCalendar ? 'success' : 'info');
+      onToast(...calendarSaveToast('Burial', dAutoCalendar, calCreated));
     }
   };
 
@@ -3070,7 +3172,7 @@ function RecordModal({
           )}
 
           {/* ═══ MARGINAL ANNOTATIONS (all sacraments, existing records) ═══ */}
-          {isEdit && <AnnotationsSection annotations={annotations} onAdd={handleAddAnnotation} />}
+          {isEdit && <AnnotationsSection annotations={annotations} onAdd={handleAddAnnotation} onVoid={handleVoidAnnotation} />}
         </div>
 
         {/* Footer */}
@@ -3182,9 +3284,11 @@ function BaptismLinkSection({
 function AnnotationsSection({
   annotations,
   onAdd,
+  onVoid,
 }: {
   annotations: RegistryAnnotation[];
   onAdd: (type: RegistryAnnotationType, text: string) => void;
+  onVoid: (id: string) => void;
 }) {
   const [annType, setAnnType] = useState<RegistryAnnotationType>('note');
   const [annText, setAnnText] = useState('');
@@ -3210,14 +3314,24 @@ function AnnotationsSection({
       ) : (
         <div className="mt-3 space-y-2">
           {sorted.map((a) => (
-            <div key={a.id} className="flex items-start gap-2 p-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50">
+            <div key={a.id} className={`flex items-start gap-2 p-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50 ${a.voided ? 'opacity-70' : ''}`}>
               <AnnotationTypeBadge type={a.type} />
               <div className="flex-1 min-w-0">
-                <p className="body-sm text-charcoal dark:text-dm-text">{a.text}</p>
+                <p className={`body-sm ${a.voided ? 'line-through text-warm-gray dark:text-dm-text-muted' : 'text-charcoal dark:text-dm-text'}`}>{a.text}</p>
                 <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-0.5">
-                  {formatDate(a.date)} — {a.by}
+                  {formatDate(a.date)} — {a.by}{a.voided ? ' — voided' : ''}
                 </p>
               </div>
+              {!a.voided && (
+                <button
+                  type="button"
+                  onClick={() => onVoid(a.id)}
+                  className="p-1 rounded text-warm-gray hover:text-error hover:bg-error/10 transition-colors flex-shrink-0"
+                  title="Void this annotation — struck through, never deleted (audited on save)"
+                >
+                  <Ban className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -3653,6 +3767,31 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
     if (original) setHtml(original.html);
   };
 
+  // The escape hatch the read-only toast promises: copy the active template
+  // (including any unsaved editor changes) to a new EDITABLE id. The loader
+  // preserves non-default ids, so duplicates survive reloads and appear in
+  // the certificate modal for their sacrament.
+  const handleDuplicate = () => {
+    const copy: CertificateTemplate = {
+      ...activeTmpl,
+      id: `tcustom-${Date.now()}`,
+      name: `${activeTmpl.name} (Custom)`,
+      isSystem: false,
+      isDefault: false,
+      html,
+    };
+    const next = [...templates, copy];
+    const ok = saveCertificateTemplates(next);
+    if (!ok) {
+      onToast('Could not duplicate template — storage is full', 'error');
+      return;
+    }
+    setTemplates(next);
+    setActiveTmplId(copy.id);
+    setHtml(copy.html);
+    onToast(`Duplicated as "${copy.name}" — this copy is editable`, 'success');
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -3674,6 +3813,10 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
             <h2 className="heading-lg text-charcoal dark:text-dm-text">Template Editor</h2>
           </div>
           <div className="flex items-center gap-2">
+            <button onClick={handleDuplicate} className="cos-btn cos-btn-secondary h-8 px-3 text-xs" title="Copy this template to a new editable one">
+              <Copy className="w-3.5 h-3.5" />
+              Duplicate
+            </button>
             <button onClick={handleReset} className="cos-btn cos-btn-secondary h-8 px-3 text-xs">
               <RotateCcw className="w-3.5 h-3.5" />
               Reset

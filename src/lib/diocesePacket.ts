@@ -6,6 +6,8 @@
 // ═══════════════════════════════════════════════════════════
 
 import { getParishIdentity, type ParishIdentity, type DioceseConnection, type SyncRecord } from './parishIdentity';
+import { getModuleRegistry } from './moduleRegistry';
+import { getAttendanceSummary } from './attendance';
 import * as ns from './storageNamespaced';
 import { KEYS } from './storageKeys';
 
@@ -16,7 +18,7 @@ function liveRecords(key: string): unknown[] {
   return list.filter((r) => !r?.isDeleted);
 }
 
-export type SyncScope = 'financial_summary' | 'sacramental_counts' | 'collection_summary' | 'parish_status';
+export type SyncScope = 'financial_summary' | 'sacramental_counts' | 'collection_summary' | 'parish_status' | 'attendance_summary';
 
 // ── The packet sent to diocese ──
 export interface DiocesePacket {
@@ -33,6 +35,7 @@ export interface DiocesePacket {
   sacramentalCounts?: SacramentalCounts;
   collectionSummary?: CollectionSummary;
   parishStatus?: ParishStatus;
+  attendanceSummary?: AttendanceSummaryPacket;
   // Digital integrity check (not cryptographic — just a basic hash)
   checksum: string;
 }
@@ -78,6 +81,14 @@ interface ParishStatus {
   parishionerCount?: number;
 }
 
+// Privacy-safe Mass attendance rollup — counts only, never names.
+interface AttendanceSummaryPacket {
+  eventsCounted: number;
+  totalHeadcount: number;
+  averageHeadcount: number;
+  byMonth: Record<string, { events: number; total: number }>;
+}
+
 // ── Generate packet ──
 export function generateDiocesePacket(
   scope: SyncScope[],
@@ -114,6 +125,9 @@ export function generateDiocesePacket(
   }
   if (scope.includes('parish_status')) {
     packet.parishStatus = buildParishStatus(identity);
+  }
+  if (scope.includes('attendance_summary')) {
+    packet.attendanceSummary = getAttendanceSummary();
   }
 
   packet.checksum = generateChecksum(packet);
@@ -216,7 +230,10 @@ function buildParishStatus(identity: ParishIdentity): ParishStatus {
 
   return {
     priest: identity.priest,
-    activeModules: identity.modules.filter(m => m.enabled).map(m => m.id),
+    // Single source of truth: the toggleable module registry (Settings →
+    // Modules), NOT parishIdentity's legacy hardcoded module list — that copy
+    // never reflected user toggles and was missing newer modules entirely.
+    activeModules: getModuleRegistry().filter(m => m.enabled).map(m => m.id),
     fiscalYearEnd: identity.fiscalYearEnd,
     lastUpdated: identity.updatedAt,
     sacramentalRegistryTotal: registryTotal,

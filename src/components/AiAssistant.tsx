@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Sparkles, Send, X, KeyRound } from 'lucide-react';
+import { buildAiContext, isAiContextEnabled, setAiContextEnabled, pageNameFromPath } from '@/lib/aiContext';
 
 // The preload bridge (desktop only). Undefined in a plain browser build.
 interface AiBridge {
@@ -29,7 +30,10 @@ type Msg = { role: 'user' | 'assistant'; content: string };
 export default function AiAssistant() {
   const ai = bridge();
   const navigate = useNavigate();
+  const location = useLocation();
   const [open, setOpen] = useState(false);
+  // Parish-context bridge: on by default, persisted opt-out.
+  const [contextOn, setContextOn] = useState(() => isAiContextEnabled());
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [keyInput, setKeyInput] = useState('');
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -58,6 +62,13 @@ export default function AiAssistant() {
     setKeyInput('');
   };
 
+  const toggleContext = () => {
+    setContextOn((v) => {
+      setAiContextEnabled(!v);
+      return !v;
+    });
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || busy) return;
@@ -67,7 +78,14 @@ export default function AiAssistant() {
     setInput('');
     setBusy(true);
     try {
-      const res = await ai.chat(next);
+      // Context bridge: prepend the parish/app context to the OUTBOUND copy of
+      // the latest message only — the transcript shown in the panel stays clean.
+      // buildAiContext degrades to '' on any failure, which sends without context.
+      const contextBlock = contextOn ? buildAiContext(location.pathname) : '';
+      const outbound = contextBlock
+        ? [...messages, { role: 'user' as const, content: `${contextBlock}\n\nUser message: ${text}` }]
+        : next;
+      const res = await ai.chat(outbound);
       if (res.ok) {
         if (res.text) setMessages((m) => [...m, { role: 'assistant', content: res.text! }]);
         if (res.navigate?.page && PAGE_PATHS[res.navigate.page]) {
@@ -153,6 +171,21 @@ export default function AiAssistant() {
                 ))}
                 {busy && <div className="text-xs text-warm-gray italic">Thinking…</div>}
                 {error && <div className="text-xs text-error">{error}</div>}
+              </div>
+
+              {/* Context indicator + persisted opt-out toggle */}
+              <div className="border-t border-parchment dark:border-dm-border px-3 py-1.5 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-[11px] text-warm-gray" title={contextOn ? 'Your parish name, current page, enabled modules, and record counts are attached to each message. No individual records or names are shared.' : 'Messages are sent without any parish context.'}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${contextOn ? 'bg-success' : 'bg-parchment dark:bg-dm-border'}`} />
+                  {contextOn ? `Parish context attached (${pageNameFromPath(location.pathname)})` : 'Parish context off'}
+                </span>
+                <button
+                  onClick={toggleContext}
+                  aria-label={contextOn ? 'Turn off parish context' : 'Turn on parish context'}
+                  className={`relative w-8 h-4 rounded-full transition-colors flex-shrink-0 ${contextOn ? 'bg-gold' : 'bg-parchment dark:bg-dm-border'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${contextOn ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
               </div>
 
               <div className="border-t border-parchment dark:border-dm-border p-2 flex items-end gap-2">

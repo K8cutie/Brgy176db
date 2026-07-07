@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -19,6 +20,7 @@ import {
   ScrollText,
 } from 'lucide-react';
 import { canSeeDiocese } from '@/lib/dioceseAccess';
+import { getModuleRegistry, subscribeModules, getModulesSnapshot } from '@/lib/moduleRegistry';
 
 interface NavItem {
   label: string;
@@ -31,30 +33,37 @@ interface NavSection {
   items: NavItem[];
 }
 
-const navSections: NavSection[] = [
+// Short sidebar labels + rendered icons per module id. Routes and enabled
+// state come from the module registry — this map only styles the entry.
+const MODULE_NAV_META: Record<string, { label: string; icon: React.ElementType }> = {
+  dashboard: { label: 'Dashboard', icon: LayoutDashboard },
+  registry: { label: 'Registry', icon: BookOpen },
+  directory: { label: 'Directory', icon: Users },
+  calendar: { label: 'Calendar', icon: Calendar },
+  intentions: { label: 'Intentions', icon: ScrollText },
+  requests: { label: 'Requests', icon: Inbox },
+  finance: { label: 'Finance', icon: DollarSign },
+  ministries: { label: 'Ministries', icon: UserCheck },
+  ssdm: { label: 'SSDM', icon: Heart },
+  reports: { label: 'Reports', icon: FileText },
+};
+
+// Section grouping (preserved from the original hardcoded nav). Module entries
+// are resolved against the registry and hidden when the module is disabled;
+// static items (non-module system pages) are always shown.
+const SECTION_LAYOUT: Array<{ title: string; moduleIds: string[]; staticItems?: NavItem[] }> = [
   {
     title: 'PARISH',
-    items: [
-      { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
-      { label: 'Registry', icon: BookOpen, path: '/registry' },
-      { label: 'Directory', icon: Users, path: '/directory' },
-      { label: 'Calendar', icon: Calendar, path: '/calendar' },
-      { label: 'Intentions', icon: ScrollText, path: '/intentions' },
-      { label: 'Requests', icon: Inbox, path: '/requests' },
-    ],
+    moduleIds: ['dashboard', 'registry', 'directory', 'calendar', 'intentions', 'requests'],
   },
   {
     title: 'ADMIN',
-    items: [
-      { label: 'Finance', icon: DollarSign, path: '/finance' },
-      { label: 'Ministries', icon: UserCheck, path: '/ministries' },
-      { label: 'SSDM', icon: Heart, path: '/ssdm' },
-    ],
+    moduleIds: ['finance', 'ministries', 'ssdm'],
   },
   {
     title: 'SYSTEM',
-    items: [
-      { label: 'Reports', icon: FileText, path: '/reports' },
+    moduleIds: ['reports'],
+    staticItems: [
       { label: 'Import Data', icon: Upload, path: '/import' },
       { label: 'Settings', icon: Settings, path: '/settings' },
     ],
@@ -68,6 +77,26 @@ interface SidebarProps {
 
 export default function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
   const location = useLocation();
+
+  // Re-render immediately when a module is toggled in Settings — the nav item
+  // appears/disappears without a reload.
+  useSyncExternalStore(subscribeModules, getModulesSnapshot);
+  const registry = getModuleRegistry();
+
+  const navSections: NavSection[] = SECTION_LAYOUT.map((section) => ({
+    title: section.title,
+    items: [
+      ...section.moduleIds
+        .map((id) => registry.find((m) => m.id === id))
+        .filter((m): m is NonNullable<typeof m> => !!m && m.enabled)
+        .map((m) => ({
+          label: MODULE_NAV_META[m.id]?.label ?? m.name,
+          icon: MODULE_NAV_META[m.id]?.icon ?? LayoutDashboard,
+          path: m.route,
+        })),
+      ...(section.staticItems ?? []),
+    ],
+  }));
 
   // Diocese entry only exists for cloud diocese_admin/bishop (same gate as the
   // /diocese route). Everyone else keeps the exact same sections array.

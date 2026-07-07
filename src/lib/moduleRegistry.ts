@@ -4,6 +4,8 @@
 // The diocese can recommend standard modules but the parish decides.
 // ═══════════════════════════════════════════════════════════
 
+import * as nsStore from './storageNamespaced';
+
 export interface ChurchOSModule {
   id: string;
   name: string;
@@ -57,6 +59,11 @@ const MODULE_REGISTRY: ChurchOSModule[] = [
     enabled: true, dioceseRecommended: true, dependencies: [], dioceseData: true,
   },
   {
+    id: 'intentions', name: 'Mass Intentions', description: 'Mass intention register (Canon 958) — offerings, celebrant, fulfillment',
+    category: 'pastoral', icon: 'ScrollText', route: '/intentions', version: '1.0',
+    enabled: true, dioceseRecommended: true, dependencies: [], dioceseData: false,
+  },
+  {
     id: 'ministries', name: 'Ministries', description: 'Ministry rosters and assignments',
     category: 'pastoral', icon: 'Users2', route: '/ministries', version: '1.0',
     enabled: true, dioceseRecommended: true, dependencies: [], dioceseData: false,
@@ -75,20 +82,67 @@ const MODULE_REGISTRY: ChurchOSModule[] = [
   },
 ];
 
+// ── Overrides store ──
+// Namespaced short key (the bare churchos_module_overrides key also migrates
+// via parishIdentity's migrateToNamespacedStorage list, same as import_history).
+const MODULE_OVERRIDES_KEY = 'module_overrides';
+const LEGACY_OVERRIDES_KEY = 'churchos_module_overrides';
+
+type ModuleOverrides = Record<string, { enabled?: boolean }>;
+
+function readOverrides(): ModuleOverrides {
+  const stored = nsStore.getJSON<ModuleOverrides | null>(MODULE_OVERRIDES_KEY, null);
+  if (stored !== null && typeof stored === 'object') return stored;
+  // One-time lazy migration from the old bare localStorage key so existing
+  // parish toggles survive the move onto the namespaced seam.
+  try {
+    const legacy = typeof localStorage !== 'undefined' ? localStorage.getItem(LEGACY_OVERRIDES_KEY) : null;
+    if (legacy) {
+      const parsed = JSON.parse(legacy) as ModuleOverrides;
+      nsStore.setJSON(MODULE_OVERRIDES_KEY, parsed);
+      return parsed;
+    }
+  } catch { /* ignore — fall through to empty */ }
+  return {};
+}
+
+function writeOverrides(overrides: ModuleOverrides): void {
+  nsStore.setJSON(MODULE_OVERRIDES_KEY, overrides);
+  notifyModulesChanged();
+}
+
+// ── Change subscription ──
+// Lets React surfaces (Sidebar, Settings, page banners) re-render immediately
+// when a module is toggled, via useSyncExternalStore(subscribeModules, getModulesSnapshot).
+type ModulesListener = () => void;
+const listeners = new Set<ModulesListener>();
+let modulesVersion = 0;
+
+export function subscribeModules(listener: ModulesListener): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+export function getModulesSnapshot(): number {
+  return modulesVersion;
+}
+
+function notifyModulesChanged(): void {
+  modulesVersion++;
+  listeners.forEach((fn) => fn());
+}
+
 // ── Get registry ──
 export function getModuleRegistry(): ChurchOSModule[] {
-  // Merge with any stored overrides from parish identity
-  try {
-    const stored = localStorage.getItem('churchos_module_overrides');
-    if (stored) {
-      const overrides = JSON.parse(stored) as Record<string, { enabled?: boolean }>;
-      return MODULE_REGISTRY.map(m => ({
-        ...m,
-        ...(overrides[m.id] || {}),
-      }));
-    }
-  } catch { /* ignore */ }
-  return MODULE_REGISTRY;
+  const overrides = readOverrides();
+  // Only the `enabled` flag is overridable — everything else (routes, deps,
+  // categories) stays code-defined so stored junk can't corrupt the registry.
+  return MODULE_REGISTRY.map((m) => {
+    const o = overrides[m.id];
+    return typeof o?.enabled === 'boolean' && m.category !== 'core'
+      ? { ...m, enabled: o.enabled }
+      : { ...m };
+  });
 }
 
 // ── Get modules by category ──
@@ -106,35 +160,84 @@ export function getDioceseDataModules(): ChurchOSModule[] {
   return getModuleRegistry().filter(m => m.dioceseData && m.enabled);
 }
 
-// ── Toggle module ──
-export function toggleModule(moduleId: string): boolean {
-  const overrides: Record<string, { enabled: boolean }> = {};
-  try {
-    const stored = localStorage.getItem('churchos_module_overrides');
-    if (stored) Object.assign(overrides, JSON.parse(stored));
-  } catch { /* ignore */ }
+// ── Dependency lookups ──
+// Enabled modules that (transitively) depend on the given module — i.e. what
+// else would stop working if this were turned off.
+export function getEnabledDependents(moduleId: string): ChurchOSModule[] {
+  const registry = getModuleRegistry();
+  const found = new Map<string, ChurchOSModule>();
+  const visit = (id: string) => {
+    for (const m of registry) {
+      if (m.enabled && m.dependencies.includes(id) && !found.has(m.id)) {
+        found.set(m.id, m);
+        visit(m.id);
+      }
+    }
+  };
+  visit(moduleId);
+  return [...found.values()];
+}
 
-  const mod = MODULE_REGISTRY.find(m => m.id === moduleId);
-  if (!mod) return false;
+// Disabled modules the given module (transitively) depends on — i.e. what must
+// also be turned on for this module to work.
+export function getDisabledDependencies(moduleId: string): ChurchOSModule[] {
+  const registry = getModuleRegistry();
+  const byId = new Map(registry.map((m) => [m.id, m]));
+  const found = new Map<string, ChurchOSModule>();
+  const visit = (id: string) => {
+    const mod = byId.get(id);
+    if (!mod) return;
+    for (const depId of mod.dependencies) {
+      const dep = byId.get(depId);
+      if (dep && !dep.enabled && !found.has(dep.id)) {
+        found.set(dep.id, dep);
+        visit(dep.id);
+      }
+    }
+  };
+  visit(moduleId);
+  return [...found.values()];
+}
 
-  // Can't disable core modules
-  if (mod.category === 'core') return false;
+// ── Set module state (with dependency enforcement both ways) ──
+// Enabling a module also enables its (transitive) disabled dependencies;
+// disabling a module also disables its (transitive) enabled dependents.
+// Returns the list of module ids whose state actually changed, or null when
+// the request is not allowed (unknown module, or a core module).
+export function setModuleEnabled(moduleId: string, enabled: boolean): string[] | null {
+  const registry = getModuleRegistry();
+  const mod = registry.find(m => m.id === moduleId);
+  if (!mod) return null;
+  if (mod.category === 'core') return null; // core modules are always on
 
-  // Check dependencies
-  const currentState = overrides[moduleId]?.enabled ?? mod.enabled;
-  const newState = !currentState;
+  const overrides = readOverrides();
+  const changed: string[] = [];
+  const apply = (m: ChurchOSModule, state: boolean) => {
+    if (m.enabled === state) return;
+    overrides[m.id] = { enabled: state };
+    changed.push(m.id);
+  };
 
-  if (newState === false) {
-    // Disabling — check if other modules depend on this
-    const dependents = MODULE_REGISTRY.filter(
-      m => m.enabled && m.dependencies.includes(moduleId)
-    );
-    if (dependents.length > 0) return false;
+  if (enabled) {
+    for (const dep of getDisabledDependencies(moduleId)) apply(dep, true);
+    apply(mod, true);
+  } else {
+    apply(mod, false);
+    for (const dependent of getEnabledDependents(moduleId)) apply(dependent, false);
   }
 
-  overrides[moduleId] = { enabled: newState };
-  localStorage.setItem('churchos_module_overrides', JSON.stringify(overrides));
-  return newState;
+  if (changed.length > 0) writeOverrides(overrides);
+  return changed;
+}
+
+// ── Toggle module ──
+// Back-compat wrapper: returns the new state, or false when the toggle is not
+// allowed (core/unknown module). Cascades per setModuleEnabled.
+export function toggleModule(moduleId: string): boolean {
+  const target = !isModuleEnabled(moduleId);
+  const changed = setModuleEnabled(moduleId, target);
+  if (changed === null) return false;
+  return target;
 }
 
 // ── Check if module is enabled ──

@@ -29,6 +29,8 @@ import {
   Ban,
   ArrowRight,
   Smartphone,
+  Users,
+  Church,
 } from 'lucide-react';
 import { format, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, getDay, startOfWeek, endOfWeek, addWeeks, subWeeks, addDays as addDaysFn } from 'date-fns';
 import FullCalendar from '@fullcalendar/react';
@@ -44,6 +46,8 @@ import {
 } from '@/lib/calendarData';
 import type { CalendarEvent, EventType } from '@/lib/calendarData';
 import { baptismRecords, marriageRecords, confirmationRecords, deathRecords } from '@/lib/registryData';
+import { getNotableDays, type LiturgicalDay } from '@/lib/liturgicalCalendar';
+import { getHeadcountForEvent, recordHeadcount, getAttendanceSummary, recentAttendance } from '@/lib/attendance';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { KEYS } from '@/lib/storageKeys';
@@ -94,6 +98,11 @@ export default function CalendarPage() {
   const calendarRef = useRef<FullCalendar>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const inboundHandledRef = useRef(false);
+
+  // Liturgical layer (computed via computus — never hardcoded dates)
+  const [showLiturgical, setShowLiturgical] = usePersistedState<boolean>('calendar_show_liturgical', true);
+  // Bumped whenever a headcount is recorded so the sidebar summary refreshes.
+  const [attendanceVersion, setAttendanceVersion] = useState(0);
 
   // Filtered events
   const filteredEvents = useMemo(() => {
@@ -397,6 +406,33 @@ export default function CalendarPage() {
     });
   }, [filteredEvents, publicView]);
 
+  // Liturgical day chips — all-day, non-draggable, computed for the years
+  // around the visible date (covers every grid the user can reach quickly).
+  const liturgicalFcEvents = useMemo(() => {
+    if (!showLiturgical) return [];
+    const y = currentDate.getFullYear();
+    const color = (d: LiturgicalDay) =>
+      d.rank === 'triduum' ? '#B8322F' : d.rank === 'solemnity' ? '#C9963B' : '#5B3A73';
+    return [y - 1, y, y + 1]
+      .flatMap((yr) => getNotableDays(yr))
+      .map((d) => ({
+        id: `lit-${d.date}-${d.name.replace(/\W+/g, '-')}`,
+        title: d.name,
+        start: d.date,
+        allDay: true,
+        editable: false,
+        backgroundColor: `${color(d)}1F`,
+        borderColor: color(d),
+        textColor: color(d),
+        extendedProps: { liturgical: true, rank: d.rank },
+      }));
+  }, [showLiturgical, currentDate]);
+
+  const allFcEvents = useMemo(
+    () => [...fcEvents, ...liturgicalFcEvents],
+    [fcEvents, liturgicalFcEvents],
+  );
+
   // List view grouped events
   const listEvents = useMemo(() => {
     const sorted = [...filteredEvents].sort((a, b) => {
@@ -537,6 +573,17 @@ export default function CalendarPage() {
                 </button>
               );
             })}
+            {/* Liturgical layer toggle — chips for solemnities, the Triduum, and key feasts */}
+            <button
+              onClick={() => setShowLiturgical(v => !v)}
+              className={`flex items-center gap-1.5 text-sm transition-all ${
+                showLiturgical ? 'opacity-100' : 'opacity-40 line-through'
+              }`}
+              title="Liturgical days — solemnities, the Easter Triduum, and key feasts, computed for each year. Click to show or hide."
+            >
+              <Church className="w-3.5 h-3.5 text-gold" />
+              <span className="text-warm-gray dark:text-dm-text-muted">Liturgical days</span>
+            </button>
           </div>
 
           {/* Calendar Views */}
@@ -554,7 +601,7 @@ export default function CalendarPage() {
                     plugins={[dayGridPlugin, interactionPlugin]}
                     initialView="dayGridMonth"
                     initialDate={currentDate}
-                    events={fcEvents}
+                    events={allFcEvents}
                     editable={true}
                     droppable={true}
                     eventDrop={handleEventDrop}
@@ -597,7 +644,7 @@ export default function CalendarPage() {
                     plugins={[timeGridPlugin, interactionPlugin]}
                     initialView="timeGridWeek"
                     initialDate={currentDate}
-                    events={fcEvents}
+                    events={allFcEvents}
                     editable={true}
                     droppable={true}
                     eventDrop={handleEventDrop}
@@ -645,7 +692,7 @@ export default function CalendarPage() {
                     plugins={[timeGridPlugin, interactionPlugin]}
                     initialView="timeGridDay"
                     initialDate={currentDate}
-                    events={fcEvents}
+                    events={allFcEvents}
                     editable={true}
                     droppable={true}
                     eventDrop={handleEventDrop}
@@ -809,6 +856,10 @@ export default function CalendarPage() {
             </div>
           </div>
 
+          {/* Mass Attendance summary — reads the same storage-seam data the
+              headcount quick action (event popover) writes. */}
+          <AttendanceSidebar version={attendanceVersion} />
+
           {/* Sacrament Schedule Quick View */}
           <SchedulingRulesSidebar />
 
@@ -864,6 +915,7 @@ export default function CalendarPage() {
             publicView={publicView}
             onClose={() => setDetailEvent(null)}
             onEdit={() => openEditEvent(detailEvent)}
+            onHeadcountSaved={() => setAttendanceVersion(v => v + 1)}
           />
         )}
       </AnimatePresence>
@@ -963,6 +1015,54 @@ function MiniCalendar({ currentDate, events, onDateClick }: {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Mass Attendance — Sidebar summary
+   ═══════════════════════════════════════════════════════════════════ */
+
+function AttendanceSidebar({ version }: { version: number }) {
+  // `version` bumps when a headcount is saved so the summary re-reads storage.
+  const summary = useMemo(() => getAttendanceSummary(), [version]);
+  const recent = useMemo(() => recentAttendance(4), [version]);
+
+  return (
+    <div className="cos-card p-4">
+      <h3 className="heading-sm text-charcoal dark:text-dm-text mb-3 flex items-center gap-1.5">
+        <Users className="w-4 h-4 text-gold" />
+        Mass Attendance
+      </h3>
+      {summary.eventsCounted === 0 ? (
+        <p className="text-xs text-warm-gray dark:text-dm-text-muted">
+          No headcounts yet. Open a Mass on the calendar and record one — the parish
+          average appears here and can be shared with the diocese.
+        </p>
+      ) : (
+        <>
+          <div className="flex items-center gap-4 mb-3">
+            <div>
+              <p className="heading-md text-charcoal dark:text-dm-text">{summary.averageHeadcount}</p>
+              <p className="text-[11px] text-warm-gray dark:text-dm-text-muted">avg. headcount</p>
+            </div>
+            <div>
+              <p className="heading-md text-charcoal dark:text-dm-text">{summary.eventsCounted}</p>
+              <p className="text-[11px] text-warm-gray dark:text-dm-text-muted">Masses counted</p>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            {recent.map(r => (
+              <div key={r.id} className="flex items-center justify-between text-xs">
+                <span className="text-warm-gray dark:text-dm-text-muted truncate pr-2">
+                  {format(new Date(r.date + 'T00:00:00'), 'MMM d')} — {r.eventTitle}
+                </span>
+                <span className="font-medium text-charcoal dark:text-dm-text flex-shrink-0">{r.count}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    Sacrament Schedule Quick View — Sidebar
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -1018,15 +1118,40 @@ function SchedulingRulesSidebar() {
    Event Detail Popover (Enhanced with sacrament linkage)
    ═══════════════════════════════════════════════════════════════════ */
 
-function EventDetailPopover({ event, publicView, onClose, onEdit }: {
+function EventDetailPopover({ event, publicView, onClose, onEdit, onHeadcountSaved }: {
   event: CalendarEvent;
   publicView: boolean;
   onClose: () => void;
   onEdit: () => void;
+  onHeadcountSaved?: () => void;
 }) {
   const color = EVENT_COLORS[event.type];
   const displayTitle = publicView ? getPublicTitle(event) : event.title;
   const registryLabel = getRegistryLabel(event);
+
+  // Headcount quick action (Mass events) — persisted through the storage seam.
+  const [headcountInput, setHeadcountInput] = useState(() => {
+    const existing = getHeadcountForEvent(event.id);
+    return existing ? String(existing.count) : '';
+  });
+  const [savedHeadcount, setSavedHeadcount] = useState<number | null>(
+    () => getHeadcountForEvent(event.id)?.count ?? null,
+  );
+  const saveHeadcount = () => {
+    const rec = recordHeadcount({
+      eventId: event.id,
+      eventTitle: event.title,
+      date: event.date,
+      count: Number(headcountInput),
+    });
+    if (rec) {
+      setSavedHeadcount(rec.count);
+      toast.success(`Headcount of ${rec.count} recorded for "${event.title}"`);
+      onHeadcountSaved?.();
+    } else {
+      toast.error('Enter a valid headcount (a whole number, 0 or more).');
+    }
+  };
 
   return (
     <motion.div
@@ -1095,6 +1220,40 @@ function EventDetailPopover({ event, publicView, onClose, onEdit }: {
                   View Full Record
                   <ChevronRight className="w-3 h-3" />
                 </button>
+              </div>
+            )}
+
+            {/* Headcount quick action — Mass events only */}
+            {event.type === 'Mass' && !publicView && (
+              <div className="p-3 rounded-lg bg-cream-dark/40 dark:bg-dm-surface-raised/40 border border-parchment dark:border-dm-border mt-2">
+                <div className="flex items-center gap-2 mb-2">
+                  <Users className="w-4 h-4 text-gold" />
+                  <span className="text-sm font-medium text-charcoal dark:text-dm-text">Attendance headcount</span>
+                  {savedHeadcount !== null && (
+                    <span className="cos-badge text-xs" style={{ backgroundColor: 'rgba(45,106,79,0.1)', color: '#2D6A4F' }}>
+                      {savedHeadcount} recorded
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={headcountInput}
+                    onChange={e => setHeadcountInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveHeadcount(); } }}
+                    placeholder="People at this Mass"
+                    className="flex-1 h-8 px-2 rounded border border-parchment bg-white text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                  />
+                  <button
+                    onClick={saveHeadcount}
+                    disabled={headcountInput.trim() === ''}
+                    className="cos-btn cos-btn-primary text-xs py-1.5 px-3 disabled:opacity-40"
+                  >
+                    {savedHeadcount !== null ? 'Update' : 'Record'}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -1452,11 +1611,11 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
               {locations ? locations.join(' or ') : 'Any location'}
             </span>
           </div>
-          {ruleKey === 'wedding' && 'blockedPeriods' in rules && (
+          {ruleKey === 'wedding' && 'blocksLent' in rules && (
             <div className="flex items-start gap-1.5 mt-1">
               <XCircle className="w-3.5 h-3.5 text-error flex-shrink-0" />
               <span className="text-error">
-                No weddings during Lent
+                No weddings during Lent (Ash Wednesday to Holy Saturday, computed per year)
               </span>
             </div>
           )}

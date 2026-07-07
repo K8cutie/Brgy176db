@@ -1,11 +1,11 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useMemo, useEffect, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, Church, Clock, FileText, Users, ClipboardList,
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
   X, Check, Search, Lock, Unlock, Printer,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
-  Database, Download, FolderOpen,
+  Database, Download, FolderOpen, Puzzle,
 } from 'lucide-react';
 import DataTable, { type Column } from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
@@ -38,7 +38,17 @@ import {
   actionBadgeColors,
 } from '@/lib/settingsData';
 import type { ParishInfo, MassTime, CertificateTemplate, User, AuditLogEntry } from '@/lib/settingsData';
-import { getJSON } from '@/lib/storageNamespaced';
+import { getJSON, setJSON } from '@/lib/storageNamespaced';
+import { getCurrentUserName } from '@/lib/session';
+import {
+  getModuleRegistry,
+  setModuleEnabled,
+  getEnabledDependents,
+  getDisabledDependencies,
+  subscribeModules,
+  getModulesSnapshot,
+  type ChurchOSModule,
+} from '@/lib/moduleRegistry';
 import {
   getAvailableTours,
   getTourStatus,
@@ -1921,6 +1931,179 @@ function GuidedToursSection() {
 }
 
 // ═════════════════════════════════════════════════════════════════
+//  SECTION 8: MODULES
+// ═════════════════════════════════════════════════════════════════
+
+const MODULE_CATEGORY_LABELS: Record<ChurchOSModule['category'], string> = {
+  core: 'Core',
+  sacramental: 'Sacramental',
+  financial: 'Financial',
+  pastoral: 'Pastoral',
+  administrative: 'Administrative',
+};
+
+// Same persisted 'audit_log' store + entry shape as FinancePage's
+// appendFinanceAudit, so module changes show up in the Audit Log section
+// alongside finance decisions.
+function appendModuleAudit(action: string, recordId: string, details: string): void {
+  const log = getJSON<AuditLogEntry[]>('audit_log', []);
+  const entry: AuditLogEntry = {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    user: getCurrentUserName(),
+    action,
+    table: 'Modules',
+    recordId,
+    details,
+    ipAddress: 'local',
+  };
+  setJSON('audit_log', [entry, ...log]);
+}
+
+function ModulesSection() {
+  // Subscribe so this section (and the sidebar, via the same store) re-renders
+  // the moment a toggle changes — no reload needed anywhere.
+  useSyncExternalStore(subscribeModules, getModulesSnapshot);
+  const registry = getModuleRegistry();
+  const [confirmDisable, setConfirmDisable] = useState<{ mod: ChurchOSModule; dependents: ChurchOSModule[] } | null>(null);
+
+  const nameOf = (id: string) => registry.find((m) => m.id === id)?.name ?? id;
+
+  const applyChange = (mod: ChurchOSModule, enabled: boolean) => {
+    const changed = setModuleEnabled(mod.id, enabled);
+    if (!changed || changed.length === 0) return;
+    const others = changed.filter((id) => id !== mod.id).map(nameOf);
+    appendModuleAudit(
+      enabled ? 'Enabled' : 'Disabled',
+      mod.id,
+      `${enabled ? 'Enabled' : 'Disabled'} module "${mod.name}"` +
+        (others.length > 0 ? ` (also ${enabled ? 'enabled' : 'disabled'}: ${others.join(', ')})` : ''),
+    );
+  };
+
+  const handleToggle = (mod: ChurchOSModule) => {
+    if (mod.enabled) {
+      // Disabling — if enabled modules depend on this one, warn before
+      // cascading the disable to them.
+      const dependents = getEnabledDependents(mod.id);
+      if (dependents.length > 0) {
+        setConfirmDisable({ mod, dependents });
+        return;
+      }
+      applyChange(mod, false);
+    } else {
+      // Enabling — setModuleEnabled also turns on any disabled dependencies
+      // (the inline text below the toggle says so beforehand).
+      applyChange(mod, true);
+    }
+  };
+
+  const categories: ChurchOSModule['category'][] = ['core', 'sacramental', 'financial', 'pastoral', 'administrative'];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="heading-lg text-charcoal dark:text-dm-text">Modules</h2>
+      </div>
+
+      <div className="p-3 rounded-lg bg-info/10 border border-info/20 flex items-start gap-2">
+        <Puzzle className="w-4 h-4 text-info flex-shrink-0 mt-0.5" />
+        <span className="text-sm text-info">
+          Turn ChurchOS features on or off for this parish. Changes apply immediately and are
+          recorded in the Audit Log. A module that is turned off disappears from the sidebar,
+          but its page stays reachable by direct link and shows a notice — nothing is deleted.
+        </span>
+      </div>
+
+      {categories.map((cat) => {
+        const mods = registry.filter((m) => m.category === cat);
+        if (mods.length === 0) return null;
+        return (
+          <div key={cat} className="cos-card p-0 overflow-hidden">
+            <div className="px-5 py-3 bg-cream-dark/50 dark:bg-dm-surface-raised border-b border-parchment/40 dark:border-dm-border">
+              <span className="heading-sm text-charcoal dark:text-dm-text">{MODULE_CATEGORY_LABELS[cat]}</span>
+            </div>
+            <div className="divide-y divide-parchment/30 dark:divide-dm-border">
+              {mods.map((mod) => {
+                const disabledDeps = getDisabledDependencies(mod.id);
+                const dependents = mod.enabled ? getEnabledDependents(mod.id) : [];
+                return (
+                  <div key={mod.id} className="px-5 py-4 flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-medium text-charcoal dark:text-dm-text">{mod.name}</h3>
+                        <span className="cos-badge cos-badge-default text-[10px]">v{mod.version}</span>
+                        {mod.category === 'core' && (
+                          <span className="cos-badge cos-badge-default text-[10px] inline-flex items-center gap-1">
+                            <Lock className="w-3 h-3" /> Always on
+                          </span>
+                        )}
+                        {mod.dioceseRecommended && (
+                          <span className="cos-badge cos-badge-info text-[10px]">Diocese recommended</span>
+                        )}
+                      </div>
+                      <p className="body-sm text-warm-gray mt-0.5">{mod.description}</p>
+                      {mod.dependencies.length > 0 && (
+                        <p className="text-xs text-warm-gray mt-1">
+                          Requires: {mod.dependencies.map(nameOf).join(', ')}
+                          {!mod.enabled && disabledDeps.length > 0 &&
+                            ` — turning this on also turns on ${disabledDeps.map((d) => d.name).join(', ')}`}
+                        </p>
+                      )}
+                      {dependents.length > 0 && (
+                        <p className="text-xs text-warning mt-1">
+                          Used by {dependents.map((d) => d.name).join(', ')} — turning this off turns{' '}
+                          {dependents.length > 1 ? 'them' : 'it'} off too.
+                        </p>
+                      )}
+                    </div>
+                    {mod.category !== 'core' && (
+                      <button
+                        onClick={() => handleToggle(mod)}
+                        className={cn(
+                          'relative w-14 h-7 rounded-full transition-colors duration-200 shrink-0',
+                          mod.enabled ? 'bg-gold' : 'bg-warm-gray/30'
+                        )}
+                        role="switch"
+                        aria-checked={mod.enabled}
+                        aria-label={`${mod.enabled ? 'Disable' : 'Enable'} ${mod.name}`}
+                      >
+                        <span
+                          className={cn(
+                            'absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white shadow-sm transition-transform duration-200',
+                            mod.enabled ? 'translate-x-7' : 'translate-x-0'
+                          )}
+                        />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Cascade warning before disabling a module others depend on */}
+      <ConfirmationDialog
+        isOpen={!!confirmDisable}
+        title="Turn Off Module"
+        message={confirmDisable
+          ? `"${confirmDisable.mod.name}" is used by ${confirmDisable.dependents.map((d) => d.name).join(', ')}. Turning it off will also turn ${confirmDisable.dependents.length > 1 ? 'those modules' : 'that module'} off. Continue?`
+          : ''}
+        confirmLabel="Turn Off"
+        variant="warning"
+        onConfirm={() => {
+          if (confirmDisable) applyChange(confirmDisable.mod, false);
+          setConfirmDisable(null);
+        }}
+        onCancel={() => setConfirmDisable(null)}
+      />
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════
 //  MAIN SETTINGS PAGE
 // ═════════════════════════════════════════════════════════════════
 
@@ -2139,12 +2322,13 @@ const settingsNavItems = [
   { id: 'fees', label: 'Fee Schedule', icon: DollarSign },
   { id: 'templates', label: 'Certificate Templates', icon: FileText },
   { id: 'users', label: 'Users', icon: Users },
+  { id: 'modules', label: 'Modules', icon: Puzzle },
   { id: 'data', label: 'Backup', icon: Database },
   { id: 'audit', label: 'Audit Log', icon: ClipboardList },
   { id: 'tours', label: 'Guided Tours', icon: HelpCircle },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'users' | 'data' | 'audit' | 'tours';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'users' | 'modules' | 'data' | 'audit' | 'tours';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -2207,6 +2391,8 @@ export default function SettingsPage() {
         return <CertificateTemplatesSection />;
       case 'users':
         return <UserManagementSection />;
+      case 'modules':
+        return <ModulesSection />;
       case 'data':
         return <BackupSection />;
       case 'audit':

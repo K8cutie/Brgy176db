@@ -10,7 +10,7 @@ export interface DioceseConnection {
   dioceseName: string;
   connectedAt?: string;
   lastSyncAt?: string;
-  syncScope: Array<'financial_summary' | 'sacramental_counts' | 'parish_status' | 'collection_summary'>;
+  syncScope: Array<'financial_summary' | 'sacramental_counts' | 'parish_status' | 'collection_summary' | 'attendance_summary'>;
   syncHistory: SyncRecord[];
 }
 
@@ -56,6 +56,10 @@ export interface ParishIdentity {
   fiscalYearEnd: string; // MM-DD
   currency: string;
   timezone: string;
+  /** @deprecated Legacy snapshot kept only for stored-identity compatibility.
+   *  The single source of truth for module enablement is lib/moduleRegistry
+   *  (toggleable in Settings → Modules). Do NOT read this for behavior —
+   *  it never reflects user toggles. */
   modules: ParishModule[];
   dioceseConnection: DioceseConnection;
   createdAt: string;
@@ -217,24 +221,10 @@ function getDefaultModules(): ParishModule[] {
   ];
 }
 
-// ── Module management ──
-export function getEnabledModules(): ParishModule[] {
-  return getParishIdentity().modules.filter(m => m.enabled);
-}
-
-export function isModuleEnabled(moduleId: string): boolean {
-  return getParishIdentity().modules.find(m => m.id === moduleId)?.enabled ?? false;
-}
-
-export function toggleModule(moduleId: string) {
-  const identity = getParishIdentity();
-  const mod = identity.modules.find(m => m.id === moduleId);
-  if (mod) {
-    mod.enabled = !mod.enabled;
-    saveParishIdentity(identity);
-  }
-  return getParishIdentity();
-}
+// NOTE: the legacy module-management functions (getEnabledModules /
+// isModuleEnabled / toggleModule) were removed — they operated on the
+// deprecated identity.modules snapshot and clashed by name with the real
+// implementations in lib/moduleRegistry. Use moduleRegistry everywhere.
 
 // ── Namespaced storage key generator ──
 export function getNamespacedKey(key: string): string {
@@ -252,6 +242,7 @@ export function migrateToNamespacedStorage() {
     'parishioner_directory', 'calendar_events', 'mass_schedule',
     'journal_entries', 'collections', 'accounts_receivable',
     'audit_log', 'fee_override_audit', 'settings', 'import_history',
+    'module_overrides',
   ];
 
   for (const key of keysToMigrate) {

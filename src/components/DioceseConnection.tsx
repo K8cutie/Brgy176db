@@ -122,6 +122,7 @@ export default function DioceseConnection() {
     sacramental_counts: { label: 'Sacramental Counts', desc: 'Number of baptisms, weddings, confirmations, burials (no names)' },
     collection_summary: { label: 'Collection Summary', desc: 'Sunday collection totals by Mass time' },
     parish_status: { label: 'Parish Status', desc: 'Current priest, active modules, fiscal year' },
+    attendance_summary: { label: 'Mass Attendance', desc: 'Headcount totals and monthly averages (counts only, no names)' },
   };
 
   return (

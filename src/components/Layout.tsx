@@ -4,6 +4,7 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import Footer from './Footer';
 import PracticeModeBanner from './PracticeModeBanner';
+import ModuleDisabledBanner from './ModuleDisabledBanner';
 import { useDarkMode } from '@/hooks/useDarkMode';
 import { Toaster } from 'sonner';
 
@@ -58,6 +59,9 @@ export default function Layout({ children }: LayoutProps) {
         {/* Page Content */}
         <main className="flex-1 px-6 py-6">
           <div className="max-w-content mx-auto">
+            {/* Notice when the current page's module is toggled off (nav-level
+                hiding only — routes stay mounted, see ModuleDisabledBanner). */}
+            <ModuleDisabledBanner />
             {children}
           </div>
         </main>
