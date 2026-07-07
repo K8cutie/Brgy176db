@@ -14,7 +14,7 @@
 
 import { getJSON, setJSON } from './storageNamespaced';
 import { KEYS } from './storageKeys';
-import { journalEntries as JOURNAL_SEED, formatPeso } from './financeData';
+import { journalEntries as JOURNAL_SEED, formatPeso, getAmountApprovalLevel } from './financeData';
 import type { JournalEntry } from './financeData';
 import { SAMPLE_EVENTS } from './calendarData';
 import type { CalendarEvent } from './calendarData';
@@ -274,6 +274,13 @@ export function recordStipendForIntention(id: string, postedBy?: string): Record
     ?? { ...target, stipendRecorded: true, stipendJournalId: entry.id };
   appendIntentionAudit('Created', entry.id,
     `Posted Mass-intention stipend ${formatPeso(stipend)} — "${target.intention}" (${reference})`, 'Finance');
+  // Stipends are far below the ₱100k threshold in practice, but the same
+  // large-receipt flag as donor contributions is applied for consistency, so
+  // both direct-post receipt paths behave identically if a figure is ever large.
+  if (getAmountApprovalLevel(stipend).label !== 'Direct Post') {
+    appendIntentionAudit('Flagged', entry.id,
+      `Large receipt for council review — ${formatPeso(stipend)} stipend (${reference}) recorded and posted; review recommended`, 'Finance');
+  }
   return { status: 'recorded', entry, intention };
 }
 

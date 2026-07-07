@@ -16,7 +16,7 @@
 
 import { getJSON, setJSON } from './storageNamespaced';
 import { KEYS } from './storageKeys';
-import { journalEntries as JOURNAL_SEED, formatPeso } from './financeData';
+import { journalEntries as JOURNAL_SEED, formatPeso, getAmountApprovalLevel } from './financeData';
 import type { JournalEntry } from './financeData';
 import { toCentavos } from './ledger';
 import { todayISO } from './massIntentions';
@@ -191,10 +191,17 @@ export function addPledge(input: Omit<Pledge, 'id'>): Pledge | null {
 
 // ── OFFICIAL RECEIPT numbering ──
 // Per-parish sequential series stored via the seam. One series per year;
-// a year rollover STARTS a new series and PRESERVES the old one, so a number,
-// once issued, is never reused — even if a late entry is receipted into a
-// prior year. Single-writer desktop model: read-modify-write through the
-// synchronous seam is atomic enough (no concurrent writers per parish).
+// a year rollover STARTS a new series and PRESERVES the old one, so within
+// normal operation a number, once issued, is not reused — even if a late entry
+// is receipted into a prior year. Single-writer desktop model: read-modify-write
+// through the synchronous seam is atomic enough (no concurrent writers per parish).
+//
+// LIMITATION (client-side): the counter lives in local storage, so RESTORING AN
+// OLDER BACKUP rewinds lastNumber and the next issue can re-emit a number that
+// was already printed. This cannot be prevented purely client-side. Operator
+// guidance after any restore: reconcile against the printed OR log and, if the
+// series regressed, bump lastNumber past the highest number already issued
+// before recording new contributions.
 export interface OrSeries {
   prefix: string;
   year: number;
@@ -308,6 +315,15 @@ export function ensureContributionPosted(
     ?? { ...target, journalEntryId: entry.id };
   appendDonorAudit('Created', entry.id,
     `Official Receipt ${reference} — donation ${formatPeso(amount)} from ${donor?.name ?? 'donor'} posted to ledger`, 'Finance');
+  // A receipt is cash already in hand, so it posts immediately rather than
+  // waiting on approval (approval routing is for disbursements — the canonical
+  // "extraordinary administration" control). But a large receipt is flagged in
+  // the audit log for the finance council, using the same ≥₱100k threshold that
+  // routes a manual journal entry to Council Review.
+  if (getAmountApprovalLevel(amount).label !== 'Direct Post') {
+    appendDonorAudit('Flagged', entry.id,
+      `Large receipt for council review — ${formatPeso(amount)} donation (OR ${reference}) recorded and posted; review recommended`, 'Finance');
+  }
   return { status: 'posted', entry, contribution };
 }
 
