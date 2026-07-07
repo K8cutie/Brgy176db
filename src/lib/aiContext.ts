@@ -76,7 +76,9 @@ export function buildAiContext(pathname: string): string {
       lines.push(`Mass attendance: ${attendance.eventsCounted} Masses counted, average headcount ${attendance.averageHeadcount}`);
     }
     lines.push('Answer with this parish context in mind. Do not repeat the context back unless asked.');
-    return lines.join('\n');
+    // Hard cap — this block is prepended to every assistant message, so honour
+    // the "compact" contract even if some upstream field grows unexpectedly.
+    return lines.join('\n').slice(0, 2500);
   } catch {
     return ''; // no context is always a safe fallback
   }

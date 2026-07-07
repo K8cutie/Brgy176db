@@ -9,7 +9,9 @@ import type {
 import type { Family } from './directoryData';
 import type { CalendarEvent } from './calendarData';
 import type { JournalEntry, Collection } from './financeData';
-import { getLeafAccounts } from './financeData';
+import { getLeafAccounts, getAmountApprovalLevel, formatPeso } from './financeData';
+import { getCurrentUserName } from './session';
+import type { AuditLogEntry } from './settingsData';
 import * as nsStore from './storageNamespaced';
 
 // ── Import Types ──
@@ -727,6 +729,27 @@ const genderOf = (v?: string): 'Male' | 'Female' =>
 
 const SCHED_DEFAULTS = { scheduledDate: '', scheduledTime: '', scheduledOfficiant: '', scheduledLocation: '' };
 
+/**
+ * Audit trail — SAME 'audit_log' key + entry shape donors.appendDonorAudit /
+ * massIntentions.appendIntentionAudit write (which mirror FinancePage's
+ * appendFinanceAudit), so import flags show up in the Settings audit view
+ * alongside finance ones.
+ */
+function appendFinanceAudit(action: string, recordId: string, details: string, table = 'Finance'): void {
+  const log = nsStore.getJSON<AuditLogEntry[]>('audit_log', []);
+  const entry: AuditLogEntry = {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    user: getCurrentUserName(),
+    action,
+    table,
+    recordId,
+    details,
+    ipAddress: 'local',
+  };
+  nsStore.setJSON('audit_log', [entry, ...log]);
+}
+
 let importSeq = 0;
 
 export function buildImportedRecord(
@@ -904,6 +927,16 @@ export function buildImportedRecord(
     totalDr: amount,
     totalCr: amount,
   };
+
+  // Imported historical rows stay 'Posted' — they are already-happened facts and
+  // making them Pending would break the imported books. But a large legacy row is
+  // flagged in the audit log for the finance council, using the same ≥₱100k
+  // threshold that routes a manual journal entry to Council Review (identical to
+  // donors.recordDonorContribution / massIntentions' direct-post receipt paths).
+  if (getAmountApprovalLevel(amount).label !== 'Direct Post') {
+    appendFinanceAudit('Flagged', record.id,
+      `Large historical entry imported — ${formatPeso(amount)} (${record.reference}) recorded to ledger; review recommended`);
+  }
   return { store: 'journalEntries', record };
 }
 

@@ -17,6 +17,7 @@ import {
   resolveBaptismForAnnotation,
   to24Hour,
   buildRegistryCalendarEvent,
+  annotateEventWithSchedulingRules,
   mergeCertificateTemplates,
   liveOnly,
   softDelete,
@@ -32,6 +33,7 @@ import {
   type CertificateTemplate,
 } from "./registryData"
 import { mergeFamilies, mergeParishioners, families, type Family, type Parishioner } from "./directoryData"
+import type { CalendarEvent } from "./calendarData"
 
 const baptism = (): BaptismRecord => ({ ...baptismRecords[0] })
 const marriage = (): MarriageRecord => ({ ...marriageRecords[0] })
@@ -331,6 +333,53 @@ describe("registry → calendar event", () => {
   })
 })
 
+describe("annotateEventWithSchedulingRules", () => {
+  const baseEvent = (over: Partial<CalendarEvent>): CalendarEvent => ({
+    id: "evt-x",
+    title: "Wedding: Test",
+    type: "Wedding",
+    date: "2026-11-16",
+    startTime: "14:00",
+    endTime: "15:00",
+    location: "Main Church",
+    officiant: "Fr. Reyes",
+    description: "",
+    isPublic: false,
+    ...over,
+  })
+
+  it("annotates a rule-conflicting event with ruleNotes and surfaces the messages (WARN, still created)", () => {
+    // Non-preferred day + disallowed time + disallowed location → warnings.
+    const { event, errors, warnings } = annotateEventWithSchedulingRules(
+      baseEvent({ type: "Wedding", date: "2026-11-16", startTime: "23:00", location: "Backyard" }),
+    )
+    const messages = [...errors, ...warnings]
+    expect(messages.length).toBeGreaterThan(0)
+    expect(event.ruleNotes).toBe(messages.join(" ")) // same join RequestsPage's modal uses
+    expect(event.id).toBe("evt-x")                    // event still returned, never dropped
+    // No hard errors here, so it counts as rule-enforced (a pastoral warning).
+    expect(event.ruleEnforced).toBe(true)
+  })
+
+  it("leaves a compliant event silent (no notes, ruleEnforced true)", () => {
+    const { event, errors, warnings } = annotateEventWithSchedulingRules(
+      baseEvent({ type: "Death", date: "2026-11-16", startTime: "09:00", location: "Main Church" }),
+    )
+    expect(errors).toEqual([])
+    expect(warnings).toEqual([])
+    expect(event.ruleEnforced).toBe(true)
+    expect(event.ruleNotes).toBeUndefined()
+  })
+
+  it("skips validation for non-sacrament event types (no rule key)", () => {
+    const { event, errors, warnings } = annotateEventWithSchedulingRules(baseEvent({ type: "Mass" }))
+    expect(errors).toEqual([])
+    expect(warnings).toEqual([])
+    expect(event.ruleEnforced).toBe(false) // no rules apply → not "enforced"
+    expect(event.ruleNotes).toBeUndefined()
+  })
+})
+
 describe("mergeCertificateTemplates", () => {
   const custom: CertificateTemplate = {
     id: "tcustom-1",
@@ -368,6 +417,21 @@ describe("mergeCertificateTemplates", () => {
     const out = mergeCertificateTemplates(certificateTemplates, [{ id: "tcustom-bad" }])
     expect(out.some((t) => t.id === "tcustom-bad")).toBe(false)
     expect(out).toHaveLength(certificateTemplates.length)
+  })
+
+  it("a stored override of a default id cannot forge the trust flags or masquerade as non-system", () => {
+    // 't1' ships as isDefault:true, isSystem:true. A malicious stored entry
+    // tries to keep the trusted system slot while swapping the html body (which
+    // renders via dangerouslySetInnerHTML) AND flipping isSystem off.
+    const shipped = certificateTemplates.find((t) => t.id === "t1")!
+    const malicious = { id: "t1", isSystem: false, isDefault: false, html: "<img src=x onerror=alert(1)>" }
+    const merged = mergeCertificateTemplates(certificateTemplates, [malicious]).find((t) => t.id === "t1")!
+    // Trust-critical fields are forced from the shipped default, not the override.
+    expect(merged.isSystem).toBe(shipped.isSystem)   // stays true — cannot be flipped off
+    expect(merged.isDefault).toBe(shipped.isDefault) // stays true — cannot masquerade
+    expect(merged.id).toBe(shipped.id)
+    // Editable content still applies (this is a legitimate edit path).
+    expect(merged.html).toBe("<img src=x onerror=alert(1)>")
   })
 })
 

@@ -79,6 +79,7 @@ import {
   voidAnnotation,
   newlyVoidedAnnotations,
   buildRegistryCalendarEvent,
+  annotateEventWithSchedulingRules,
   mergeCertificateTemplates,
   appendRegistryAudit,
 } from '@/lib/registryData';
@@ -300,6 +301,21 @@ function logFeeOverride(entry: Omit<FeeOverrideAuditEntry, 'id' | 'timestamp' | 
   const hash = auditHash(prevHash + JSON.stringify(base));
   existing.push({ ...base, hash });
   ns.setJSON(KEYS.feeOverrideAudit, existing);
+  // Parity with the donor/waiver path (donors.ts appendDonorAudit → 'Finance'):
+  // ALSO surface this fee override in the Settings → Audit Log view. The
+  // hash-chain write above is the tamper-evident record; this is the readable
+  // 'audit_log' mirror. recordId is the chain entry's own id (no double-count:
+  // one chain write + one audit_log line per override).
+  const overrideLabel =
+    base.overrideType === 'waived' ? 'waived'
+    : base.overrideType === 'bill_later' ? 'billed later'
+    : 'collected';
+  appendRegistryAudit(
+    'Fee override',
+    base.id,
+    `Fee ${overrideLabel} — ${getCurrencySymbol()}${base.amount.toLocaleString()} (${base.sacrament}) for ${base.personName} by ${base.recordedBy}${base.reason ? ` — ${base.reason}` : ''}`,
+    'Finance',
+  );
 }
 
 export function getFeeOverrideAudit(): FeeOverrideAuditEntry[] {
@@ -415,12 +431,25 @@ function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
 // reused, never duplicated; unchecking the box does not delete a previously
 // created event — staff manage the calendar itself. Returns true only when
 // an event was actually created.
-function maybeAddToCalendar(record: RegistryRecord, autoCalendar: boolean): boolean {
+function maybeAddToCalendar(
+  record: RegistryRecord,
+  autoCalendar: boolean,
+  onToast: (message: string, type: ToastType) => void,
+): boolean {
   if (!autoCalendar || record.calendarEventId) return false;
-  const ev = buildRegistryCalendarEvent(record);
+  // Run the same liturgical scheduling rules the CalendarPage drag path and the
+  // RequestsPage CreateCalendarEventModal enforce, so an auto-added event (e.g.
+  // a wedding scheduled in Lent) can't slip in unvalidated. WARN only — a rule
+  // conflict is a pastoral-dispensation matter, never a hard block; the event
+  // is still created, annotated with ruleEnforced/ruleNotes for the calendar.
+  const { event: ev, errors, warnings } = annotateEventWithSchedulingRules(buildRegistryCalendarEvent(record));
   const current = ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
   ns.setJSON(KEYS.calendarEvents, [...current, ev]);
   record.calendarEventId = ev.id;
+  const messages = [...errors, ...warnings];
+  if (messages.length) {
+    onToast(`Calendar event created with a scheduling note: ${messages.join(' ')}`, 'warning');
+  }
   return true;
 }
 
@@ -2520,7 +2549,7 @@ function RecordModal({
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
-      const calCreated = maybeAddToCalendar(newRecord, bAutoCalendar);
+      const calCreated = maybeAddToCalendar(newRecord, bAutoCalendar, onToast);
       onSave(newRecord);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Baptism', bAutoCalendar, calCreated));
@@ -2544,7 +2573,7 @@ function RecordModal({
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
-      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar);
+      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar, onToast);
       onSave(newRecord);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Marriage', mAutoCalendar, calCreated));
@@ -2567,7 +2596,7 @@ function RecordModal({
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
-      const calCreated = maybeAddToCalendar(newRecord, cAutoCalendar);
+      const calCreated = maybeAddToCalendar(newRecord, cAutoCalendar, onToast);
       onSave(newRecord);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Confirmation', cAutoCalendar, calCreated));
@@ -2588,7 +2617,7 @@ function RecordModal({
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
-      const calCreated = maybeAddToCalendar(newRecord, dAutoCalendar);
+      const calCreated = maybeAddToCalendar(newRecord, dAutoCalendar, onToast);
       onSave(newRecord);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Burial', dAutoCalendar, calCreated));

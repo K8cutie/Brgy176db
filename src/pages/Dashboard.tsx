@@ -596,8 +596,12 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent className="pt-0">
               <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-slate-500 mb-2">
-                {['S','M','T','W','T','F','S'].map(d => (
-                  <div key={d} className="py-1">{d}</div>
+                {['S','M','T','W','T','F','S'].map((d, i) => (
+                  // Key by index: the weekday initials repeat (S…S, T…T), so keying
+                  // by the letter fired React's "two children with the same key"
+                  // warning on every Dashboard mount. This header row is positional
+                  // and never reorders, so the index is a stable, unique key.
+                  <div key={i} className="py-1">{d}</div>
                 ))}
               </div>
               <div className="grid grid-cols-7 gap-1">

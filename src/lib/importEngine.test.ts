@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   convertDate,
   validateImportRow,
@@ -11,6 +11,8 @@ import {
   missingRequiredFields,
   type ImportMapping,
 } from './importEngine';
+import { getJSON } from './storageNamespaced';
+import type { AuditLogEntry } from './settingsData';
 import type { BaptismRecord, MarriageRecord } from './registryData';
 import type { Family } from './directoryData';
 import type { JournalEntry } from './financeData';
@@ -307,6 +309,68 @@ describe('buildImportedRecord — finance', () => {
 
   it('returns null for a zero-amount row', () => {
     expect(buildImportedRecord({ date: '2024-02-01', description: 'x', debit: '', credit: '' }, 'finance', 'Admin')).toBeNull();
+  });
+});
+
+// ── Large-historical-entry review trail (import bypasses the finance approval
+//    gate because imported rows are already-happened facts, but a large one is
+//    flagged in the audit log for the finance council — same ≥₱100k threshold
+//    as donors / mass-intention direct-post receipts). ──
+describe('buildImportedRecord — large historical finance row flags the audit log', () => {
+  const readAudit = () => getJSON<AuditLogEntry[]>('audit_log', []);
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('appends a Flagged audit entry for a ≥₱100k imported row (kept Posted)', () => {
+    const built = buildImportedRecord({
+      date: '2020-06-15',
+      description: 'Legacy building fund deposit',
+      accountName: 'Building Fund',
+      reference: 'OR-2020-5001',
+      credit: '5,000,000.00',
+    }, 'finance', 'Admin');
+
+    // The entry itself is still Posted — imported books must not become Pending.
+    expect((built!.record as JournalEntry).status).toBe('Posted');
+
+    const log = readAudit();
+    expect(log).toHaveLength(1);
+    expect(log[0].action).toBe('Flagged');
+    expect(log[0].table).toBe('Finance');
+    expect(log[0].recordId).toBe(built!.record.id);
+    expect(log[0].details).toContain('Large historical entry imported');
+    expect(log[0].details).toContain('OR-2020-5001');
+    // Peso figure of the imported amount appears in the detail.
+    expect(log[0].details).toContain('5,000,000');
+  });
+
+  it('flags exactly at the ₱100,000 threshold', () => {
+    buildImportedRecord({
+      date: '2020-06-15', description: 'Big deposit', accountName: 'General Fund', credit: '100,000.00',
+    }, 'finance', 'Admin');
+    const log = readAudit();
+    expect(log).toHaveLength(1);
+    expect(log[0].action).toBe('Flagged');
+  });
+
+  it('does NOT flag a ₱99,999 imported row (below threshold)', () => {
+    const built = buildImportedRecord({
+      date: '2020-06-15', description: 'Ordinary collection', accountName: 'Sunday Collections', credit: '99,999.00',
+    }, 'finance', 'Admin');
+    expect((built!.record as JournalEntry).status).toBe('Posted');
+    expect(readAudit()).toHaveLength(0);
+  });
+
+  it('does not flag imported registry/directory records (finance-only gate)', () => {
+    buildImportedRecord({
+      registryNumber: 'B-2015-0042', childFirstName: 'Maria Clara Santos',
+      dateOfBirth: '2015-03-15', dateOfBaptism: '2015-05-25',
+      fatherFirstName: 'Juan Santos', motherFirstName: 'Elena Santos',
+      officiant: 'Fr. Reyes', bookNumber: '2', pageNumber: '156',
+    }, 'registry', 'Admin');
+    expect(readAudit()).toHaveLength(0);
   });
 });
 

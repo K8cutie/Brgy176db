@@ -5,9 +5,10 @@ import {
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
   X, Check, Search, Lock, Unlock, Printer,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
-  Database, Download, FolderOpen, Puzzle,
+  Database, Download, FolderOpen, Puzzle, Globe,
 } from 'lucide-react';
 import DataTable, { type Column } from '@/components/DataTable';
+import PortalConfigSection from '@/components/PortalConfigSection';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
 import { getParishConfig, setParishConfig } from '@/lib/parishConfig';
 import {
@@ -2321,6 +2322,7 @@ const settingsNavItems = [
   { id: 'mass', label: 'Mass Schedule', icon: Clock },
   { id: 'fees', label: 'Fee Schedule', icon: DollarSign },
   { id: 'templates', label: 'Certificate Templates', icon: FileText },
+  { id: 'portal', label: 'Public Portal', icon: Globe },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'modules', label: 'Modules', icon: Puzzle },
   { id: 'data', label: 'Backup', icon: Database },
@@ -2328,7 +2330,7 @@ const settingsNavItems = [
   { id: 'tours', label: 'Guided Tours', icon: HelpCircle },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'users' | 'modules' | 'data' | 'audit' | 'tours';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit' | 'tours';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -2389,6 +2391,8 @@ export default function SettingsPage() {
         return <FeeScheduleSection />;
       case 'templates':
         return <CertificateTemplatesSection />;
+      case 'portal':
+        return <PortalConfigSection />;
       case 'users':
         return <UserManagementSection />;
       case 'modules':
@@ -2447,11 +2451,11 @@ export default function SettingsPage() {
             {/* Divider */}
             <div className="my-1 border-t border-parchment/40 dark:border-dm-border" />
 
-            {/* Section: Sacraments */}
+            {/* Section: Sacraments & Online */}
             <div className="px-3 py-1.5">
-              <span className="label text-warm-gray/60">Sacraments</span>
+              <span className="label text-warm-gray/60">Sacraments &amp; Online</span>
             </div>
-            {settingsNavItems.slice(3, 4).map((item) => (
+            {settingsNavItems.slice(3, 5).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2474,7 +2478,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Administration</span>
             </div>
-            {settingsNavItems.slice(4).map((item) => (
+            {settingsNavItems.slice(5).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}

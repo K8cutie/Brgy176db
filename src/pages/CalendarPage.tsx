@@ -47,7 +47,7 @@ import {
 import type { CalendarEvent, EventType } from '@/lib/calendarData';
 import { baptismRecords, marriageRecords, confirmationRecords, deathRecords } from '@/lib/registryData';
 import { getNotableDays, type LiturgicalDay } from '@/lib/liturgicalCalendar';
-import { getHeadcountForEvent, recordHeadcount, getAttendanceSummary, recentAttendance } from '@/lib/attendance';
+import { getHeadcountForEvent, recordHeadcount, getAttendanceSummary, recentAttendance, removeAttendanceForEvent, MAX_HEADCOUNT } from '@/lib/attendance';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { KEYS } from '@/lib/storageKeys';
@@ -195,6 +195,11 @@ export default function CalendarPage() {
   const handleDeleteEvent = useCallback(() => {
     if (editingEvent) {
       setEvents(prev => prev.filter(e => e.id !== editingEvent.id));
+      // Calendar events have no soft-delete, so cascade-remove this event's
+      // headcount too — otherwise it lingers in KEYS.attendance and silently
+      // inflates the attendance summary + the diocese attendance_summary.
+      removeAttendanceForEvent(editingEvent.id);
+      setAttendanceVersion(v => v + 1);
       setModalOpen(false);
       setDeleteDialogOpen(false);
       setEditingEvent(null);
@@ -1137,6 +1142,11 @@ function EventDetailPopover({ event, publicView, onClose, onEdit, onHeadcountSav
   const [savedHeadcount, setSavedHeadcount] = useState<number | null>(
     () => getHeadcountForEvent(event.id)?.count ?? null,
   );
+  // Inline validation: flag an out-of-range figure before it's submitted so a
+  // fat-finger (e.g. 250000000) is caught at the input, not silently stored.
+  const headcountNum = Number(headcountInput);
+  const headcountOverCeiling =
+    headcountInput.trim() !== '' && Number.isFinite(headcountNum) && headcountNum > MAX_HEADCOUNT;
   const saveHeadcount = () => {
     const rec = recordHeadcount({
       eventId: event.id,
@@ -1149,7 +1159,7 @@ function EventDetailPopover({ event, publicView, onClose, onEdit, onHeadcountSav
       toast.success(`Headcount of ${rec.count} recorded for "${event.title}"`);
       onHeadcountSaved?.();
     } else {
-      toast.error('Enter a valid headcount (a whole number, 0 or more).');
+      toast.error(`Enter a valid headcount (a whole number from 0 to ${MAX_HEADCOUNT.toLocaleString()}).`);
     }
   };
 
@@ -1239,21 +1249,32 @@ function EventDetailPopover({ event, publicView, onClose, onEdit, onHeadcountSav
                   <input
                     type="number"
                     min={0}
+                    max={MAX_HEADCOUNT}
                     step={1}
                     value={headcountInput}
                     onChange={e => setHeadcountInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveHeadcount(); } }}
                     placeholder="People at this Mass"
-                    className="flex-1 h-8 px-2 rounded border border-parchment bg-white text-sm text-charcoal placeholder:text-warm-gray focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    aria-invalid={headcountOverCeiling}
+                    className={`flex-1 h-8 px-2 rounded border bg-white text-sm text-charcoal placeholder:text-warm-gray focus:outline-none dark:bg-dm-surface-raised dark:text-dm-text ${
+                      headcountOverCeiling
+                        ? 'border-error focus:border-error'
+                        : 'border-parchment focus:border-gold dark:border-dm-border'
+                    }`}
                   />
                   <button
                     onClick={saveHeadcount}
-                    disabled={headcountInput.trim() === ''}
+                    disabled={headcountInput.trim() === '' || headcountOverCeiling}
                     className="cos-btn cos-btn-primary text-xs py-1.5 px-3 disabled:opacity-40"
                   >
                     {savedHeadcount !== null ? 'Update' : 'Record'}
                   </button>
                 </div>
+                {headcountOverCeiling && (
+                  <p className="text-[11px] text-error mt-1.5">
+                    That headcount looks too high. Enter a number up to {MAX_HEADCOUNT.toLocaleString()}.
+                  </p>
+                )}
               </div>
             )}
 

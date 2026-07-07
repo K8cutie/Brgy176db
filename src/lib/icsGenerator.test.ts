@@ -105,6 +105,31 @@ describe('generatePriestIcs — mass schedule', () => {
     expect(ics).toContain('Novena Mass');
     expect(ics).not.toContain('NaN');
   });
+
+  it('dates a recurring Monday Mass on that local Monday (no UTC off-by-one)', () => {
+    // Regression: the recurring date was derived via toISOString().split('T')[0]
+    // on a LOCAL-midnight Date, which shifts back a day on UTC+ zones (e.g.
+    // Asia/Manila), moving every recurring Mass to the previous calendar day.
+    // The first upcoming Monday computed with LOCAL getters (as the generator now
+    // does) is the date that must appear in the SUMMARY / uid.
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const mon = new Date();
+    while (mon.getDay() !== 1) mon.setDate(mon.getDate() + 1); // next Monday, local
+    const monLocal = `${mon.getFullYear()}-${pad(mon.getMonth() + 1)}-${pad(mon.getDate())}`;
+
+    const ics = generatePriestIcs(
+      { ...baseOpts, days: 14, includeMass: true },
+      { massSchedule: [{ day: 'Monday', time: '6:00 AM', type: 'Daily Mass' }] },
+    );
+
+    // The per-occurrence uid embeds the resolved local date verbatim.
+    expect(ics).toContain(`churchos-mass-Monday-0600-${monLocal}@churchos.local`);
+    // And never the day-before that the toISOString bug produced.
+    const dayBefore = new Date(mon);
+    dayBefore.setDate(dayBefore.getDate() - 1);
+    const dayBeforeLocal = `${dayBefore.getFullYear()}-${pad(dayBefore.getMonth() + 1)}-${pad(dayBefore.getDate())}`;
+    expect(ics).not.toContain(`churchos-mass-Monday-0600-${dayBeforeLocal}@churchos.local`);
+  });
 });
 
 describe('generatePriestIcs — sacraments', () => {

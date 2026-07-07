@@ -5,7 +5,7 @@ import { getJSON, setJSON } from './storageNamespaced';
 import { getCurrentUserName } from './session';
 import { getParishName, getFullAddress, getPriestName } from './parishConfig';
 import type { AuditLogEntry } from './settingsData';
-import type { CalendarEvent } from './calendarData';
+import { validateSchedulingRules, eventTypeToRuleKey, type CalendarEvent } from './calendarData';
 import { todayISO } from './massIntentions';
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1251,6 +1251,38 @@ export function buildRegistryCalendarEvent(record: RegistryRecord): CalendarEven
   };
 }
 
+/** Run the liturgical scheduling rules over a to-be-created calendar event and
+ *  return the event annotated with ruleEnforced/ruleNotes (same fields the
+ *  RequestsPage CreateCalendarEventModal sets) plus the raw errors/warnings so
+ *  the caller can surface them. Pure — mutates nothing, hits no storage.
+ *  A wedding scheduled in Lent produces a warning, NOT an error: it's a
+ *  pastoral-dispensation case, so ruleEnforced stays true and the event is
+ *  still created (the caller only WARNs, never hard-blocks). */
+export function annotateEventWithSchedulingRules(
+  event: CalendarEvent,
+): { event: CalendarEvent; errors: string[]; warnings: string[] } {
+  const ruleKey = eventTypeToRuleKey(event.type);
+  if (!ruleKey || !event.date || !event.startTime) {
+    return { event: { ...event, ruleEnforced: false }, errors: [], warnings: [] };
+  }
+  const { errors, warnings } = validateSchedulingRules(
+    ruleKey,
+    event.date,
+    event.startTime,
+    event.location,
+  );
+  const ruleNotes = [...errors, ...warnings].join(' ');
+  return {
+    event: {
+      ...event,
+      ruleEnforced: errors.length === 0,
+      ruleNotes: ruleNotes || undefined,
+    },
+    errors,
+    warnings,
+  };
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    CERTIFICATE TEMPLATE MERGE — pure core of the RegistryPage loader
    ═══════════════════════════════════════════════════════════════════ */
@@ -1270,7 +1302,15 @@ export function mergeCertificateTemplates(
   const defaultIds = new Set(defaults.map((t) => t.id));
   const merged = defaults.map((t) => {
     const override = byId.get(t.id);
-    return override ? { ...t, ...override } : { ...t };
+    // A stored override may edit a shipped default (name/description/html), but
+    // must NEVER be able to forge the trust-critical fields: id, isSystem and
+    // isDefault always come from the shipped default. Otherwise a malicious
+    // stored entry with id='std-baptism', isSystem:true could swap the html
+    // (rendered via dangerouslySetInnerHTML) while masquerading as a trusted
+    // system template.
+    return override
+      ? { ...t, ...override, id: t.id, isSystem: t.isSystem, isDefault: t.isDefault }
+      : { ...t };
   });
   const custom = saved.filter(
     (t): t is CertificateTemplate =>
@@ -1283,14 +1323,14 @@ export function mergeCertificateTemplates(
    REGISTRY AUDIT — same 'audit_log' key/shape as FinancePage.appendFinanceAudit
    ═══════════════════════════════════════════════════════════════════ */
 
-export function appendRegistryAudit(action: string, recordId: string, details: string): void {
+export function appendRegistryAudit(action: string, recordId: string, details: string, table = 'Registry'): void {
   const log = getJSON<AuditLogEntry[]>('audit_log', []);
   const entry: AuditLogEntry = {
     id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     timestamp: new Date().toISOString(),
     user: getCurrentUserName(),
     action,
-    table: 'Registry',
+    table,
     recordId,
     details,
     ipAddress: 'local',

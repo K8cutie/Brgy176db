@@ -84,6 +84,16 @@ function icsEscape(str: string): string {
     .replace(/\n/g, '\\n');
 }
 
+/* ── Local YYYY-MM-DD for a Date (never UTC) ──
+   A recurring-Mass Date is local midnight; toISOString() would shift it to the
+   previous calendar day on UTC+ zones (the deployment tz), moving every Mass
+   back a day in the export. Derive the date with LOCAL getters, matching
+   liturgicalCalendar.ts. (DTSTART/DTEND keep their correct UTC conversion.) */
+function localDateStr(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 /* ── Format date to ICS DTSTART/DTEND (UTC) ── */
 function icsDateTime(date: string, time: string): string {
   const [year, month, day] = date.split('-').map(Number);
@@ -169,7 +179,7 @@ export function generatePriestIcs(opts: PriestScheduleOptions, data?: PriestSche
       const start = normalizeTime(mass.time);
       const dates = getDatesForDay(mass.day, now, endDate);
       for (const d of dates) {
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = localDateStr(d);
         events.push({
           title: `${mass.type} — ${config.parishShortName}`,
           date: dateStr,

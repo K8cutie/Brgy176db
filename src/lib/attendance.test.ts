@@ -5,6 +5,8 @@ import {
   getHeadcountForEvent,
   getAttendanceSummary,
   recentAttendance,
+  removeAttendanceForEvent,
+  MAX_HEADCOUNT,
 } from './attendance';
 import { ns } from './storageNamespaced';
 import { KEYS } from './storageKeys';
@@ -75,5 +77,62 @@ describe('attendance headcounts', () => {
     const recent = recentAttendance(1);
     expect(recent).toHaveLength(1);
     expect(recent[0].eventId).toBe('b');
+  });
+
+  // ── Headcount ceiling (a fat-finger like 250,000,000 must not poison aggregates) ──
+  it('rejects a count above the ceiling', () => {
+    expect(recordHeadcount({ eventId: 'evt-big', eventTitle: 'Mass', count: MAX_HEADCOUNT + 1 })).toBeNull();
+    expect(recordHeadcount({ eventId: 'evt-big', eventTitle: 'Mass', count: 250_000_000 })).toBeNull();
+    expect(listAttendance()).toHaveLength(0);
+  });
+
+  it('accepts a count exactly at the ceiling', () => {
+    const rec = recordHeadcount({ eventId: 'evt-max', eventTitle: 'Mass', date: '2026-05-10', count: MAX_HEADCOUNT });
+    expect(rec).not.toBeNull();
+    expect(rec!.count).toBe(MAX_HEADCOUNT);
+  });
+
+  // ── Cascade-remove on event delete (calendar events have no soft-delete) ──
+  it('removeAttendanceForEvent drops that event\'s headcount', () => {
+    recordHeadcount({ eventId: 'evt-1', eventTitle: 'Mass', date: '2026-05-10', count: 200 });
+    recordHeadcount({ eventId: 'evt-2', eventTitle: 'Mass', date: '2026-05-11', count: 150 });
+    const removed = removeAttendanceForEvent('evt-1');
+    expect(removed).toBe(1);
+    expect(getHeadcountForEvent('evt-1')).toBeUndefined();
+    expect(getHeadcountForEvent('evt-2')?.count).toBe(150);
+    expect(getAttendanceSummary().totalHeadcount).toBe(150);
+  });
+
+  it('removeAttendanceForEvent is a no-op (returns 0) for an unknown/blank event', () => {
+    recordHeadcount({ eventId: 'evt-1', eventTitle: 'Mass', date: '2026-05-10', count: 200 });
+    expect(removeAttendanceForEvent('nope')).toBe(0);
+    expect(removeAttendanceForEvent('')).toBe(0);
+    expect(listAttendance()).toHaveLength(1);
+  });
+
+  // ── Defensive filter: an orphaned headcount past a hard-deleted event must
+  //    not inflate the summary when the caller passes the live event ids. ──
+  it('getAttendanceSummary skips records whose event is not in the live set', () => {
+    recordHeadcount({ eventId: 'live', eventTitle: 'Mass', date: '2026-05-10', count: 300 });
+    recordHeadcount({ eventId: 'orphan', eventTitle: 'Mass', date: '2026-05-11', count: 999 });
+    const live = new Set(['live']);
+    const s = getAttendanceSummary(undefined, live);
+    expect(s.eventsCounted).toBe(1);
+    expect(s.totalHeadcount).toBe(300); // orphan's 999 excluded
+    // Back-compat: without the live set, every record still counts.
+    expect(getAttendanceSummary().totalHeadcount).toBe(1299);
+  });
+
+  // ── Malformed record must be skipped, not throw (protects aiContext's context). ──
+  it('getAttendanceSummary skips a malformed record without throwing', () => {
+    localStorage.setItem(ns(KEYS.attendance), JSON.stringify([
+      { id: 'ok', eventId: 'a', eventTitle: 'Mass', date: '2026-05-10', count: 120, recordedAt: '2026-05-10T10:00:00.000Z' },
+      { id: 'bad', eventId: 'b', eventTitle: 'Mass', date: null, count: 'lots', recordedAt: 'x' }, // corrupt blob
+      { id: 'bad2' }, // missing everything
+    ]));
+    const s = getAttendanceSummary();
+    expect(s.eventsCounted).toBe(1);
+    expect(s.totalHeadcount).toBe(120);
+    expect(s.byMonth['2026-05']).toEqual({ events: 1, total: 120 });
   });
 });
