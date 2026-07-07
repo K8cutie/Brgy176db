@@ -10,6 +10,7 @@ import type { Family } from './directoryData';
 import type { CalendarEvent } from './calendarData';
 import type { JournalEntry, Collection } from './financeData';
 import { getLeafAccounts } from './financeData';
+import * as nsStore from './storageNamespaced';
 
 // ── Import Types ──
 
@@ -1043,11 +1044,11 @@ export function detectDuplicates(
 
 // ── Import History ──
 
-const IMPORT_HISTORY_KEY = 'churchos_import_history';
+const IMPORT_HISTORY_KEY = 'import_history'; // namespaced short key (bare churchos_import_history migrates via parishIdentity)
 
 export function getImportHistory(): ImportHistoryEntry[] {
   try {
-    const raw = localStorage.getItem(IMPORT_HISTORY_KEY);
+    const raw = nsStore.getItem(IMPORT_HISTORY_KEY);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
   return [];
@@ -1056,9 +1057,9 @@ export function getImportHistory(): ImportHistoryEntry[] {
 export function addImportHistory(entry: ImportHistoryEntry) {
   const history = getImportHistory();
   history.unshift(entry);
-  localStorage.setItem(IMPORT_HISTORY_KEY, JSON.stringify(history.slice(0, 50))); // Keep last 50
+  nsStore.setItem(IMPORT_HISTORY_KEY, JSON.stringify(history.slice(0, 50))); // Keep last 50
 }
 
 export function clearImportHistory() {
-  localStorage.removeItem(IMPORT_HISTORY_KEY);
+  nsStore.removeItem(IMPORT_HISTORY_KEY);
 }

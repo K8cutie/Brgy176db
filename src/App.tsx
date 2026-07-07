@@ -48,6 +48,10 @@ interface ActiveTour {
 // crash/blank page, and direct-URL access hits the exact same checks.
 const DioceseCockpit = lazy(() => import('@/pages/DioceseCockpit'));
 
+// Mass Intention Register (Canon 958) — lazy like the cockpit so the register
+// chunk only loads when the page is opened.
+const IntentionsPage = lazy(() => import('@/pages/IntentionsPage'));
+
 function GateNotice({ title, body }: { title: string; body: string }) {
   return (
     <div className="max-w-lg mx-auto mt-16 rounded-xl border border-parchment bg-white p-8 text-center">
@@ -221,6 +225,14 @@ function AppRoutes() {
           <Route path="/directory" element={<DirectoryPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/requests" element={<RequestsPage />} />
+          <Route
+            path="/intentions"
+            element={
+              <Suspense fallback={<div className="p-6 text-warm-gray text-sm">Loading intentions…</div>}>
+                <IntentionsPage />
+              </Suspense>
+            }
+          />
           <Route path="/finance" element={<FinancePage />} />
           <Route path="/ministries" element={<MinistriesPage />} />
           <Route path="/ssdm" element={<SsdmPage />} />

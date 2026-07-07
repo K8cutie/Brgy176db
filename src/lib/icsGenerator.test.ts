@@ -132,6 +132,61 @@ describe('generatePriestIcs — sacraments', () => {
     expect(ics).not.toContain('NaN');
   });
 
+  it('excludes soft-deleted registry records (archived wedding stays off the schedule)', () => {
+    setJSON(KEYS.marriageRecords, [
+      {
+        id: 'wed-live',
+        registryNumber: 'M-2026-050',
+        groomFirstName: 'Juan', groomLastName: 'Cruz',
+        brideFirstName: 'Maria', brideLastName: 'Lopez',
+        scheduledOfficiant: 'Fr. Reyes',
+        scheduledDate: futureDate(3),
+        scheduledTime: '14:00',
+      },
+      {
+        id: 'wed-gone',
+        registryNumber: 'M-2026-051',
+        groomFirstName: 'Archived', groomLastName: 'Groom',
+        brideFirstName: 'Archived', brideLastName: 'Bride',
+        scheduledOfficiant: 'Fr. Reyes',
+        scheduledDate: futureDate(3),
+        scheduledTime: '15:00',
+        isDeleted: true,
+        deletedAt: '2026-07-01T00:00:00.000Z',
+        deletedBy: 'Secretary',
+      },
+    ]);
+    setJSON(KEYS.baptismRecords, []);
+    setJSON(KEYS.confirmationRecords, []);
+    setJSON(KEYS.deathRecords, []);
+
+    const ics = generatePriestIcs({ ...baseOpts, includeSacraments: true });
+    expect(ics).toContain('Juan Cruz & Maria Lopez');
+    expect(ics).not.toContain('Archived Groom');
+  });
+
+  it('excludes soft-deleted records passed as live data too', () => {
+    const ics = generatePriestIcs(
+      { ...baseOpts, includeSacraments: true },
+      {
+        registryRecords: {
+          baptism: [{
+            id: 'bap-gone',
+            registryNumber: 'B-2026-100',
+            childFirstName: 'Deleted',
+            childLastName: 'Child',
+            scheduledOfficiant: 'Fr. Reyes',
+            scheduledDate: futureDate(2),
+            scheduledTime: '10:00',
+            isDeleted: true,
+          }],
+          marriage: [], confirmation: [], death: [],
+        },
+      },
+    );
+    expect(ics).not.toContain('Deleted Child');
+  });
+
   it('reads registry records through the namespaced seam when not passed', () => {
     setJSON(KEYS.marriageRecords, [{
       id: 'wed-t1',

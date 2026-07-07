@@ -1,9 +1,34 @@
 // Sacramental Registry Data
 // Hardcoded sample data for all four sacrament types — with structured name fields
 
+import { getJSON, setJSON } from './storageNamespaced';
+import { getCurrentUserName } from './session';
+import { getParishName, getFullAddress, getPriestName } from './parishConfig';
+import type { AuditLogEntry } from './settingsData';
+
 /* ═══════════════════════════════════════════════════════════════════
    TYPES
    ═══════════════════════════════════════════════════════════════════ */
+
+// Structured marginal annotations (canon-law style margin notes). The freeform
+// `notations` string stays for legacy display; new cross-references go here.
+export type RegistryAnnotationType = 'confirmation' | 'marriage' | 'correction' | 'death' | 'note';
+
+export interface RegistryAnnotation {
+  id: string;
+  date: string; // ISO date the annotated event happened / note was made
+  type: RegistryAnnotationType;
+  text: string;
+  by: string;
+}
+
+// SHARED CONTRACT — soft delete. Absent fields = live record, so all stored
+// data written before this feature keeps working unchanged.
+export interface SoftDeletable {
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
+}
 
 export interface BaptismRecord {
   id: string;
@@ -30,8 +55,12 @@ export interface BaptismRecord {
   // --- SPONSORS ---
   godfatherLastName: string;
   godfatherFirstName: string;
+  godfatherParishionerId?: string;
   godmotherLastName: string;
   godmotherFirstName: string;
+  godmotherParishionerId?: string;
+  // --- DIRECTORY LINK ---
+  childParishionerId?: string;
   // --- ADDRESS ---
   addressStreet: string;
   addressBarangay: string;
@@ -45,7 +74,12 @@ export interface BaptismRecord {
   bookNumber: number;
   pageNumber: number;
   notations: string;
+  annotations?: RegistryAnnotation[];
   status: 'Active' | 'Cancelled' | 'Annotated';
+  // --- SOFT DELETE (shared contract; absent = live) ---
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
   // --- SCHEDULING ---
   scheduledDate: string;
   scheduledTime: string;
@@ -65,6 +99,7 @@ export interface MarriageRecord {
   groomStatus: string;
   groomFather: string;
   groomMother: string;
+  groomParishionerId?: string;
   // --- BRIDE ---
   brideLastName: string;
   brideFirstName: string;
@@ -73,9 +108,12 @@ export interface MarriageRecord {
   brideStatus: string;
   brideFather: string;
   brideMother: string;
+  brideParishionerId?: string;
   // --- WITNESSES ---
   witness1Name: string;
+  witness1ParishionerId?: string;
   witness2Name: string;
+  witness2ParishionerId?: string;
   // --- RECORD ---
   dateOfMarriage: string;
   timeOfMarriage: string;
@@ -83,7 +121,12 @@ export interface MarriageRecord {
   bookNumber: number;
   pageNumber: number;
   notations: string;
+  annotations?: RegistryAnnotation[];
   status: 'Active' | 'Annulled' | 'Dispensed';
+  // --- SOFT DELETE (shared contract; absent = live) ---
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
   // --- SCHEDULING ---
   scheduledDate: string;
   scheduledTime: string;
@@ -99,22 +142,31 @@ export interface ConfirmationRecord {
   confirmandLastName: string;
   confirmandFirstName: string;
   confirmandMiddleName: string;
+  confirmandParishionerId?: string;
   dateOfBirth: string;
   parishOfBaptism: string;
   dateOfBaptism: string;
+  // Link back to the baptism register (confirmation → baptism picker)
+  baptismRecordId?: string;
   // --- OFFICIANT & BISHOP ---
   officiant: string;
   bishop: string;
   // --- SPONSOR ---
   sponsorLastName: string;
   sponsorFirstName: string;
+  sponsorParishionerId?: string;
   // --- RECORD ---
   dateOfConfirmation: string;
   timeOfConfirmation: string;
   bookNumber: number;
   pageNumber: number;
   notations: string;
+  annotations?: RegistryAnnotation[];
   status: 'Active' | 'Cancelled';
+  // --- SOFT DELETE (shared contract; absent = live) ---
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
   // --- SCHEDULING ---
   scheduledDate: string;
   scheduledTime: string;
@@ -130,6 +182,7 @@ export interface DeathRecord {
   deceasedLastName: string;
   deceasedFirstName: string;
   deceasedMiddleName: string;
+  deceasedParishionerId?: string;
   age: number;
   gender: 'Male' | 'Female';
   // --- DEATH DETAILS ---
@@ -143,7 +196,12 @@ export interface DeathRecord {
   bookNumber: number;
   pageNumber: number;
   notations: string;
+  annotations?: RegistryAnnotation[];
   status: 'Active' | 'Annotated';
+  // --- SOFT DELETE (shared contract; absent = live) ---
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
   // --- SCHEDULING ---
   scheduledDate: string;
   scheduledTime: string;
@@ -462,7 +520,26 @@ export const deathRecords: DeathRecord[] = [
    CERTIFICATE TEMPLATES
    ═══════════════════════════════════════════════════════════════════ */
 
-export const certificateTemplates = [
+export type CertificateSacrament = 'baptism' | 'marriage' | 'confirmation' | 'death';
+
+export interface CertificateTemplate {
+  id: string;
+  name: string;
+  description: string;
+  sacrament: CertificateSacrament;
+  isDefault: boolean;
+  isSystem: boolean;
+  html: string;
+}
+
+// Optional watermark block for duplicate copies. Templates include the
+// {{copy_watermark}} token; replaceTokens swaps in this block only when
+// rendering a copy (opts.isCopy), otherwise the token disappears.
+export const COPY_WATERMARK_HTML = `<div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 10; overflow: hidden;">
+  <span style="font-family: 'Playfair Display', Georgia, serif; font-size: 160px; font-weight: 700; letter-spacing: 24px; color: rgba(184, 50, 47, 0.10); transform: rotate(-30deg); text-transform: uppercase; white-space: nowrap;">COPY</span>
+</div>`;
+
+export const certificateTemplates: CertificateTemplate[] = [
   {
     id: 't1',
     name: 'Standard Baptismal',
@@ -581,9 +658,159 @@ export const certificateTemplates = [
   </div>
 </div>`,
   },
+  {
+    id: 't4',
+    name: 'Standard Marriage',
+    description: 'Traditional marriage certificate with gold border and parish seal',
+    sacrament: 'marriage' as const,
+    isDefault: true,
+    isSystem: true,
+    html: `<div style="font-family: 'Playfair Display', Georgia, serif; padding: 60px; border: 8px double #C9963B; min-height: 900px; position: relative; background: white;">
+  {{copy_watermark}}
+  <div style="text-align: center; margin-bottom: 40px;">
+    <div style="font-size: 14px; letter-spacing: 3px; text-transform: uppercase; color: #1B2A4A; margin-bottom: 8px;">{{parish_name}}</div>
+    <div style="font-size: 12px; color: #8C8374;">{{parish_address}}, Philippines</div>
+  </div>
+  <h1 style="text-align: center; font-size: 32px; color: #C9963B; letter-spacing: 4px; text-transform: uppercase; margin: 40px 0;">Certificate of Marriage</h1>
+  <div style="text-align: center; margin: 50px 0; line-height: 2; font-size: 16px; color: #3D3A36;">
+    <p>This is to certify that</p>
+    <p style="font-size: 26px; font-weight: 600; color: #1B2A4A; margin: 15px 0; font-style: italic;">{{groom_name}}</p>
+    <p>and</p>
+    <p style="font-size: 26px; font-weight: 600; color: #1B2A4A; margin: 15px 0; font-style: italic;">{{bride_name}}</p>
+    <p>were united in Holy Matrimony according to the Rite of the</p>
+    <p>Roman Catholic Church on</p>
+    <p style="font-size: 22px; font-weight: 600; color: #1B2A4A; margin: 15px 0;">{{marriage_date}}</p>
+    <p>at {{parish_name}}</p>
+  </div>
+  <div style="margin: 40px 0; text-align: center; line-height: 2; font-size: 14px;">
+    <p><strong>Parents of the Groom:</strong> {{groom_parents}}</p>
+    <p><strong>Parents of the Bride:</strong> {{bride_parents}}</p>
+    <p><strong>Witnesses:</strong> {{witness1}} &amp; {{witness2}}</p>
+    <p><strong>Officiating Minister:</strong> {{officiant}}</p>
+  </div>
+  <div style="position: absolute; bottom: 80px; left: 60px; right: 60px; display: flex; justify-content: space-between; align-items: flex-end;">
+    <div style="text-align: center;">
+      <div style="border-top: 1px solid #3D3A36; width: 200px; padding-top: 8px; font-size: 12px;">{{priest_name}}</div>
+      <div style="font-size: 11px; color: #8C8374;">Parish Priest</div>
+    </div>
+    <div style="width: 80px; height: 80px; border: 3px solid #C9963B; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #C9963B; font-size: 10px; text-align: center;">OFFICIAL<br/>SEAL</div>
+    <div style="text-align: center;">
+      <div style="border-top: 1px solid #3D3A36; width: 120px; padding-top: 8px; font-size: 12px;">{{date_today}}</div>
+      <div style="font-size: 11px; color: #8C8374;">Date Issued</div>
+    </div>
+  </div>
+  <div style="position: absolute; bottom: 30px; left: 60px; right: 60px; text-align: center; font-size: 10px; color: #8C8374; font-family: 'JetBrains Mono', monospace;">
+    Registry Ref: Book {{book_number}}, Page {{page_number}}
+  </div>
+</div>`,
+  },
+  {
+    id: 't5',
+    name: 'Standard Confirmation',
+    description: 'Traditional confirmation certificate with gold border and parish seal',
+    sacrament: 'confirmation' as const,
+    isDefault: true,
+    isSystem: true,
+    html: `<div style="font-family: 'Playfair Display', Georgia, serif; padding: 60px; border: 8px double #C9963B; min-height: 900px; position: relative; background: white;">
+  {{copy_watermark}}
+  <div style="text-align: center; margin-bottom: 40px;">
+    <div style="font-size: 14px; letter-spacing: 3px; text-transform: uppercase; color: #1B2A4A; margin-bottom: 8px;">{{parish_name}}</div>
+    <div style="font-size: 12px; color: #8C8374;">{{parish_address}}, Philippines</div>
+  </div>
+  <h1 style="text-align: center; font-size: 32px; color: #C9963B; letter-spacing: 4px; text-transform: uppercase; margin: 40px 0;">Certificate of Confirmation</h1>
+  <div style="text-align: center; margin: 50px 0; line-height: 2; font-size: 16px; color: #3D3A36;">
+    <p>This is to certify that</p>
+    <p style="font-size: 28px; font-weight: 600; color: #1B2A4A; margin: 20px 0; font-style: italic;">{{confirmand_name}}</p>
+    <p>born on <strong>{{birth_date}}</strong></p>
+    <p>and baptized on <strong>{{baptism_date}}</strong> at {{baptism_parish}}</p>
+    <p>received the Sacrament of Confirmation on</p>
+    <p style="font-size: 22px; font-weight: 600; color: #1B2A4A; margin: 15px 0;">{{confirmation_date}}</p>
+    <p>at {{parish_name}}</p>
+  </div>
+  <div style="margin: 40px 0; text-align: center; line-height: 2; font-size: 14px;">
+    <p><strong>Sponsor:</strong> {{sponsor_name}}</p>
+    <p><strong>Confirming Bishop:</strong> {{bishop}}</p>
+    <p><strong>Officiating Minister:</strong> {{officiant}}</p>
+  </div>
+  <div style="position: absolute; bottom: 80px; left: 60px; right: 60px; display: flex; justify-content: space-between; align-items: flex-end;">
+    <div style="text-align: center;">
+      <div style="border-top: 1px solid #3D3A36; width: 200px; padding-top: 8px; font-size: 12px;">{{priest_name}}</div>
+      <div style="font-size: 11px; color: #8C8374;">Parish Priest</div>
+    </div>
+    <div style="width: 80px; height: 80px; border: 3px solid #C9963B; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #C9963B; font-size: 10px; text-align: center;">OFFICIAL<br/>SEAL</div>
+    <div style="text-align: center;">
+      <div style="border-top: 1px solid #3D3A36; width: 120px; padding-top: 8px; font-size: 12px;">{{date_today}}</div>
+      <div style="font-size: 11px; color: #8C8374;">Date Issued</div>
+    </div>
+  </div>
+  <div style="position: absolute; bottom: 30px; left: 60px; right: 60px; text-align: center; font-size: 10px; color: #8C8374; font-family: 'JetBrains Mono', monospace;">
+    Registry Ref: Book {{book_number}}, Page {{page_number}}
+  </div>
+</div>`,
+  },
+  {
+    id: 't6',
+    name: 'Standard Death',
+    description: 'Traditional death/burial certificate with gold border and parish seal',
+    sacrament: 'death' as const,
+    isDefault: true,
+    isSystem: true,
+    html: `<div style="font-family: 'Playfair Display', Georgia, serif; padding: 60px; border: 8px double #C9963B; min-height: 900px; position: relative; background: white;">
+  {{copy_watermark}}
+  <div style="text-align: center; margin-bottom: 40px;">
+    <div style="font-size: 14px; letter-spacing: 3px; text-transform: uppercase; color: #1B2A4A; margin-bottom: 8px;">{{parish_name}}</div>
+    <div style="font-size: 12px; color: #8C8374;">{{parish_address}}, Philippines</div>
+  </div>
+  <h1 style="text-align: center; font-size: 32px; color: #C9963B; letter-spacing: 4px; text-transform: uppercase; margin: 40px 0;">Certificate of Death</h1>
+  <div style="text-align: center; margin: 50px 0; line-height: 2; font-size: 16px; color: #3D3A36;">
+    <p>This is to certify that according to the Register of Deaths of this parish</p>
+    <p style="font-size: 28px; font-weight: 600; color: #1B2A4A; margin: 20px 0; font-style: italic;">{{deceased_name}}</p>
+    <p>aged <strong>{{deceased_age}}</strong> years, departed this life on</p>
+    <p style="font-size: 22px; font-weight: 600; color: #1B2A4A; margin: 15px 0;">{{death_date}}</p>
+    <p>and was given Christian burial on <strong>{{burial_date}}</strong></p>
+    <p>at {{cemetery}}</p>
+  </div>
+  <div style="margin: 40px 0; text-align: center; line-height: 2; font-size: 14px;">
+    <p><strong>Officiating Minister:</strong> {{officiant}}</p>
+  </div>
+  <div style="position: absolute; bottom: 80px; left: 60px; right: 60px; display: flex; justify-content: space-between; align-items: flex-end;">
+    <div style="text-align: center;">
+      <div style="border-top: 1px solid #3D3A36; width: 200px; padding-top: 8px; font-size: 12px;">{{priest_name}}</div>
+      <div style="font-size: 11px; color: #8C8374;">Parish Priest</div>
+    </div>
+    <div style="width: 80px; height: 80px; border: 3px solid #C9963B; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #C9963B; font-size: 10px; text-align: center;">OFFICIAL<br/>SEAL</div>
+    <div style="text-align: center;">
+      <div style="border-top: 1px solid #3D3A36; width: 120px; padding-top: 8px; font-size: 12px;">{{date_today}}</div>
+      <div style="font-size: 11px; color: #8C8374;">Date Issued</div>
+    </div>
+  </div>
+  <div style="position: absolute; bottom: 30px; left: 60px; right: 60px; text-align: center; font-size: 10px; color: #8C8374; font-family: 'JetBrains Mono', monospace;">
+    Registry Ref: Book {{book_number}}, Page {{page_number}}
+  </div>
+</div>`,
+  },
 ];
 
-export const certificateTokens = [
+export interface CertificateToken {
+  token: string;
+  label: string;
+  category: string;
+}
+
+// Tokens every template can use regardless of sacrament type.
+const commonCertificateTokens: CertificateToken[] = [
+  { token: '{{officiant}}', label: 'Officiant', category: 'Official' },
+  { token: '{{book_number}}', label: 'Book Number', category: 'Record Reference' },
+  { token: '{{page_number}}', label: 'Page Number', category: 'Record Reference' },
+  { token: '{{registry_number}}', label: 'Registry Number', category: 'Record Reference' },
+  { token: '{{parish_name}}', label: 'Parish Name', category: 'Location' },
+  { token: '{{parish_address}}', label: 'Parish Address', category: 'Location' },
+  { token: '{{priest_name}}', label: 'Parish Priest', category: 'Official' },
+  { token: '{{date_today}}', label: 'Date Today', category: 'Date' },
+  { token: '{{copy_watermark}}', label: 'COPY Watermark (shown on copies)', category: 'Special' },
+];
+
+export const certificateTokens: CertificateToken[] = [
   { token: '{{child_name}}', label: 'Child Name', category: 'Person' },
   { token: '{{baptism_date}}', label: 'Baptism Date', category: 'Date' },
   { token: '{{birth_date}}', label: 'Birth Date', category: 'Date' },
@@ -591,18 +818,50 @@ export const certificateTokens = [
   { token: '{{mother_name}}', label: 'Mother Name', category: 'Person' },
   { token: '{{godfather}}', label: 'Godfather', category: 'Person' },
   { token: '{{godmother}}', label: 'Godmother', category: 'Person' },
-  { token: '{{officiant}}', label: 'Officiant', category: 'Official' },
-  { token: '{{book_number}}', label: 'Book Number', category: 'Record Reference' },
-  { token: '{{page_number}}', label: 'Page Number', category: 'Record Reference' },
-  { token: '{{parish_name}}', label: 'Parish Name', category: 'Location' },
-  { token: '{{parish_address}}', label: 'Parish Address', category: 'Location' },
-  { token: '{{priest_name}}', label: 'Parish Priest', category: 'Official' },
-  { token: '{{date_today}}', label: 'Date Today', category: 'Date' },
+  ...commonCertificateTokens,
 ];
+
+export const marriageCertificateTokens: CertificateToken[] = [
+  { token: '{{groom_name}}', label: 'Groom Name', category: 'Person' },
+  { token: '{{bride_name}}', label: 'Bride Name', category: 'Person' },
+  { token: '{{marriage_date}}', label: 'Marriage Date', category: 'Date' },
+  { token: '{{witness1}}', label: 'Witness 1', category: 'Person' },
+  { token: '{{witness2}}', label: 'Witness 2', category: 'Person' },
+  { token: '{{groom_parents}}', label: 'Parents of the Groom', category: 'Person' },
+  { token: '{{bride_parents}}', label: 'Parents of the Bride', category: 'Person' },
+  ...commonCertificateTokens,
+];
+
+export const confirmationCertificateTokens: CertificateToken[] = [
+  { token: '{{confirmand_name}}', label: 'Confirmand Name', category: 'Person' },
+  { token: '{{confirmation_date}}', label: 'Confirmation Date', category: 'Date' },
+  { token: '{{sponsor_name}}', label: 'Sponsor', category: 'Person' },
+  { token: '{{bishop}}', label: 'Confirming Bishop', category: 'Official' },
+  { token: '{{birth_date}}', label: 'Birth Date', category: 'Date' },
+  { token: '{{baptism_date}}', label: 'Baptism Date (reference)', category: 'Date' },
+  { token: '{{baptism_parish}}', label: 'Parish of Baptism', category: 'Location' },
+  ...commonCertificateTokens,
+];
+
+export const deathCertificateTokens: CertificateToken[] = [
+  { token: '{{deceased_name}}', label: 'Deceased Name', category: 'Person' },
+  { token: '{{deceased_age}}', label: 'Age at Death', category: 'Person' },
+  { token: '{{death_date}}', label: 'Date of Death', category: 'Date' },
+  { token: '{{burial_date}}', label: 'Date of Burial', category: 'Date' },
+  { token: '{{cemetery}}', label: 'Cemetery / Place of Burial', category: 'Location' },
+  ...commonCertificateTokens,
+];
+
+export const certificateTokensByType: Record<CertificateSacrament, CertificateToken[]> = {
+  baptism: certificateTokens,
+  marriage: marriageCertificateTokens,
+  confirmation: confirmationCertificateTokens,
+  death: deathCertificateTokens,
+};
 
 // Escape HTML special chars so record data (names, officiant, etc.) can't
 // inject markup/script when the certificate is rendered via innerHTML.
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -611,28 +870,243 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export function replaceTokens(template: string, record: BaptismRecord): string {
-  const e = escapeHtml;
-  return template
-    .replace(/\{\{child_name\}\}/g, e(`${record.childFirstName} ${record.childMiddleName} ${record.childLastName}`))
-    .replace(/\{\{baptism_date\}\}/g, formatPhilippineDate(record.dateOfBaptism))
-    .replace(/\{\{birth_date\}\}/g, formatPhilippineDate(record.dateOfBirth))
-    .replace(/\{\{father_name\}\}/g, e(`${record.fatherFirstName} ${record.fatherMiddleName} ${record.fatherLastName}`))
-    .replace(/\{\{mother_name\}\}/g, e(`${record.motherFirstName} ${record.motherMiddleName} ${record.motherLastName}` + (record.motherMaidenName ? ` (${record.motherMaidenName})` : '')))
-    .replace(/\{\{godfather\}\}/g, e(`${record.godfatherFirstName} ${record.godfatherLastName}`))
-    .replace(/\{\{godmother\}\}/g, e(`${record.godmotherFirstName} ${record.godmotherLastName}`))
+/* ═══════════════════════════════════════════════════════════════════
+   RECORD TYPE GUARDS
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function isBaptismRecord(r: RegistryRecord): r is BaptismRecord {
+  return 'childFirstName' in r;
+}
+export function isMarriageRecord(r: RegistryRecord): r is MarriageRecord {
+  return 'groomFirstName' in r;
+}
+export function isConfirmationRecord(r: RegistryRecord): r is ConfirmationRecord {
+  return 'confirmandFirstName' in r;
+}
+export function isDeathRecord(r: RegistryRecord): r is DeathRecord {
+  return 'deceasedFirstName' in r;
+}
+
+export interface ReplaceTokensOptions {
+  /** When true, {{copy_watermark}} renders the diagonal COPY overlay. */
+  isCopy?: boolean;
+}
+
+// Accepts any of the four record types; unmatched sacrament-specific tokens
+// are simply left alone (templates are curated per sacrament). ALL record
+// values are HTML-escaped before insertion, and every value is inserted via a
+// replacer FUNCTION so $&, $', $` in the data (which escaping itself can
+// manufacture — ' becomes &#39;) stays literal text instead of being
+// interpreted as a String.replace replacement pattern.
+export function replaceTokens(template: string, record: RegistryRecord, opts?: ReplaceTokensOptions): string {
+  // Escape, then freeze as a literal replacement.
+  const e = (value: string) => () => escapeHtml(value);
+  const lit = (value: string) => () => value;
+  let out = template
     .replace(/\{\{officiant\}\}/g, e(record.officiant))
     .replace(/\{\{book_number\}\}/g, e(String(record.bookNumber)))
     .replace(/\{\{page_number\}\}/g, e(String(record.pageNumber)))
-    .replace(/\{\{parish_name\}\}/g, 'St. Michael the Archangel Parish')
-    .replace(/\{\{parish_address\}\}/g, 'Mabalacat, Pampanga')
-    .replace(/\{\{priest_name\}\}/g, 'Fr. Antonio Reyes')
-    .replace(/\{\{date_today\}\}/g, formatPhilippineDate(new Date().toISOString().split('T')[0]));
+    .replace(/\{\{registry_number\}\}/g, e(record.registryNumber))
+    // Parish identity comes from the configured parish (Settings), never
+    // hardcoded literals — the t4/t5/t6 templates rely on these tokens.
+    .replace(/\{\{parish_name\}\}/g, e(getParishName()))
+    .replace(/\{\{parish_address\}\}/g, e(getFullAddress()))
+    .replace(/\{\{priest_name\}\}/g, e(getPriestName()))
+    .replace(/\{\{date_today\}\}/g, lit(formatPhilippineDate(new Date().toISOString().split('T')[0])))
+    .replace(/\{\{copy_watermark\}\}/g, lit(opts?.isCopy ? COPY_WATERMARK_HTML : ''));
+
+  if (isBaptismRecord(record)) {
+    out = out
+      .replace(/\{\{child_name\}\}/g, e(`${record.childFirstName} ${record.childMiddleName} ${record.childLastName}`))
+      .replace(/\{\{baptism_date\}\}/g, lit(formatPhilippineDate(record.dateOfBaptism)))
+      .replace(/\{\{birth_date\}\}/g, lit(formatPhilippineDate(record.dateOfBirth)))
+      .replace(/\{\{father_name\}\}/g, e(`${record.fatherFirstName} ${record.fatherMiddleName} ${record.fatherLastName}`))
+      .replace(/\{\{mother_name\}\}/g, e(`${record.motherFirstName} ${record.motherMiddleName} ${record.motherLastName}` + (record.motherMaidenName ? ` (${record.motherMaidenName})` : '')))
+      .replace(/\{\{godfather\}\}/g, e(`${record.godfatherFirstName} ${record.godfatherLastName}`))
+      .replace(/\{\{godmother\}\}/g, e(`${record.godmotherFirstName} ${record.godmotherLastName}`));
+  } else if (isMarriageRecord(record)) {
+    out = out
+      .replace(/\{\{groom_name\}\}/g, e(`${record.groomFirstName} ${record.groomMiddleName} ${record.groomLastName}`))
+      .replace(/\{\{bride_name\}\}/g, e(`${record.brideFirstName} ${record.brideMiddleName} ${record.brideLastName}`))
+      .replace(/\{\{marriage_date\}\}/g, lit(formatPhilippineDate(record.dateOfMarriage)))
+      .replace(/\{\{witness1\}\}/g, e(record.witness1Name))
+      .replace(/\{\{witness2\}\}/g, e(record.witness2Name))
+      .replace(/\{\{groom_parents\}\}/g, e(`${record.groomFather} & ${record.groomMother}`))
+      .replace(/\{\{bride_parents\}\}/g, e(`${record.brideFather} & ${record.brideMother}`));
+  } else if (isConfirmationRecord(record)) {
+    out = out
+      .replace(/\{\{confirmand_name\}\}/g, e(`${record.confirmandFirstName} ${record.confirmandMiddleName} ${record.confirmandLastName}`))
+      .replace(/\{\{confirmation_date\}\}/g, lit(formatPhilippineDate(record.dateOfConfirmation)))
+      .replace(/\{\{sponsor_name\}\}/g, e(`${record.sponsorFirstName} ${record.sponsorLastName}`))
+      .replace(/\{\{bishop\}\}/g, e(record.bishop))
+      .replace(/\{\{birth_date\}\}/g, lit(formatPhilippineDate(record.dateOfBirth)))
+      .replace(/\{\{baptism_date\}\}/g, lit(formatPhilippineDate(record.dateOfBaptism)))
+      .replace(/\{\{baptism_parish\}\}/g, e(record.parishOfBaptism));
+  } else if (isDeathRecord(record)) {
+    out = out
+      .replace(/\{\{deceased_name\}\}/g, e(`${record.deceasedFirstName} ${record.deceasedMiddleName} ${record.deceasedLastName}`))
+      .replace(/\{\{deceased_age\}\}/g, e(String(record.age)))
+      .replace(/\{\{death_date\}\}/g, lit(formatPhilippineDate(record.dateOfDeath)))
+      .replace(/\{\{burial_date\}\}/g, lit(formatPhilippineDate(record.dateOfBurial)))
+      .replace(/\{\{cemetery\}\}/g, e(record.cemetery));
+  }
+  return out;
 }
 
-function formatPhilippineDate(dateStr: string): string {
+export function formatPhilippineDate(dateStr: string): string {
   if (!dateStr) return '';
   const d = new Date(dateStr + 'T00:00:00');
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SOFT DELETE — pure helpers (shared contract)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** Records written before soft delete existed have no flag → they are live. */
+export function liveOnly<T extends SoftDeletable>(records: T[]): T[] {
+  return records.filter((r) => !r.isDeleted);
+}
+
+/** Returns a soft-deleted copy; the original is not mutated. */
+export function softDelete<T extends SoftDeletable>(record: T, by: string): T {
+  return { ...record, isDeleted: true, deletedAt: new Date().toISOString(), deletedBy: by };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MARGINAL ANNOTATIONS — pure helpers
+   ═══════════════════════════════════════════════════════════════════ */
+
+interface Annotatable {
+  annotations?: RegistryAnnotation[];
+}
+
+export function newAnnotationId(): string {
+  return `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** Returns a copy with the annotation appended (legacy records without an
+ *  annotations array work — it is created on first write). */
+export function addAnnotation<T extends Annotatable>(record: T, ann: RegistryAnnotation): T {
+  return { ...record, annotations: [...(record.annotations ?? []), ann] };
+}
+
+export interface AutoAnnotationPayload {
+  /** ISO date of the annotated event; defaults to today. */
+  date?: string;
+  /** Who recorded the annotation; defaults to the logged-in user. */
+  by?: string;
+  // marriage
+  spouse?: string;
+  // marriage / confirmation
+  parish?: string;
+  registryNumber?: string;
+  bishop?: string;
+  // death
+  cemetery?: string;
+  // correction
+  field?: string;
+  oldValue?: string;
+  newValue?: string;
+  // correction / note
+  text?: string;
+}
+
+/** Canonical wording for auto-generated margin notes. Defensive: missing
+ *  payload fields degrade to shorter sentences, never "undefined". */
+export function buildAutoAnnotation(type: RegistryAnnotationType, payload: AutoAnnotationPayload = {}): RegistryAnnotation {
+  const date = payload.date || new Date().toISOString().split('T')[0];
+  const when = formatPhilippineDate(date);
+  const at = payload.parish ? ` at ${payload.parish}` : '';
+  const reg = payload.registryNumber ? ` (Reg. ${payload.registryNumber})` : '';
+  let text: string;
+  switch (type) {
+    case 'marriage':
+      text = `Married${payload.spouse ? ` ${payload.spouse}` : ''} on ${when}${at}${reg}`;
+      break;
+    case 'confirmation':
+      text = `Confirmed on ${when}${at}${payload.bishop ? ` by ${payload.bishop}` : ''}${reg}`;
+      break;
+    case 'death':
+      text = `Died on ${when}${payload.cemetery ? `; buried at ${payload.cemetery}` : ''}${reg}`;
+      break;
+    case 'correction':
+      text = payload.field
+        ? `Correction: ${payload.field} changed from "${payload.oldValue ?? ''}" to "${payload.newValue ?? ''}"`
+        : `Correction: ${payload.text ?? ''}`;
+      break;
+    case 'note':
+    default:
+      text = payload.text ?? '';
+      break;
+  }
+  return {
+    id: newAnnotationId(),
+    date,
+    type,
+    text,
+    by: payload.by || getCurrentUserName(),
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CONFIRMATION → BAPTISM PICKER
+   ═══════════════════════════════════════════════════════════════════ */
+
+function norm(s: string | undefined): string {
+  return (s ?? '').trim().toLowerCase();
+}
+
+/** Find baptism records that plausibly belong to a confirmand. Last name must
+ *  match (either direction of containment tolerates compound surnames); first
+ *  name, when given, must overlap the same way. If a birth date is provided
+ *  and any name match shares it, only those exact matches are returned.
+ *  Soft-deleted records are never candidates. */
+export function findBaptismCandidates(
+  first: string,
+  last: string,
+  dob?: string,
+  records: BaptismRecord[] = baptismRecords,
+): BaptismRecord[] {
+  const qf = norm(first);
+  const ql = norm(last);
+  if (!ql) return [];
+  const matches = liveOnly(records).filter((r) => {
+    const rl = norm(r.childLastName);
+    const rf = norm(r.childFirstName);
+    const lastOk = rl === ql || rl.includes(ql) || ql.includes(rl);
+    const firstOk = !qf || rf === qf || rf.includes(qf) || qf.includes(rf);
+    return lastOk && firstOk;
+  });
+  if (dob) {
+    const exact = matches.filter((r) => r.dateOfBirth === dob);
+    if (exact.length) return exact;
+  }
+  // Exact full-name matches first, then most recent baptisms.
+  return [...matches].sort((a, b) => {
+    const aExact = norm(a.childFirstName) === qf && norm(a.childLastName) === ql ? 0 : 1;
+    const bExact = norm(b.childFirstName) === qf && norm(b.childLastName) === ql ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+    return (b.dateOfBaptism || '').localeCompare(a.dateOfBaptism || '');
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REGISTRY AUDIT — same 'audit_log' key/shape as FinancePage.appendFinanceAudit
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function appendRegistryAudit(action: string, recordId: string, details: string): void {
+  const log = getJSON<AuditLogEntry[]>('audit_log', []);
+  const entry: AuditLogEntry = {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    user: getCurrentUserName(),
+    action,
+    table: 'Registry',
+    recordId,
+    details,
+    ipAddress: 'local',
+  };
+  setJSON('audit_log', [entry, ...log]);
 }

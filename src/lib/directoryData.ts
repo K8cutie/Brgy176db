@@ -19,6 +19,8 @@ export interface Sacrament {
   date: string;
   parish?: string;
   bookPage?: string;
+  /** Link to the sacramental registry record this history entry came from. */
+  registryRecordId?: string;
 }
 
 export interface Family {
@@ -35,7 +37,15 @@ export interface Family {
   secondaryPhone?: string;
   email?: string;
   notes: string;
+  tags?: string[];
   members: Parishioner[];
+  // --- SOFT DELETE (shared contract; absent = live) ---
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
+  /** Set when this family was archived by a merge — its members now live on
+   *  the kept family, so restoring it verbatim would resurrect duplicates. */
+  mergedInto?: string;
 }
 
 export const familyColors = [
@@ -486,10 +496,14 @@ export interface ParishionerLookup {
   contact?: string;
 }
 
-/** Generate a flat list of all individual parishioners from family data */
-function buildParishionerLookup(): ParishionerLookup[] {
+/** Generate a flat list of individual parishioners from the GIVEN family data.
+ *  Callers must pass the live (persisted) directory — soft-deleted/archived
+ *  families are excluded here so no search surface can hand out an archived
+ *  or merged-away parishioner. */
+export function buildParishionerLookupFrom(familyList: Family[]): ParishionerLookup[] {
   const list: ParishionerLookup[] = [];
-  for (const family of families) {
+  for (const family of familyList) {
+    if (family.isDeleted) continue;
     for (const member of family.members) {
       const role: ParishionerLookup['role'] =
         member.relationship === 'Head' ? 'Head' :
@@ -511,4 +525,192 @@ function buildParishionerLookup(): ParishionerLookup[] {
   return list;
 }
 
-export const parishionerLookupList: ParishionerLookup[] = buildParishionerLookup();
+/** Static snapshot built from the seed data — kept for callers that have no
+ *  live directory at hand (prefer buildParishionerLookupFrom with the
+ *  persisted families). */
+export const parishionerLookupList: ParishionerLookup[] = buildParishionerLookupFrom(families);
+
+// ───────────────────────────────────────────────────────────────────
+// Registry ⇄ Directory sacrament link — PURE helper. When a registry record
+// is saved with a linked recipient (childParishionerId, groom/bride,
+// confirmand, deceased), the matching sacrament entry on that member gains
+// registryRecordId so the directory badge can click through to the register.
+// ───────────────────────────────────────────────────────────────────
+
+export interface SacramentLinkEntry {
+  type: SacramentType;
+  date: string;
+  parish?: string;
+  bookPage?: string;
+  registryRecordId: string;
+}
+
+/** Upsert `entry` onto the member's sacrament history (immutably).
+ *  Match rules: an entry already linked to the SAME registry record is the
+ *  same event by definition — its date/parish/bookPage are refreshed in place
+ *  (an edit-resave may have corrected them); otherwise exact type+date is the
+ *  same event; otherwise, for one-time sacraments (anything but Marriage) an
+ *  existing unlinked entry of the same type is treated as the same event
+ *  (directory dates are often approximate); otherwise a new entry is appended.
+ *  Returns the input array unchanged when the member isn't found or the link
+ *  is already in place. */
+export function linkSacramentToRegistry(
+  familyList: Family[],
+  parishionerId: string,
+  entry: SacramentLinkEntry,
+): { families: Family[]; changed: boolean } {
+  let changed = false;
+  const next = familyList.map((family) => {
+    if (family.isDeleted || !family.members.some((m) => m.id === parishionerId)) return family;
+    return {
+      ...family,
+      members: family.members.map((member) => {
+        if (member.id !== parishionerId) return member;
+        const sacraments = (member.sacraments ?? []).map((s) => ({ ...s }));
+        // Same registry record already linked → same event, even when the
+        // date was edited since. Refresh its fields in place; NEVER append a
+        // duplicate on an edit-resave.
+        const linked = sacraments.find((s) => s.registryRecordId === entry.registryRecordId);
+        if (linked) {
+          const upToDate =
+            linked.date === entry.date &&
+            (!entry.parish || linked.parish === entry.parish) &&
+            (!entry.bookPage || linked.bookPage === entry.bookPage);
+          if (upToDate) return member;
+          linked.date = entry.date;
+          if (entry.parish) linked.parish = entry.parish;
+          if (entry.bookPage) linked.bookPage = entry.bookPage;
+          changed = true;
+          return { ...member, sacraments };
+        }
+        const existing =
+          sacraments.find((s) => s.type === entry.type && s.date === entry.date) ??
+          (entry.type !== 'Marriage'
+            ? sacraments.find((s) => s.type === entry.type && !s.registryRecordId)
+            : undefined);
+        if (existing) {
+          const already =
+            existing.registryRecordId === entry.registryRecordId &&
+            (existing.parish || !entry.parish) &&
+            (existing.bookPage || !entry.bookPage);
+          if (already) return member;
+          existing.registryRecordId = entry.registryRecordId;
+          if (!existing.date && entry.date) existing.date = entry.date;
+          if (!existing.parish && entry.parish) existing.parish = entry.parish;
+          if (!existing.bookPage && entry.bookPage) existing.bookPage = entry.bookPage;
+        } else {
+          sacraments.push({
+            type: entry.type,
+            date: entry.date,
+            ...(entry.parish ? { parish: entry.parish } : {}),
+            ...(entry.bookPage ? { bookPage: entry.bookPage } : {}),
+            registryRecordId: entry.registryRecordId,
+          });
+        }
+        changed = true;
+        return { ...member, sacraments };
+      }),
+    };
+  });
+  return changed ? { families: next, changed } : { families: familyList, changed };
+}
+
+
+// ───────────────────────────────────────────────────────────────────
+// Duplicate merge — PURE helpers. They compute the merged entity plus the
+// registry-link rewrites the caller must apply (every *ParishionerId field on
+// registry records pointing at `fromParishionerId` should be repointed to
+// `toParishionerId`). Nothing here touches storage.
+// ───────────────────────────────────────────────────────────────────
+
+export interface RegistryLinkRewrite {
+  fromParishionerId: string;
+  toParishionerId: string;
+}
+
+export interface ParishionerMergeResult {
+  merged: Parishioner;
+  rewrites: RegistryLinkRewrite[];
+}
+
+export interface FamilyMergeResult {
+  merged: Family;
+  rewrites: RegistryLinkRewrite[];
+}
+
+// Two sacrament-history entries describe the same event when type and date
+// match; merging fills in whichever reference fields the kept entry lacked.
+function unionSacraments(keep: Sacrament[], absorb: Sacrament[] | undefined): Sacrament[] {
+  const out = keep.map((s) => ({ ...s }));
+  for (const s of absorb ?? []) {
+    const dupe = out.find((k) => k.type === s.type && k.date === s.date);
+    if (!dupe) {
+      out.push({ ...s });
+    } else {
+      if (!dupe.parish && s.parish) dupe.parish = s.parish;
+      if (!dupe.bookPage && s.bookPage) dupe.bookPage = s.bookPage;
+      if (!dupe.registryRecordId && s.registryRecordId) dupe.registryRecordId = s.registryRecordId;
+    }
+  }
+  return out;
+}
+
+/** Merge duplicate parishioners: `keep` wins on every conflicting field,
+ *  `absorb` fills gaps; sacrament histories are unioned (deduped by
+ *  type + date). The returned rewrite repoints registry links from the
+ *  absorbed id to the kept id. */
+export function mergeParishioners(keep: Parishioner, absorb: Parishioner): ParishionerMergeResult {
+  const merged: Parishioner = {
+    ...keep,
+    middleName: keep.middleName || absorb.middleName,
+    dateOfBirth: keep.dateOfBirth || absorb.dateOfBirth,
+    sacraments: unionSacraments(keep.sacraments ?? [], absorb.sacraments),
+  };
+  const rewrites: RegistryLinkRewrite[] =
+    absorb.id && absorb.id !== keep.id
+      ? [{ fromParishionerId: absorb.id, toParishionerId: keep.id }]
+      : [];
+  return { merged, rewrites };
+}
+
+// Same person listed in both families: identical id, or same name + birth date.
+function isSamePerson(a: Parishioner, b: Parishioner): boolean {
+  if (a.id === b.id) return true;
+  return (
+    a.firstName.trim().toLowerCase() === b.firstName.trim().toLowerCase() &&
+    a.lastName.trim().toLowerCase() === b.lastName.trim().toLowerCase() &&
+    !!a.dateOfBirth && a.dateOfBirth === b.dateOfBirth
+  );
+}
+
+/** Merge duplicate families: `keep` wins on identity/address/contacts,
+ *  `absorb` fills gaps; members are unioned — an absorbed member who is the
+ *  same person as a kept member is merged into them (producing a registry-link
+ *  rewrite), otherwise they join the kept family as-is. */
+export function mergeFamilies(keep: Family, absorb: Family): FamilyMergeResult {
+  const members: Parishioner[] = keep.members.map((m) => ({
+    ...m,
+    sacraments: (m.sacraments ?? []).map((s) => ({ ...s })),
+  }));
+  const rewrites: RegistryLinkRewrite[] = [];
+  for (const m of absorb.members ?? []) {
+    const idx = members.findIndex((k) => isSamePerson(k, m));
+    if (idx === -1) {
+      members.push({ ...m, sacraments: (m.sacraments ?? []).map((s) => ({ ...s })) });
+    } else {
+      const r = mergeParishioners(members[idx], m);
+      members[idx] = r.merged;
+      rewrites.push(...r.rewrites);
+    }
+  }
+  const tags = Array.from(new Set([...(keep.tags ?? []), ...(absorb.tags ?? [])]));
+  const merged: Family = {
+    ...keep,
+    secondaryPhone: keep.secondaryPhone || absorb.secondaryPhone,
+    email: keep.email || absorb.email,
+    notes: [keep.notes, absorb.notes].filter(Boolean).join(' | '),
+    ...(tags.length ? { tags } : {}),
+    members,
+  };
+  return { merged, rewrites };
+}

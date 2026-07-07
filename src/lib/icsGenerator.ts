@@ -196,8 +196,10 @@ export function generatePriestIcs(opts: PriestScheduleOptions, data?: PriestSche
     ];
 
     for (const src of sacramentSources) {
-      const records = data?.registryRecords?.[src.table]
-        ?? getJSON<RegistryRecord[]>(src.storageKey, src.seed);
+      // Soft-deleted records (shared contract: optional isDeleted flag) must
+      // not appear on the priest's schedule — same filter diocesePacket uses.
+      const records = (data?.registryRecords?.[src.table]
+        ?? getJSON<RegistryRecord[]>(src.storageKey, src.seed)).filter((r) => !r.isDeleted);
       for (const r of records) {
         const schedOff = (r.scheduledOfficiant as string) || (r.officiant as string);
         if (!schedOff || !schedOff.includes(priestName.split(' ').pop() || priestName)) continue;

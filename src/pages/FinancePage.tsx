@@ -1670,7 +1670,8 @@ function BudgetEditModal({ account, existingCodes, onClose, onSave, onCreate }: 
 
   // In create mode, only offer accounts that don't already have a budget line.
   const availableAccounts = useMemo(
-    () => leafAccounts.filter((a) => !existingCodes.includes(a.code)),
+    () => leafAccounts.filter((a) =>
+      (a.type === 'INCOME' || a.type === 'EXPENSE') && !existingCodes.includes(a.code)),
     [leafAccounts, existingCodes],
   );
 

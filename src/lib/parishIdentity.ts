@@ -251,7 +251,7 @@ export function migrateToNamespacedStorage() {
     'baptism_records', 'marriage_records', 'confirmation_records', 'death_records',
     'parishioner_directory', 'calendar_events', 'mass_schedule',
     'journal_entries', 'collections', 'accounts_receivable',
-    'audit_log', 'fee_override_audit', 'settings',
+    'audit_log', 'fee_override_audit', 'settings', 'import_history',
   ];
 
   for (const key of keysToMigrate) {

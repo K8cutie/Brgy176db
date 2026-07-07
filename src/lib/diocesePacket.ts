@@ -7,6 +7,14 @@
 
 import { getParishIdentity, type ParishIdentity, type DioceseConnection, type SyncRecord } from './parishIdentity';
 import * as ns from './storageNamespaced';
+import { KEYS } from './storageKeys';
+
+// Soft-deleted records (shared contract: optional isDeleted flag) must not
+// inflate diocese-facing counts.
+function liveRecords(key: string): unknown[] {
+  const list = JSON.parse(ns.getItem(key) || '[]') as Array<{ isDeleted?: boolean }>;
+  return list.filter((r) => !r?.isDeleted);
+}
 
 export type SyncScope = 'financial_summary' | 'sacramental_counts' | 'collection_summary' | 'parish_status';
 
@@ -114,8 +122,8 @@ export function generateDiocesePacket(
 
 // ── Build financial summary from journal ──
 function buildFinancialSummary(identity: ParishIdentity): FinancialSummary {
-  const entries = JSON.parse(ns.getItem('journal_entries') || '[]');
-  const budgets = JSON.parse(ns.getItem('budget_items') || '[]');
+  const entries = JSON.parse(ns.getItem(KEYS.journalEntries) || '[]');
+  const budgets = JSON.parse(ns.getItem(KEYS.budgetItems) || '[]');
 
   const categories: FinancialSummary['categories'] = [];
   const catTotals: Record<string, { revenue: number; expense: number; name: string; code: string }> = {};
@@ -167,17 +175,17 @@ function buildFinancialSummary(identity: ParishIdentity): FinancialSummary {
 
 // ── Build sacramental counts ──
 function buildSacramentalCounts(): SacramentalCounts {
-  const baptisms = (JSON.parse(ns.getItem('baptism_records') || '[]') as unknown[]).length;
-  const weddings = (JSON.parse(ns.getItem('marriage_records') || '[]') as unknown[]).length;
-  const confirmations = (JSON.parse(ns.getItem('confirmation_records') || '[]') as unknown[]).length;
-  const burials = (JSON.parse(ns.getItem('death_records') || '[]') as unknown[]).length;
+  const baptisms = liveRecords(KEYS.baptismRecords).length;
+  const weddings = liveRecords(KEYS.marriageRecords).length;
+  const confirmations = liveRecords(KEYS.confirmationRecords).length;
+  const burials = liveRecords(KEYS.deathRecords).length;
 
   return { baptisms, weddings, confirmations, burials };
 }
 
 // ── Build collection summary ──
 function buildCollectionSummary(): CollectionSummary {
-  const collections = JSON.parse(ns.getItem('collections') || '[]');
+  const collections = JSON.parse(ns.getItem(KEYS.collections) || '[]');
   const sundayTotal = collections
     .filter((c: Record<string, unknown>) => c.type === 'Sunday Collection')
     .reduce((s: number, c: Record<string, unknown>) => s + ((c.amount as number) || 0), 0);
@@ -200,10 +208,10 @@ function buildCollectionSummary(): CollectionSummary {
 // ── Build parish status ──
 function buildParishStatus(identity: ParishIdentity): ParishStatus {
   const registryTotal = [
-    ...(JSON.parse(ns.getItem('baptism_records') || '[]') as unknown[]),
-    ...(JSON.parse(ns.getItem('marriage_records') || '[]') as unknown[]),
-    ...(JSON.parse(ns.getItem('confirmation_records') || '[]') as unknown[]),
-    ...(JSON.parse(ns.getItem('death_records') || '[]') as unknown[]),
+    ...liveRecords(KEYS.baptismRecords),
+    ...liveRecords(KEYS.marriageRecords),
+    ...liveRecords(KEYS.confirmationRecords),
+    ...liveRecords(KEYS.deathRecords),
   ].length;
 
   return {

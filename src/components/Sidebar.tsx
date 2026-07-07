@@ -16,6 +16,7 @@ import {
   Upload,
   Inbox,
   Landmark,
+  ScrollText,
 } from 'lucide-react';
 import { canSeeDiocese } from '@/lib/dioceseAccess';
 
@@ -38,6 +39,7 @@ const navSections: NavSection[] = [
       { label: 'Registry', icon: BookOpen, path: '/registry' },
       { label: 'Directory', icon: Users, path: '/directory' },
       { label: 'Calendar', icon: Calendar, path: '/calendar' },
+      { label: 'Intentions', icon: ScrollText, path: '/intentions' },
       { label: 'Requests', icon: Inbox, path: '/requests' },
     ],
   },

@@ -123,6 +123,30 @@ describe("deriveTrialBalance", () => {
     expect(retained?.credit).toBeGreaterThan(0)
   })
 
+  it("carries off-chart balance-sheet codes through period end (asOf, not activity)", () => {
+    // 1999/2999 are not in the chart of accounts; the pre-period posting must
+    // still show on a from-bounded period — balance-sheet codes are asOf.
+    const entries = [
+      mkEntry("2025-01-10", [{ code: "1999", debit: 500 }, { code: "2999", credit: 500 }]),
+      mkEntry("2025-03-10", [{ code: "1999", debit: 100 }, { code: "2999", credit: 100 }]),
+    ]
+    const tb = deriveTrialBalance(entries, [], { from: "2025-03-01", to: "2025-03-31" })
+    expect(tb.rows.find((r) => r.code === "1999")?.debit).toBe(600)
+    expect(tb.rows.find((r) => r.code === "1999")?.type).toBe("Assets")
+    expect(tb.rows.find((r) => r.code === "2999")?.credit).toBe(600)
+    expect(tb.balanced).toBe(true)
+  })
+
+  it("limits off-chart income/expense codes to period activity", () => {
+    const entries = [
+      mkEntry("2025-01-10", [{ code: "1000", debit: 500 }, { code: "4999", credit: 500 }]),
+      mkEntry("2025-03-10", [{ code: "1000", debit: 100 }, { code: "4999", credit: 100 }]),
+    ]
+    const tb = deriveTrialBalance(entries, [], { from: "2025-03-01", to: "2025-03-31" })
+    expect(tb.rows.find((r) => r.code === "4999")?.credit).toBe(100)
+    expect(tb.balanced).toBe(true)
+  })
+
   it("adds no retained-earnings row when the period has no lower bound", () => {
     const tb = deriveTrialBalance(journalEntries, collectionsData)
     expect(tb.rows.find((r) => r.code === "3900")).toBeUndefined()
