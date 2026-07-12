@@ -13,7 +13,10 @@ const path = require('path');
 const { app } = require('electron');
 const db = require('./db.cjs');
 
-const DEFAULT_MODEL = 'claude-opus-4-8';
+// Haiku 4.5 — fast and ~5x cheaper than Opus ($1/$5 vs $5/$25 per M tokens),
+// which suits this assistant's short, tool-grounded parish Q&A. Overridable per
+// install via churchos-ai.json { "model": "..." }.
+const DEFAULT_MODEL = 'claude-haiku-4-5';
 
 function configPath() {
   return path.join(app.getPath('userData'), 'churchos-ai.json');

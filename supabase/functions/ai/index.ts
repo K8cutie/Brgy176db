@@ -21,7 +21,9 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const MODEL = 'claude-opus-4-8';
+// Haiku 4.5 — fast and ~5x cheaper than Opus ($1/$5 vs $5/$25 per M tokens),
+// which suits this assistant's short, tool-grounded parish Q&A.
+const MODEL = 'claude-haiku-4-5';
 
 const SYSTEM = [
   'You are the assistant inside ChurchOS, a parish management system for a Catholic parish in the Philippines.',
