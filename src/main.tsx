@@ -7,10 +7,17 @@ import { hydrateDesktopStore } from './lib/desktopStore'
 import { hydrateCloudStore } from './lib/cloudStore'
 import { reconcileSession } from './lib/session'
 import { initMonitoring } from './lib/monitoring'
+import { bootstrapDemo } from './lib/demo'
+import DemoBanner from './components/DemoBanner'
 
 // Initialize error monitoring first so any startup error is captured. No-op
 // unless VITE_SENTRY_DSN is set (desktop/local stay fully offline).
 initMonitoring()
+
+// In a VITE_CHURCHOS_DEMO build, seed a signed-in session + completed setup
+// (synchronously, before reconcileSession and the first render) so a fresh
+// web visitor lands straight in the app. No-op in every normal build.
+bootstrapDemo()
 
 // Hydrate whichever backend is active (desktop SQLite or cloud Supabase) into
 // the in-memory cache before the first render, so all synchronous storage reads
@@ -30,6 +37,7 @@ Promise.all([hydrateDesktopStore(), hydrateCloudStore(), reconcileSession()]).fi
       <Router>
         <App />
       </Router>
+      <DemoBanner />
     </ErrorBoundary>,
   )
 })

@@ -59,8 +59,11 @@ const PRINT_CSS = `
 // Open /portal/demo while running `vite dev` to explore the whole portal with
 // NO backend: the parish is hardcoded, slots are generated locally, and
 // submit / reserve / status-check resolve to a fake token after 400ms.
-// Every use below is guarded by `import.meta.env.DEV`, which Vite replaces
-// with a compile-time constant, so production builds tree-shake all of it.
+// Every use below is guarded by DEMO_BUILD — true in dev, and in a
+// VITE_CHURCHOS_DEMO web build (the public showcase). Both are compile-time
+// constants, so a normal production build folds it to false and tree-shakes
+// all of this out.
+const DEMO_BUILD = import.meta.env.DEV || import.meta.env.VITE_CHURCHOS_DEMO === 'true';
 const DEMO_TOKEN = 'DEMO-REF-12345';
 const DEMO_PARISH: ParishPublic = {
   id: 'demo-parish-id',
@@ -112,10 +115,10 @@ export default function PublicPortal() {
   const [showOfficeCert, setShowOfficeCert] = useState(false); // office panel in certificate form
   const [openSac, setOpenSac] = useState<string | null>(null); // home requirements accordion
 
-  const isDemo = import.meta.env.DEV && slug === 'demo';
+  const isDemo = DEMO_BUILD && slug === 'demo';
 
   useEffect(() => {
-    if (import.meta.env.DEV && slug === 'demo') { setParish(DEMO_PARISH); return; } // demo: no network
+    if (DEMO_BUILD && slug === 'demo') { setParish(DEMO_PARISH); return; } // demo: no network
     if (slug) getParishBySlug(slug).then(setParish);
   }, [slug]);
 
@@ -124,7 +127,7 @@ export default function PublicPortal() {
   useEffect(() => {
     setSelectedSlot(null); setSlots([]);
     if (!parish || !slotType) return;
-    if (import.meta.env.DEV && isDemo) { setSlots(demoSlots(slotType)); return; } // demo: no network
+    if (DEMO_BUILD && isDemo) { setSlots(demoSlots(slotType)); return; } // demo: no network
     setLoadingSlots(true);
     getSlots(parish.id, slotType).then((s) => setSlots(s)).finally(() => setLoadingSlots(false));
   }, [parish, slotType, isDemo]);
@@ -190,7 +193,7 @@ export default function PublicPortal() {
         details.requirements_missing = ack.missing;
         details.requirements_ack = `${checkedIds.length}/${bookInfo.requirements.length}`;
       }
-      if (import.meta.env.DEV && isDemo) { // demo: resolve locally, no network
+      if (DEMO_BUILD && isDemo) { // demo: resolve locally, no network
         await new Promise((r) => setTimeout(r, 400));
         setSubmitting(false); setDone(DEMO_TOKEN); return;
       }
@@ -424,7 +427,7 @@ export default function PublicPortal() {
         <div style={{ display: 'flex', gap: 8 }}>
           <input style={{ ...input, marginTop: 0 }} value={statusToken} onChange={(e) => setStatusToken(e.target.value)} placeholder="Paste your reference" />
           <button style={{ ...btn(false), width: 'auto', marginTop: 0, padding: '0 16px' }} onClick={async () => {
-            if (import.meta.env.DEV && isDemo) { // demo: no network
+            if (DEMO_BUILD && isDemo) { // demo: no network
               await new Promise((r) => setTimeout(r, 400));
               setStatusRes(statusToken.trim() === DEMO_TOKEN ? { type: 'event_booking', status: 'in_review', requested_date: null, amount: 500, payment_status: 'unpaid' } : null);
               return;
