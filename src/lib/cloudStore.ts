@@ -142,18 +142,29 @@ async function reconcile(key: string, arr: Item[]): Promise<void> {
     if (onWriteError) onWriteError();
     return;
   }
+  // fee_override_audit is a server-enforced APPEND-ONLY ledger (trg_audit_no_mutate
+  // raises on any UPDATE/DELETE). Re-sending the whole array with a normal upsert
+  // executes ON CONFLICT DO UPDATE on already-persisted rows → the trigger throws and
+  // the whole write is abandoned, so only the FIRST waiver ever persisted. For this
+  // table: INSERT unseen rows only (ON CONFLICT DO NOTHING, which never UPDATEs) and
+  // NEVER issue the reconcile DELETE.
+  const appendOnly = key === KEYS.feeOverrideAudit;
   try {
     const supa = await sb();
     const rows = arr.map((i) => ({ parish_id: parishId, client_id: i.id, data: i, ...FLAT[key](i) }));
     if (rows.length) {
-      const up = await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id' });
+      const up = appendOnly
+        ? await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id', ignoreDuplicates: true })
+        : await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id' });
       if (up.error) throw up.error;
     }
-    const ids = arr.map((i) => i.id).filter(Boolean);
-    let del = supa.from(key).delete().eq('parish_id', parishId);
-    del = ids.length ? del.not('client_id', 'in', `(${ids.join(',')})`) : del;
-    const res = await del;
-    if (res.error) throw res.error;
+    if (!appendOnly) {
+      const ids = arr.map((i) => i.id).filter(Boolean);
+      let del = supa.from(key).delete().eq('parish_id', parishId);
+      del = ids.length ? del.not('client_id', 'in', `(${ids.join(',')})`) : del;
+      const res = await del;
+      if (res.error) throw res.error;
+    }
   } catch {
     if (onWriteError) onWriteError();
   }

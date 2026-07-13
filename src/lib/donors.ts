@@ -524,6 +524,43 @@ export function verifyFeeOverrideChain(
   return { intact: true, brokenAt: -1 };
 }
 
+export interface ServerAuditVerdict {
+  /** true only when the server RPC actually ran and returned a result to judge. */
+  checked: boolean;
+  /** true when every row the server holds validates against its HMAC + linkage. */
+  allOk: boolean;
+  /** client_ids the server flagged as tampered / back-dated / injected (ok = false). */
+  failedClientIds: string[];
+}
+
+/**
+ * Authoritative, server-side verification of the waiver chain (cloud mode only).
+ * The in-app {@link verifyFeeOverrideChain} recomputes an UNKEYED djb2 that the
+ * client both writes and verifies — so anyone who can write the store can forge a
+ * self-consistent chain and the local check still says "intact". This instead calls
+ * the verify_audit RPC, which recomputes each row's KEYED HMAC (key never leaves the
+ * DB) and walks genesis→tip linkage server-side. Returns null off cloud mode or on
+ * any error, so callers fall back to the local advisory check.
+ */
+export async function serverVerifyFeeOverrideChain(): Promise<ServerAuditVerdict | null> {
+  try {
+    const { isCloud } = await import('./cloudStore');
+    if (!isCloud()) return null;
+    const { getSupabase } = await import('./supabaseClient');
+    const supa = await getSupabase();
+    // No argument: the RPC derives scope from the caller's own parish (auth_parish_id).
+    const { data, error } = await (supa as unknown as {
+      rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>;
+    }).rpc('verify_audit', {});
+    if (error || !Array.isArray(data)) return null;
+    const rows = data as Array<{ client_id?: unknown; ok?: unknown }>;
+    const failedClientIds = rows.filter((r) => r && r.ok === false).map((r) => String(r.client_id));
+    return { checked: true, allOk: failedClientIds.length === 0, failedClientIds };
+  } catch {
+    return null;
+  }
+}
+
 export interface FeeWaiverInput {
   /** Sacrament / service type the fee belongs to (e.g. "Baptism"). */
   sacrament: string;

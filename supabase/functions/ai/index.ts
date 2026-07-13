@@ -6,8 +6,13 @@
 // loop, querying the caller's parish data UNDER THEIR RLS (so it can only ever
 // read that user's own parish), then returns the answer.
 //
-// Deploy:  supabase functions deploy ai --no-verify-jwt
+// Deploy:  supabase functions deploy ai        (JWT verification ON — do NOT pass
+//          --no-verify-jwt; this function spends money on every call, so the gateway
+//          must require a valid JWT. The handler ALSO authenticates in-band below as
+//          defense-in-depth, so an anon-key-only caller is still rejected.)
 // Secrets: supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+//          (optional) supabase secrets set AI_ALLOWED_ORIGIN=https://<app>.vercel.app
+//          Also set an Anthropic spend/budget alert on the key as an operator backstop.
 //
 // Note: this runs on Deno, not the app's Vite build — it is not type-checked by
 // `npm run build`. It is a deploy artifact.
@@ -15,8 +20,11 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createLogger } from '../_shared/log.ts';
 
+// Default to '*' to preserve existing behavior; set AI_ALLOWED_ORIGIN to the app
+// origin in production to stop arbitrary sites' JS from firing these (billed) calls.
+const ALLOWED_ORIGIN = Deno.env.get('AI_ALLOWED_ORIGIN') || '*';
 const CORS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
   'Access-Control-Allow-Headers': 'authorization, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
@@ -125,6 +133,9 @@ Deno.serve(async (req: Request) => {
     if (!key) return json({ ok: false, error: 'no_key' });
 
     const auth = req.headers.get('Authorization') || '';
+    const jwt = auth.replace(/^Bearer\s+/i, '').trim();
+    if (!jwt) return json({ ok: false, error: 'unauthorized' }, 401);
+
     // RLS-scoped client: every query runs as THIS user → only their parish's rows.
     const supa = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -132,7 +143,29 @@ Deno.serve(async (req: Request) => {
       { global: { headers: { Authorization: auth } } },
     );
 
-    const { messages } = await req.json();
+    // AUTHENTICATE THE CALLER BEFORE SPENDING ANY MONEY. Without this an anonymous
+    // internet caller (or any website's JS) could invoke the tool-call loop and burn
+    // the server-side ANTHROPIC_API_KEY — an unbounded cost / vendor-billing DoS. A
+    // bare anon key resolves to no user here, so it is rejected too.
+    const { data: userData, error: authErr } = await supa.auth.getUser();
+    const uid = userData?.user?.id;
+    if (authErr || !uid) return json({ ok: false, error: 'unauthorized' }, 401);
+
+    // Best-effort per-user throttle so even a valid tenant cannot run the bill up.
+    // rate_check is SECURITY DEFINER (PUBLIC execute) and RAISES on exceed; a missing
+    // grant/function must not break the assistant, so only a real limit error blocks.
+    try {
+      const rl = await supa.rpc('rate_check', { p_key: 'ai:' + uid, p_limit: 20, p_window: '1 minute' });
+      if (rl?.error && /rate limit/i.test(rl.error.message || '')) return json({ ok: false, error: 'rate_limited' }, 429);
+    } catch { /* ignore — throttle is best-effort defense-in-depth */ }
+
+    const body = await req.json().catch(() => null);
+    const messages = (body as { messages?: unknown } | null)?.messages;
+    // Validate + bound the untrusted input so a caller can't force huge/looping spend.
+    if (!Array.isArray(messages) || messages.length === 0 || messages.length > 40) {
+      return json({ ok: false, error: 'bad_request' }, 400);
+    }
+    if (JSON.stringify(messages).length > 100_000) return json({ ok: false, error: 'payload_too_large' }, 413);
     const convo = [...messages];
     let navigate: { page: string } | null = null;
 
@@ -164,6 +197,6 @@ Deno.serve(async (req: Request) => {
   }
 });
 
-function json(body: unknown) {
-  return new Response(JSON.stringify(body), { headers: { ...CORS, 'content-type': 'application/json' } });
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'content-type': 'application/json' } });
 }

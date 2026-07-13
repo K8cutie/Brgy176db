@@ -323,7 +323,7 @@ describe('buildImportedRecord — large historical finance row flags the audit l
     localStorage.clear();
   });
 
-  it('appends a Flagged audit entry for a ≥₱100k imported row (kept Posted)', () => {
+  it('routes a ≥₱100k imported row to the Pending approval queue and flags it', () => {
     const built = buildImportedRecord({
       date: '2020-06-15',
       description: 'Legacy building fund deposit',
@@ -332,8 +332,11 @@ describe('buildImportedRecord — large historical finance row flags the audit l
       credit: '5,000,000.00',
     }, 'finance', 'Admin');
 
-    // The entry itself is still Posted — imported books must not become Pending.
-    expect((built!.record as JournalEntry).status).toBe('Posted');
+    // SECURITY: a large row must NOT be booked straight to Posted — that bypasses the
+    // ≥₱100k extraordinary-administration approval (and the server forces it Pending in
+    // derive_journal anyway, so a client 'Posted' would only desync the UI).
+    expect((built!.record as JournalEntry).status).toBe('Pending');
+    expect((built!.record as JournalEntry).requiredApproval).toBe('Bishop Approval Required');
 
     const log = readAudit();
     expect(log).toHaveLength(1);
