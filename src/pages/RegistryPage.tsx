@@ -1360,6 +1360,7 @@ export default function RegistryPage() {
           const isActive = activeTab === t.key;
           const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
           const accent = isDark ? t.darkColor : t.color;
+          const iconOnAccent = isDark ? '#26221E' : '#FFFFFF';
           return (
             <button
               key={t.key}
@@ -1381,14 +1382,14 @@ export default function RegistryPage() {
               )}
               <span
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg"
-                style={{ backgroundColor: `${accent}1F` }}
+                style={{ backgroundColor: accent }}
               >
-                <Icon className="w-5 h-5" style={{ color: accent }} />
+                <Icon className="w-6 h-6" style={{ color: iconOnAccent }} />
               </span>
               <span className="flex min-w-0 flex-col">
                 <span
-                  className="text-2xl font-bold leading-none text-charcoal dark:text-dm-text"
-                  style={isActive ? { color: accent } : undefined}
+                  className="text-2xl font-bold leading-none"
+                  style={{ color: accent }}
                 >
                   {t.count}
                 </span>
