@@ -41,6 +41,10 @@ export const KEYS = {
   // Ministries
   ministries: 'ministries',
 
+  // Clergy (managed priest list — see lib/clergy.ts). One object-per-parish
+  // list, persisted as a singleton in parish_settings in cloud mode.
+  clergy: 'clergy',
+
   // Venues (bookable spaces — see lib/venues.ts). One object-per-parish list,
   // persisted as a singleton in parish_settings in cloud mode.
   venues: 'venues',

@@ -87,6 +87,7 @@ const SINGLETON_KEYS = new Set<string>([
   'ai_context_optout',       // lib/aiContext.ts — AI parish-context opt-out
   'notify_outbox',           // lib/notify.ts — SMS/email outbox log
   'venues',                  // lib/venues.ts — bookable spaces (one list per parish)
+  'clergy',                  // lib/clergy.ts — managed priest list (one list per parish)
 ]);
 
 /** Distinguish a not-yet-created table from a real (RLS/JWT/network) read error. */

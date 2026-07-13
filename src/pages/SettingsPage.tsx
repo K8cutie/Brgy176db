@@ -5,7 +5,7 @@ import {
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
   X, Check, Search, Lock, Unlock, Printer,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
-  Database, Download, FolderOpen, Puzzle, Globe, MapPin, Star,
+  Database, Download, FolderOpen, Puzzle, Globe, MapPin, Star, UserCheck,
 } from 'lucide-react';
 import DataTable, { type Column } from '@/components/DataTable';
 import PortalConfigSection from '@/components/PortalConfigSection';
@@ -48,6 +48,14 @@ import {
   deleteVenue,
   type Venue,
 } from '@/lib/venues';
+import {
+  getClergy,
+  addClergy,
+  updateClergy,
+  deleteClergy,
+  clergyFullName,
+  type Clergy,
+} from '@/lib/clergy';
 import {
   getModuleRegistry,
   setModuleEnabled,
@@ -2372,11 +2380,223 @@ function VenuesSection() {
   );
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  SECTION: CLERGY
+// ═════════════════════════════════════════════════════════════════
+
+function ClergySection() {
+  const [clergy, setClergy] = useState<Clergy[]>(getClergy);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState<Clergy | null>(null);
+  const [form, setForm] = useState<{ title: string; name: string; active: boolean }>({
+    title: 'Fr.',
+    name: '',
+    active: true,
+  });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<Clergy | null>(null);
+
+  const refresh = () => setClergy(getClergy());
+
+  const openAdd = () => {
+    setEditing(null);
+    setForm({ title: 'Fr.', name: '', active: true });
+    setShowModal(true);
+  };
+
+  const openEdit = (person: Clergy) => {
+    setEditing(person);
+    setForm({ title: person.title, name: person.name, active: person.active });
+    setShowModal(true);
+  };
+
+  const save = () => {
+    const name = form.name.trim();
+    if (!name) return;
+    const title = form.title.trim() || 'Fr.';
+    if (editing) {
+      updateClergy(editing.id, { title, name, active: form.active });
+    } else {
+      addClergy({ title, name, active: form.active });
+    }
+    refresh();
+    setShowModal(false);
+    setEditing(null);
+  };
+
+  const confirmDelete = () => {
+    if (showDeleteConfirm) {
+      deleteClergy(showDeleteConfirm.id);
+      refresh();
+    }
+    setShowDeleteConfirm(null);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="heading-lg text-charcoal dark:text-dm-text">Clergy</h2>
+          <p className="body-sm text-warm-gray mt-0.5">
+            The parish's priests and deacons. This list feeds the officiant picker on ceremonies and the per-priest schedule export.
+          </p>
+        </div>
+        <button onClick={openAdd} className="cos-btn cos-btn-primary text-sm">
+          <Plus className="w-4 h-4" /> Add Clergy
+        </button>
+      </div>
+
+      <div className="cos-card p-0 overflow-hidden">
+        <div className="divide-y divide-parchment/30 dark:divide-dm-border">
+          {clergy.map((person) => (
+            <div key={person.id} className="flex items-center justify-between px-5 py-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center flex-shrink-0">
+                  <UserCheck className="w-5 h-5 text-gold" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-charcoal dark:text-dm-text truncate">{clergyFullName(person)}</span>
+                    {!person.active && (
+                      <span className="cos-badge cos-badge-default text-xs">Inactive</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <button
+                  onClick={() => openEdit(person)}
+                  className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-gold/10 transition-all"
+                  title="Edit"
+                >
+                  <Edit className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(person)}
+                  disabled={clergy.length <= 1}
+                  title={clergy.length <= 1 ? 'A parish must keep at least one clergy member' : 'Delete'}
+                  className={cn(
+                    'p-1.5 rounded-md transition-all',
+                    clergy.length <= 1
+                      ? 'text-warm-gray/40 cursor-not-allowed'
+                      : 'text-warm-gray hover:text-error hover:bg-error/10',
+                  )}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Add/Edit Clergy Modal */}
+      <AnimatePresence>
+        {showModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+            onClick={() => setShowModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+              className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[520px] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
+                <h2 className="heading-md text-charcoal dark:text-dm-text">
+                  {editing ? 'Edit Clergy' : 'Add Clergy'}
+                </h2>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:hover:bg-dm-surface-raised"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="label text-warm-gray block mb-1.5">Title</label>
+                    <select
+                      value={form.title}
+                      onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    >
+                      {['Fr.', 'Msgr.', 'Rev.', 'Bp.', 'Deacon'].map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="label text-warm-gray block mb-1.5">Name *</label>
+                    <input
+                      type="text"
+                      value={form.name}
+                      onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                      placeholder="e.g. Antonio Reyes"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.active}
+                    onChange={(e) => setForm((p) => ({ ...p, active: e.target.checked }))}
+                    className="accent-gold w-4 h-4"
+                  />
+                  <span className="text-sm text-charcoal dark:text-dm-text">Active</span>
+                  <span className="text-xs text-warm-gray">Only active clergy appear in the officiant picker.</span>
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-parchment dark:border-dm-border">
+                <button onClick={() => setShowModal(false)} className="cos-btn cos-btn-secondary text-sm">
+                  Cancel
+                </button>
+                <button
+                  onClick={save}
+                  disabled={!form.name.trim()}
+                  className={cn(
+                    'cos-btn text-sm text-white flex items-center gap-2',
+                    form.name.trim() ? 'cos-btn-primary' : 'bg-warm-gray/30 cursor-not-allowed',
+                  )}
+                >
+                  <Save className="w-4 h-4" /> {editing ? 'Save Changes' : 'Add Clergy'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <ConfirmationDialog
+        isOpen={!!showDeleteConfirm}
+        title="Delete Clergy"
+        message={`Remove "${showDeleteConfirm ? clergyFullName(showDeleteConfirm) : ''}" from the clergy list? Existing records keep their recorded officiant, but this person will no longer be selectable.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(null)}
+      />
+    </div>
+  );
+}
+
 const settingsNavItems = [
   { id: 'parish', label: 'Parish Info', icon: Church },
   { id: 'mass', label: 'Mass Schedule', icon: Clock },
   { id: 'fees', label: 'Fee Schedule', icon: DollarSign },
   { id: 'venues', label: 'Venues', icon: MapPin },
+  { id: 'clergy', label: 'Clergy', icon: UserCheck },
   { id: 'templates', label: 'Certificate Templates', icon: FileText },
   { id: 'portal', label: 'Public Portal', icon: Globe },
   { id: 'users', label: 'Users', icon: Users },
@@ -2385,7 +2605,7 @@ const settingsNavItems = [
   { id: 'audit', label: 'Audit Log', icon: ClipboardList },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'venues' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'venues' | 'clergy' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -2446,6 +2666,8 @@ export default function SettingsPage() {
         return <FeeScheduleSection />;
       case 'venues':
         return <VenuesSection />;
+      case 'clergy':
+        return <ClergySection />;
       case 'templates':
         return <CertificateTemplatesSection />;
       case 'portal':
@@ -2487,7 +2709,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">General</span>
             </div>
-            {settingsNavItems.slice(0, 4).map((item) => (
+            {settingsNavItems.slice(0, 5).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2510,7 +2732,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Sacraments &amp; Online</span>
             </div>
-            {settingsNavItems.slice(4, 6).map((item) => (
+            {settingsNavItems.slice(5, 7).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2533,7 +2755,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Administration</span>
             </div>
-            {settingsNavItems.slice(6).map((item) => (
+            {settingsNavItems.slice(7).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}

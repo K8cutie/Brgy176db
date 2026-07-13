@@ -100,6 +100,7 @@ import {
   type CalendarEventLike,
 } from '@/lib/scheduling';
 import { getCertificateTokens, getCurrencySymbol, getParishName } from '@/lib/parishConfig';
+import { clergyNames } from '@/lib/clergy';
 import {
   BARANGAYS,
   SITIOS,
@@ -242,6 +243,20 @@ function LifecycleBadge({ record }: { record: RegistryRecord }) {
 
 function genId(prefix: string) {
   return `${prefix}-${Date.now()}`;
+}
+
+/* Officiant picker options: the active clergy full names (managed in Settings),
+   which are exactly the strings the ICS schedule export matches on. TOLERANT:
+   if a record/schedule already carries an officiant that isn't in the clergy
+   list (a legacy free-text value, or a since-deactivated priest), it is kept as
+   a selectable option so editing an old record never blanks or drops it. */
+function officiantOptions(current?: string): string[] {
+  const names = clergyNames();
+  const cur = (current || '').trim();
+  if (cur && !names.some((n) => n.toLowerCase() === cur.toLowerCase())) {
+    return [cur, ...names];
+  }
+  return names;
 }
 
 function checkAvailability(date: string, time: string, off: string, loc: string, _type: SacramentTab): AvailabilityResult {
@@ -1336,32 +1351,49 @@ export default function RegistryPage() {
         <div className="mt-3 h-[3px] w-24 bg-gold rounded-full" />
       </div>
 
-      {/* ── Tab Bar ─────────────────────────────────── */}
-      <div className="flex gap-1 border-b-2 border-parchment dark:border-dm-border pb-0 overflow-x-auto" data-tour="registry-tabs">
+      {/* ── Sacrament Cards ─────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" data-tour="registry-tabs">
         {tabConfigs.map((t) => {
           const Icon = t.icon;
           const isActive = activeTab === t.key;
           return (
             <button
               key={t.key}
+              aria-pressed={isActive}
               onClick={() => { setActiveTab(t.key); setSearchQuery(''); setStatusFilter(''); setYearFilter(''); setOfficiantFilter(''); setShowArchived(false); }}
-              className="relative flex items-center gap-2 px-5 py-3 text-sm font-medium transition-all whitespace-nowrap"
-              style={{
-                color: isActive ? t.color : '#8C8374',
-                borderBottom: isActive ? `3px solid ${t.color}` : '3px solid transparent',
-                marginBottom: '-2px',
-              }}
+              className={`group relative flex items-center gap-3 overflow-hidden rounded-xl border p-4 text-left transition-all ${
+                isActive
+                  ? 'shadow-md -translate-y-0.5'
+                  : 'border-parchment bg-white hover:-translate-y-0.5 hover:shadow-sm dark:border-dm-border dark:bg-dm-surface'
+              }`}
+              style={
+                isActive
+                  ? { borderColor: t.color, backgroundColor: `${t.color}14`, boxShadow: `0 6px 16px ${t.color}22` }
+                  : undefined
+              }
             >
-              <Icon className="w-4 h-4" style={{ color: isActive ? t.color : '#8C8374' }} />
-              <span>{t.label}</span>
+              {isActive && (
+                <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: t.color }} />
+              )}
               <span
-                className="ml-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                style={{
-                  backgroundColor: isActive ? `${t.color}18` : '#F2EFE8',
-                  color: isActive ? t.color : '#8C8374',
-                }}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg"
+                style={{ backgroundColor: `${t.color}1F` }}
               >
-                {t.count}
+                <Icon className="w-5 h-5" style={{ color: t.color }} />
+              </span>
+              <span className="flex min-w-0 flex-col">
+                <span
+                  className="text-2xl font-bold leading-none text-charcoal dark:text-dm-text"
+                  style={isActive ? { color: t.color } : undefined}
+                >
+                  {t.count}
+                </span>
+                <span
+                  className="mt-1 truncate text-sm font-medium text-warm-gray dark:text-dm-text-muted"
+                  style={isActive ? { color: t.color } : undefined}
+                >
+                  {t.label}
+                </span>
               </span>
             </button>
           );
@@ -2134,7 +2166,7 @@ function ScheduleSection({
       <div className="grid grid-cols-2 gap-4 mt-3">
         <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} error={errors?.officiant} required>
           <option value="">Select officiant...</option>
-          {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+          {officiantOptions(officiant).map((o) => <option key={o} value={o}>{o}</option>)}
         </Field>
         <Field label="Location *" as="select" value={location} onChange={onChangeLocation} required>
           <option value="">Select location...</option>
@@ -2383,7 +2415,7 @@ function MarriageScheduleSection({
       <div className="grid grid-cols-2 gap-4 mt-3">
         <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} error={errors?.officiant} required>
           <option value="">Select officiant...</option>
-          {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+          {officiantOptions(officiant).map((o) => <option key={o} value={o}>{o}</option>)}
         </Field>
         {/* One-venue parish → no venue picker (stays simple, uses the single venue). */}
         {multiVenue && (
@@ -3459,7 +3491,7 @@ function RecordModal({
                     <div className="flex items-center">
                       <Field label="Officiant *" as="select" value={bForm.officiant || ''} onChange={(v) => bUpdate('officiant', v)} error={bErrors.officiant} required>
                         <option value="">Select officiant...</option>
-                        {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                        {officiantOptions(bForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                       </Field>
                       <HelpTooltip text={getLabel('field.officiant.help')} position="top" />
                     </div>
@@ -3668,7 +3700,7 @@ function RecordModal({
                   <Field label="Page # *" type="number" value={String(mForm.pageNumber || '')} onChange={(v) => mUpdate('pageNumber', parseInt(v) || 1)} error={mErrors.pageNumber} required />
                   <Field label="Officiant *" as="select" value={mForm.officiant || ''} onChange={(v) => mUpdate('officiant', v)} error={mErrors.officiant} required>
                     <option value="">Select officiant...</option>
-                    {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                    {officiantOptions(mForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                   </Field>
                 </div>
               </div>
@@ -3823,7 +3855,7 @@ function RecordModal({
                   <Field label="Page # *" type="number" value={String(cForm.pageNumber || '')} onChange={(v) => cUpdate('pageNumber', parseInt(v) || 1)} error={cErrors.pageNumber} required />
                   <Field label="Officiant *" as="select" value={cForm.officiant || ''} onChange={(v) => cUpdate('officiant', v)} error={cErrors.officiant} required>
                     <option value="">Select officiant...</option>
-                    {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                    {officiantOptions(cForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                   </Field>
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
@@ -3938,7 +3970,7 @@ function RecordModal({
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="Officiant *" as="select" value={dForm.officiant || ''} onChange={(v) => dUpdate('officiant', v)} error={dErrors.officiant} required>
                     <option value="">Select officiant...</option>
-                    {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                    {officiantOptions(dForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                   </Field>
                   <Field label="Cemetery" value={dForm.cemetery || ''} onChange={(v) => dUpdate('cemetery', v)} />
                 </div>

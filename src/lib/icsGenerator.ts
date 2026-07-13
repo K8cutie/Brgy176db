@@ -75,6 +75,37 @@ const DAY_MAP: Record<string, number> = {
   Thursday: 4, Friday: 5, Saturday: 6,
 };
 
+/* ── Priest / officiant scoping ──
+   Decide whether an event's or record's officiant belongs to the selected
+   priest. Prefer a canonical match — the officiant string equals the priest's
+   full name, or his name with a leading honorific ('Fr.'/'Msgr.'/'Rev.'/…)
+   stripped — both compared case-insensitively and trimmed. This is reliable
+   now that officiants are picked from the managed clergy list (lib/clergy.ts).
+   The old surname-substring test is kept only as a FALLBACK so legacy
+   free-text officiants ('Fr. A. Reyes', 'Reyes') still resolve. */
+const TITLE_PREFIXES = ['msgr.', 'msgr', 'rev.', 'rev', 'fr.', 'fr', 'bp.', 'bp', 'deacon'];
+function stripLeadingTitle(name: string): string {
+  const t = name.trim();
+  const lower = t.toLowerCase();
+  for (const p of TITLE_PREFIXES) {
+    if (lower.startsWith(p + ' ')) return t.slice(p.length).trim();
+  }
+  return t;
+}
+function officiantMatchesPriest(officiant: string | undefined | null, priestName: string): boolean {
+  if (!officiant) return false;
+  const off = officiant.trim().toLowerCase();
+  const full = priestName.trim().toLowerCase();
+  if (!full) return false;
+  // Canonical: exact full name, or name with the honorific stripped (either side).
+  if (off === full) return true;
+  const priestNoTitle = stripLeadingTitle(priestName).toLowerCase();
+  if (priestNoTitle && (off === priestNoTitle || stripLeadingTitle(officiant).toLowerCase() === priestNoTitle)) return true;
+  // Fallback: legacy free-text officiant → surname substring (original behaviour).
+  const surname = (priestName.trim().split(/\s+/).pop() || priestName).toLowerCase();
+  return !!surname && off.includes(surname);
+}
+
 /* ── Escape special chars for ICS ── */
 function icsEscape(str: string): string {
   return str
@@ -212,7 +243,7 @@ export function generatePriestIcs(opts: PriestScheduleOptions, data?: PriestSche
         ?? getJSON<RegistryRecord[]>(src.storageKey, src.seed)).filter((r) => !r.isDeleted);
       for (const r of records) {
         const schedOff = (r.scheduledOfficiant as string) || (r.officiant as string);
-        if (!schedOff || !schedOff.includes(priestName.split(' ').pop() || priestName)) continue;
+        if (!officiantMatchesPriest(schedOff, priestName)) continue;
 
         const schedDate = (r.scheduledDate as string) || (r.dateOfBaptism as string) || (r.dateOfMarriage as string) || (r.dateOfConfirmation as string) || (r.dateOfBurial as string);
         const schedTime = (r.scheduledTime as string) || '09:00';
@@ -252,7 +283,7 @@ export function generatePriestIcs(opts: PriestScheduleOptions, data?: PriestSche
   if (opts.includeEvents) {
     const calEvents = data?.events ?? getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
     for (const evt of calEvents) {
-      if (evt.officiant && !evt.officiant.includes(priestName.split(' ').pop() || priestName)) continue;
+      if (evt.officiant && !officiantMatchesPriest(evt.officiant, priestName)) continue;
       const eventDate = new Date(evt.date + 'T00:00:00');
       if (eventDate < now || eventDate > endDate) continue;
       events.push({
