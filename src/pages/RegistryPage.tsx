@@ -1491,7 +1491,7 @@ function ParishionerLookupAutocomplete({
   onChange,
   onSelect,
   error,
-  placeholder = 'Start typing to search...',
+  placeholder = 'Type a name...',
   required = false,
 }: {
   label: string;
@@ -2715,7 +2715,7 @@ function RecordModal({
                     onSelect={handleChildSelect}
                     error={bErrors.childFirstName}
                     required
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a name..."
                   />
                   <Field label="Middle Name" value={bForm.childMiddleName || ''} onChange={(v) => bUpdate('childMiddleName', v)} />
                 </div>
@@ -2743,7 +2743,7 @@ function RecordModal({
                 <div className="flex items-center justify-between mb-2">
                   <SectionHeader icon={Users} title="Parental Information" color="#6B2737" />
                   <span className="body-xs text-warm-gray dark:text-dm-text-muted flex items-center gap-1">
-                    <Search className="w-3 h-3" /> Type to search directory
+                    <Search className="w-3 h-3" /> Directory matches appear as you type
                   </span>
                 </div>
                 {/* Father */}
@@ -2760,7 +2760,7 @@ function RecordModal({
                     onSelect={handleFatherSelect}
                     error={bErrors.fatherFirstName}
                     required
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a name..."
                   />
                   <Field label="Father Middle Name" value={bForm.fatherMiddleName || ''} onChange={(v) => bUpdate('fatherMiddleName', v)} />
                 </div>
@@ -2778,7 +2778,7 @@ function RecordModal({
                     onSelect={handleMotherSelect}
                     error={bErrors.motherFirstName}
                     required
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a name..."
                   />
                   <Field label="Mother Middle Name" value={bForm.motherMiddleName || ''} onChange={(v) => bUpdate('motherMiddleName', v)} />
                   <div className="flex items-center">
@@ -2802,7 +2802,7 @@ function RecordModal({
                     value={bForm.godfatherFirstName || ''}
                     onChange={(v) => { bUpdate('godfatherFirstName', v); bUpdate('godfatherParishionerId', ''); }}
                     onSelect={handleGodfatherSelect}
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a name..."
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
@@ -2813,7 +2813,7 @@ function RecordModal({
                     value={bForm.godmotherFirstName || ''}
                     onChange={(v) => { bUpdate('godmotherFirstName', v); bUpdate('godmotherParishionerId', ''); }}
                     onSelect={handleGodmotherSelect}
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a name..."
                   />
                 </div>
               </div>
@@ -2911,7 +2911,7 @@ function RecordModal({
                     onSelect={handleGroomSelect}
                     error={mErrors.groomFirstName}
                     required
-                    placeholder="Type to search..."
+                    placeholder="Type a name..."
                   />
                   <Field label="Middle Name" value={mForm.groomMiddleName || ''} onChange={(v) => mUpdate('groomMiddleName', v)} />
                 </div>
@@ -2941,7 +2941,7 @@ function RecordModal({
                     onSelect={handleBrideSelect}
                     error={mErrors.brideFirstName}
                     required
-                    placeholder="Type to search..."
+                    placeholder="Type a name..."
                   />
                   <Field label="Middle Name" value={mForm.brideMiddleName || ''} onChange={(v) => mUpdate('brideMiddleName', v)} />
                 </div>
@@ -2970,7 +2970,7 @@ function RecordModal({
                     onSelect={handleWitness1Select}
                     error={mErrors.witness1Name}
                     required
-                    placeholder="Type a name or search the directory..."
+                    placeholder="Type a name..."
                   />
                   <ParishionerLookupAutocomplete
                     label="Witness 2 *"
@@ -2980,7 +2980,7 @@ function RecordModal({
                     onSelect={handleWitness2Select}
                     error={mErrors.witness2Name}
                     required
-                    placeholder="Type a name or search the directory..."
+                    placeholder="Type a name..."
                   />
                 </div>
               </div>
@@ -3082,7 +3082,7 @@ function RecordModal({
                     value={cForm.sponsorFirstName || ''}
                     onChange={(v) => { cUpdate('sponsorFirstName', v); cUpdate('sponsorParishionerId', ''); }}
                     onSelect={handleSponsorSelect}
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a name..."
                   />
                 </div>
               </div>
@@ -3156,7 +3156,7 @@ function RecordModal({
                     onSelect={handleDeceasedSelect}
                     error={dErrors.deceasedFirstName}
                     required
-                    placeholder="Type to search..."
+                    placeholder="Type a name..."
                   />
                   <Field label="Middle Name" value={dForm.deceasedMiddleName || ''} onChange={(v) => dUpdate('deceasedMiddleName', v)} />
                 </div>
