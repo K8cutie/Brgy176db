@@ -1348,8 +1348,8 @@ export default function RegistryPage() {
             ) : (
             <EmptyState
               icon={BookOpen}
-              title={getLabel('registry.empty.title', 'No baptism records yet')}
-              description={getLabel('registry.empty.description', "When you start recording baptisms, they'll appear here. Click 'Add New Record' to begin!")}
+              title={getLabel('registry.empty.title', `No ${activeConfig.label.toLowerCase()} records yet`)}
+              description={getLabel('registry.empty.description', `When you start recording ${activeConfig.label.toLowerCase()} records, they'll appear here. Click 'Add New Record' to begin!`)}
               tip={getLabel('registry.empty.tip', 'You can also search existing records by name or date.')}
               actionLabel={getLabel('registry.add', 'Add Record')}
               actionIcon={Plus}
