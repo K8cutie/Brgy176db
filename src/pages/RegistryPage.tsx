@@ -1539,7 +1539,6 @@ function ParishionerLookupAutocomplete({
   };
 
   const handleSelect = (p: ParishionerLookup) => {
-    setQuery(p.firstName);
     onSelect(p);
     setOpen(false);
   };
@@ -2706,17 +2705,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={Droplets} title="Child Information" color="#2D6A4F" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={bForm.childLastName || ''} onChange={(v) => bUpdate('childLastName', v)} error={bErrors.childLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={bForm.childFirstName || ''}
-                    onChange={(v) => { bUpdate('childFirstName', v); bUpdate('childParishionerId', ''); }}
+                    value={bForm.childLastName || ''}
+                    onChange={(v) => { bUpdate('childLastName', v); bUpdate('childParishionerId', ''); }}
                     onSelect={handleChildSelect}
-                    error={bErrors.childFirstName}
+                    error={bErrors.childLastName}
                     required
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={bForm.childFirstName || ''} onChange={(v) => bUpdate('childFirstName', v)} error={bErrors.childFirstName} required />
                   <Field label="Middle Name" value={bForm.childMiddleName || ''} onChange={(v) => bUpdate('childMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -2749,37 +2748,37 @@ function RecordModal({
                 {/* Father */}
                 <div className="grid grid-cols-3 gap-4 mt-2">
                   <div className="flex items-center">
-                    <Field label="Father Last Name *" value={bForm.fatherLastName || ''} onChange={(v) => bUpdate('fatherLastName', v)} error={bErrors.fatherLastName} required />
+                    <ParishionerLookupAutocomplete
+                      label="Father Last Name *"
+                      options={parishioners}
+                      value={bForm.fatherLastName || ''}
+                      onChange={(v) => { bUpdate('fatherLastName', v); bUpdate('fatherParishionerId', ''); }}
+                      onSelect={handleFatherSelect}
+                      error={bErrors.fatherLastName}
+                      required
+                      placeholder="Type a surname..."
+                    />
                     <HelpTooltip text={getLabel('field.fatherName.help')} canonLaw={getLabel('field.godparents.canon')} position="top" />
                   </div>
-                  <ParishionerLookupAutocomplete
-                    label="Father First Name *"
-                    options={parishioners}
-                    value={bForm.fatherFirstName || ''}
-                    onChange={(v) => { bUpdate('fatherFirstName', v); bUpdate('fatherParishionerId', ''); }}
-                    onSelect={handleFatherSelect}
-                    error={bErrors.fatherFirstName}
-                    required
-                    placeholder="Type a name..."
-                  />
+                  <Field label="Father First Name *" value={bForm.fatherFirstName || ''} onChange={(v) => bUpdate('fatherFirstName', v)} error={bErrors.fatherFirstName} required />
                   <Field label="Father Middle Name" value={bForm.fatherMiddleName || ''} onChange={(v) => bUpdate('fatherMiddleName', v)} />
                 </div>
                 {/* Mother */}
                 <div className="grid grid-cols-4 gap-4 mt-3">
                   <div className="flex items-center">
-                    <Field label="Mother Maiden Last *" value={bForm.motherLastName || ''} onChange={(v) => bUpdate('motherLastName', v)} error={bErrors.motherLastName} required />
+                    <ParishionerLookupAutocomplete
+                      label="Mother Maiden Last *"
+                      options={parishioners}
+                      value={bForm.motherLastName || ''}
+                      onChange={(v) => { bUpdate('motherLastName', v); bUpdate('motherParishionerId', ''); }}
+                      onSelect={handleMotherSelect}
+                      error={bErrors.motherLastName}
+                      required
+                      placeholder="Type a surname..."
+                    />
                     <HelpTooltip text={getLabel('field.motherName.help')} position="top" />
                   </div>
-                  <ParishionerLookupAutocomplete
-                    label="Mother First Name *"
-                    options={parishioners}
-                    value={bForm.motherFirstName || ''}
-                    onChange={(v) => { bUpdate('motherFirstName', v); bUpdate('motherParishionerId', ''); }}
-                    onSelect={handleMotherSelect}
-                    error={bErrors.motherFirstName}
-                    required
-                    placeholder="Type a name..."
-                  />
+                  <Field label="Mother First Name *" value={bForm.motherFirstName || ''} onChange={(v) => bUpdate('motherFirstName', v)} error={bErrors.motherFirstName} required />
                   <Field label="Mother Middle Name" value={bForm.motherMiddleName || ''} onChange={(v) => bUpdate('motherMiddleName', v)} />
                   <div className="flex items-center">
                     <Field label="Mother Maiden Name" value={bForm.motherMaidenName || ''} onChange={(v) => bUpdate('motherMaidenName', v)} placeholder="e.g., Reyes" />
@@ -2795,26 +2794,26 @@ function RecordModal({
                   <HelpTooltip text={getLabel('field.godfather.help')} canonLaw={getLabel('field.godparents.canon')} position="right" />
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
-                  <Field label="Godfather Last Name" value={bForm.godfatherLastName || ''} onChange={(v) => bUpdate('godfatherLastName', v)} />
                   <ParishionerLookupAutocomplete
-                    label="Godfather First Name"
+                    label="Godfather Last Name"
                     options={parishioners}
-                    value={bForm.godfatherFirstName || ''}
-                    onChange={(v) => { bUpdate('godfatherFirstName', v); bUpdate('godfatherParishionerId', ''); }}
+                    value={bForm.godfatherLastName || ''}
+                    onChange={(v) => { bUpdate('godfatherLastName', v); bUpdate('godfatherParishionerId', ''); }}
                     onSelect={handleGodfatherSelect}
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="Godfather First Name" value={bForm.godfatherFirstName || ''} onChange={(v) => bUpdate('godfatherFirstName', v)} />
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
-                  <Field label="Godmother Last Name" value={bForm.godmotherLastName || ''} onChange={(v) => bUpdate('godmotherLastName', v)} />
                   <ParishionerLookupAutocomplete
-                    label="Godmother First Name"
+                    label="Godmother Last Name"
                     options={parishioners}
-                    value={bForm.godmotherFirstName || ''}
-                    onChange={(v) => { bUpdate('godmotherFirstName', v); bUpdate('godmotherParishionerId', ''); }}
+                    value={bForm.godmotherLastName || ''}
+                    onChange={(v) => { bUpdate('godmotherLastName', v); bUpdate('godmotherParishionerId', ''); }}
                     onSelect={handleGodmotherSelect}
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="Godmother First Name" value={bForm.godmotherFirstName || ''} onChange={(v) => bUpdate('godmotherFirstName', v)} />
                 </div>
               </div>
 
@@ -2902,17 +2901,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={User} title="Groom Information" color="#2D6A4F" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={mForm.groomLastName || ''} onChange={(v) => mUpdate('groomLastName', v)} error={mErrors.groomLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={mForm.groomFirstName || ''}
-                    onChange={(v) => { mUpdate('groomFirstName', v); mUpdate('groomParishionerId', ''); }}
+                    value={mForm.groomLastName || ''}
+                    onChange={(v) => { mUpdate('groomLastName', v); mUpdate('groomParishionerId', ''); }}
                     onSelect={handleGroomSelect}
-                    error={mErrors.groomFirstName}
+                    error={mErrors.groomLastName}
                     required
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={mForm.groomFirstName || ''} onChange={(v) => mUpdate('groomFirstName', v)} error={mErrors.groomFirstName} required />
                   <Field label="Middle Name" value={mForm.groomMiddleName || ''} onChange={(v) => mUpdate('groomMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -2932,17 +2931,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={User} title="Bride Information" color="#6B2737" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={mForm.brideLastName || ''} onChange={(v) => mUpdate('brideLastName', v)} error={mErrors.brideLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={mForm.brideFirstName || ''}
-                    onChange={(v) => { mUpdate('brideFirstName', v); mUpdate('brideParishionerId', ''); }}
+                    value={mForm.brideLastName || ''}
+                    onChange={(v) => { mUpdate('brideLastName', v); mUpdate('brideParishionerId', ''); }}
                     onSelect={handleBrideSelect}
-                    error={mErrors.brideFirstName}
+                    error={mErrors.brideLastName}
                     required
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={mForm.brideFirstName || ''} onChange={(v) => mUpdate('brideFirstName', v)} error={mErrors.brideFirstName} required />
                   <Field label="Middle Name" value={mForm.brideMiddleName || ''} onChange={(v) => mUpdate('brideMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -3075,15 +3074,15 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={User} title="Sponsor" color="#5B3A73" />
                 <div className="grid grid-cols-2 gap-4 mt-3">
-                  <Field label="Sponsor Last Name" value={cForm.sponsorLastName || ''} onChange={(v) => cUpdate('sponsorLastName', v)} />
                   <ParishionerLookupAutocomplete
-                    label="Sponsor First Name"
+                    label="Sponsor Last Name"
                     options={parishioners}
-                    value={cForm.sponsorFirstName || ''}
-                    onChange={(v) => { cUpdate('sponsorFirstName', v); cUpdate('sponsorParishionerId', ''); }}
+                    value={cForm.sponsorLastName || ''}
+                    onChange={(v) => { cUpdate('sponsorLastName', v); cUpdate('sponsorParishionerId', ''); }}
                     onSelect={handleSponsorSelect}
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="Sponsor First Name" value={cForm.sponsorFirstName || ''} onChange={(v) => cUpdate('sponsorFirstName', v)} />
                 </div>
               </div>
 
@@ -3147,17 +3146,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={Cross} title="Deceased Information" color="#3D3A36" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={dForm.deceasedLastName || ''} onChange={(v) => dUpdate('deceasedLastName', v)} error={dErrors.deceasedLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={dForm.deceasedFirstName || ''}
-                    onChange={(v) => { dUpdate('deceasedFirstName', v); dUpdate('deceasedParishionerId', ''); }}
+                    value={dForm.deceasedLastName || ''}
+                    onChange={(v) => { dUpdate('deceasedLastName', v); dUpdate('deceasedParishionerId', ''); }}
                     onSelect={handleDeceasedSelect}
-                    error={dErrors.deceasedFirstName}
+                    error={dErrors.deceasedLastName}
                     required
-                    placeholder="Type a name..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={dForm.deceasedFirstName || ''} onChange={(v) => dUpdate('deceasedFirstName', v)} error={dErrors.deceasedFirstName} required />
                   <Field label="Middle Name" value={dForm.deceasedMiddleName || ''} onChange={(v) => dUpdate('deceasedMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
