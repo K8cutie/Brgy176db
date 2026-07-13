@@ -51,6 +51,9 @@ import {
   type RegistryAnnotation,
   type RegistryAnnotationType,
   type SoftDeletable,
+  type RecordLifecycleStatus,
+  recordStatus,
+  isOverdueScheduled,
   baptismRecords,
   marriageRecords,
   confirmationRecords,
@@ -201,6 +204,40 @@ function statusBadge(status: string) {
     Dispensed: 'cos-badge-info',
   };
   return map[status] || 'cos-badge-default';
+}
+
+/* Lifecycle badge — Solemnized (green/official), Scheduled (amber/neutral),
+   Cancelled (red, de-emphasized). Reuses the cos-badge palette. Separate from
+   the canonical `status` badge above. */
+const LIFECYCLE_BADGE: Record<RecordLifecycleStatus, string> = {
+  solemnized: 'cos-badge-success',
+  scheduled: 'cos-badge-warning',
+  cancelled: 'cos-badge-error',
+};
+const LIFECYCLE_LABEL: Record<RecordLifecycleStatus, string> = {
+  solemnized: 'Solemnized',
+  scheduled: 'Scheduled',
+  cancelled: 'Cancelled',
+};
+
+/** Renders a record's lifecycle badge. An overdue scheduled record (ceremony
+ *  date passed, still not closed out) gets a distinct "Needs status" chip rather
+ *  than the plain amber Scheduled badge. */
+function LifecycleBadge({ record }: { record: RegistryRecord }) {
+  const st = recordStatus(record);
+  if (st === 'scheduled' && isOverdueScheduled(record)) {
+    return (
+      <span className="cos-badge cos-badge-error inline-flex items-center gap-1" title="Ceremony date has passed — mark solemnized or cancelled">
+        <AlertCircle className="w-3 h-3" />
+        Needs status
+      </span>
+    );
+  }
+  return (
+    <span className={`cos-badge ${LIFECYCLE_BADGE[st]} ${st === 'cancelled' ? 'opacity-70' : ''}`}>
+      {LIFECYCLE_LABEL[st]}
+    </span>
+  );
 }
 
 function genId(prefix: string) {
@@ -533,6 +570,11 @@ export default function RegistryPage() {
   const [yearFilter, setYearFilter] = useState('');
   const [officiantFilter, setOfficiantFilter] = useState('');
   const [highlightId, setHighlightId] = useState('');
+  /* "Needs closing out" quick filter — when on, the list shows only overdue
+     scheduled records (nudge, never a hard filter of the underlying data). */
+  const [showOverdueOnly, setShowOverdueOnly] = useState(false);
+  /* Cancel-a-record confirmation (reuses ConfirmationDialog). */
+  const [cancelDialog, setCancelDialog] = useState<{ open: boolean; id: string }>({ open: false, id: '' });
   const { toasts, addToast, removeToast } = useToasts();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -559,8 +601,23 @@ export default function RegistryPage() {
   const cBase = useMemo(() => (showArchived ? cData.filter((r) => r.isDeleted) : cLive), [showArchived, cData, cLive]);
   const dBase = useMemo(() => (showArchived ? dData.filter((r) => r.isDeleted) : dLive), [showArchived, dData, dLive]);
 
-  const tabConfigs = useMemo(() => tabs(bLive.length, mLive.length, cLive.length, dLive.length), [bLive.length, mLive.length, cLive.length, dLive.length]);
+  /* Per-tab COUNT = live records that are NOT cancelled (scheduled + solemnized).
+     Cancelled records still show in the list (flagged) but must not inflate the
+     count. Distinct from the archived/soft-delete filter. */
+  const bCount = useMemo(() => bLive.filter((r) => recordStatus(r) !== 'cancelled').length, [bLive]);
+  const mCount = useMemo(() => mLive.filter((r) => recordStatus(r) !== 'cancelled').length, [mLive]);
+  const cCount = useMemo(() => cLive.filter((r) => recordStatus(r) !== 'cancelled').length, [cLive]);
+  const dCount = useMemo(() => dLive.filter((r) => recordStatus(r) !== 'cancelled').length, [dLive]);
+
+  const tabConfigs = useMemo(() => tabs(bCount, mCount, cCount, dCount), [bCount, mCount, cCount, dCount]);
   const activeConfig = tabConfigs.find((t) => t.key === activeTab)!;
+
+  /* Overdue-scheduled (ceremony date passed, still not closed out) — live rows
+     only. Drives the top banner + the "needs closing out" filter. */
+  const activeOverdueCount = useMemo(() => {
+    const live = activeTab === 'baptism' ? bLive : activeTab === 'marriage' ? mLive : activeTab === 'confirmation' ? cLive : dLive;
+    return (live as RegistryRecord[]).filter((r) => isOverdueScheduled(r)).length;
+  }, [activeTab, bLive, mLive, cLive, dLive]);
 
   const archivedCount =
     activeTab === 'baptism' ? bData.length - bLive.length
@@ -576,12 +633,28 @@ export default function RegistryPage() {
     if (paramsHandled.current) return;
     const action = searchParams.get('action');
     const id = searchParams.get('id');
-    if (!action && !id) return;
+    const view = searchParams.get('view');
+    if (!action && !id && !view) return;
     paramsHandled.current = true;
 
     if (action === 'add') {
       setEditingRecord(null);
       setRecordModal('add');
+    }
+
+    // ?view=overdue (dashboard "Review") — turn on the "needs closing out"
+    // filter and land on the first tab that actually has overdue records.
+    if (view === 'overdue') {
+      const overdueTab: SacramentTab | null =
+        bLive.some((r) => isOverdueScheduled(r)) ? 'baptism'
+        : mLive.some((r) => isOverdueScheduled(r)) ? 'marriage'
+        : cLive.some((r) => isOverdueScheduled(r)) ? 'confirmation'
+        : dLive.some((r) => isOverdueScheduled(r)) ? 'death'
+        : null;
+      setShowArchived(false);
+      setSearchQuery('');
+      setShowOverdueOnly(true);
+      if (overdueTab) setActiveTab(overdueTab);
     }
 
     if (id) {
@@ -612,6 +685,7 @@ export default function RegistryPage() {
     const next = new URLSearchParams(searchParams);
     next.delete('action');
     next.delete('id');
+    next.delete('view');
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, bData, mData, cData, dData]);
@@ -635,6 +709,7 @@ export default function RegistryPage() {
      actually change (DataTable resets to page 1 on a new data identity). */
   const baptismFiltered = useMemo(() => bBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfBaptism)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -645,10 +720,11 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [bBase, matchesFilters, searchQuery]);
+  }), [bBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   const marriageFiltered = useMemo(() => mBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfMarriage)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -658,10 +734,11 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [mBase, matchesFilters, searchQuery]);
+  }), [mBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   const confirmationFiltered = useMemo(() => cBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfConfirmation)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -670,10 +747,11 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [cBase, matchesFilters, searchQuery]);
+  }), [cBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   const deathFiltered = useMemo(() => dBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfDeath)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -682,7 +760,7 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [dBase, matchesFilters, searchQuery]);
+  }), [dBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   /* actions */
   const handleEdit = useCallback(
@@ -758,8 +836,50 @@ export default function RegistryPage() {
   };
 
   const handleGenerateCert = (record: RegistryRecord) => {
+    // A certificate attests a CONFERRED sacrament. Scheduled (not yet performed)
+    // and cancelled (didn't push through) records are never certifiable — this
+    // guard makes it impossible even if a caller bypasses the disabled button.
+    const st = recordStatus(record);
+    if (st !== 'solemnized') {
+      addToast(
+        st === 'cancelled'
+          ? 'This record is cancelled — a certificate cannot be issued.'
+          : 'Not yet solemnized — mark the ceremony solemnized before issuing a certificate.',
+        'warning',
+      );
+      return;
+    }
     setCertRecord(record);
     setCertModal(true);
+  };
+
+  /* ── LIFECYCLE STATUS CHANGES (persist via the record store; audited) ──
+     On cancel we deliberately DO NOT touch the calendar event or scheduling —
+     the parish keeps the slot; staff free it manually from the Calendar. */
+  const applyLifecycle = (id: string, next: RecordLifecycleStatus) => {
+    const target = activeData().find((r) => r.id === id);
+    if (activeTab === 'baptism') setBData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    if (activeTab === 'marriage') setMData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    if (activeTab === 'confirmation') setCData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    if (activeTab === 'death') setDData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    const verb = next === 'solemnized' ? 'Marked solemnized' : next === 'cancelled' ? 'Cancelled' : 'Reset to scheduled';
+    appendRegistryAudit(
+      'Status changed',
+      id,
+      `${verb} ${activeConfig.label.toLowerCase()} record${target ? ` for ${getPersonName(target, activeTab)}` : ''}`,
+    );
+    addToast(
+      next === 'solemnized' ? 'Marked as solemnized — now an official record'
+      : next === 'cancelled' ? 'Record cancelled — kept for the audit trail, not counted as conferred'
+      : 'Reset to scheduled',
+      next === 'cancelled' ? 'warning' : 'success',
+    );
+  };
+
+  const handleCancelRecord = (id: string) => setCancelDialog({ open: true, id });
+  const confirmCancelRecord = () => {
+    if (cancelDialog.id) applyLifecycle(cancelDialog.id, 'cancelled');
+    setCancelDialog({ open: false, id: '' });
   };
 
   /* Canon 535 behavior: a NEW confirmation/marriage annotates the margin of
@@ -965,6 +1085,14 @@ export default function RegistryPage() {
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
     },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
+    },
   ];
 
   const marriageColumns: Column<MarriageRecord>[] = [
@@ -991,6 +1119,14 @@ export default function RegistryPage() {
       width: '90px',
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
+    },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
     },
   ];
 
@@ -1019,6 +1155,14 @@ export default function RegistryPage() {
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
     },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
+    },
   ];
 
   const deathColumns: Column<DeathRecord>[] = [
@@ -1046,6 +1190,14 @@ export default function RegistryPage() {
       width: '90px',
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
+    },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
     },
   ];
 
@@ -1370,6 +1522,33 @@ export default function RegistryPage() {
         </div>
       </motion.div>
 
+      {/* ── Overdue-scheduled alert banner (nudge — never blocks) ── */}
+      {!showArchived && (activeOverdueCount > 0 || showOverdueOnly) && (
+        <div className="mb-4 flex items-start gap-3 rounded-lg border border-error/40 bg-error/[0.08] px-4 py-3">
+          <AlertCircle className="w-5 h-5 text-error shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            {activeOverdueCount > 0 ? (
+              <>
+                <p className="body-md font-semibold text-charcoal dark:text-dm-text">
+                  {activeOverdueCount} {activeConfig.label.toLowerCase()} {activeOverdueCount === 1 ? 'ceremony has' : 'ceremonies have'} passed but {activeOverdueCount === 1 ? "isn't" : "aren't"} closed out
+                </p>
+                <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-0.5">
+                  Mark {activeOverdueCount === 1 ? 'it' : 'them'} solemnized or cancelled to keep the register accurate.
+                </p>
+              </>
+            ) : (
+              <p className="body-md text-charcoal dark:text-dm-text">No overdue {activeConfig.label.toLowerCase()} records in this tab.</p>
+            )}
+          </div>
+          <button
+            onClick={() => setShowOverdueOnly((v) => !v)}
+            className="cos-btn cos-btn-secondary h-8 px-3 text-xs shrink-0"
+          >
+            {showOverdueOnly ? 'Show all' : 'Show only these'}
+          </button>
+        </div>
+      )}
+
       {/* ── Data Table / Empty State ──────────────── */}
       <AnimatePresence>
         <motion.div
@@ -1418,30 +1597,67 @@ export default function RegistryPage() {
                       <RotateCcw className="w-4 h-4" />
                     </button>
                   ) : (
-                    <>
-                      <button
-                        onClick={() => handleEdit(row as unknown as BaptismRecord & MarriageRecord & ConfirmationRecord & DeathRecord)}
-                        className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
-                        title="Edit"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleGenerateCert(row as unknown as RegistryRecord)}
-                        className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-cream-dark transition-colors"
-                        title="Generate Certificate"
-                        data-tour="registry-certificate"
-                      >
-                        <Printer className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete((row as unknown as { id: string }).id)}
-                        className="p-1.5 rounded-md text-warm-gray hover:text-error hover:bg-error/10 transition-colors"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </>
+                    (() => {
+                      const rec = row as unknown as RegistryRecord;
+                      const st = recordStatus(rec);
+                      const canCert = st === 'solemnized';
+                      return (
+                        <>
+                          <button
+                            onClick={() => handleEdit(row as unknown as BaptismRecord & MarriageRecord & ConfirmationRecord & DeathRecord)}
+                            className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
+                            title="Edit"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          {/* ── Lifecycle status changes ── */}
+                          {st !== 'solemnized' && (
+                            <button
+                              onClick={() => applyLifecycle(rec.id, 'solemnized')}
+                              className="p-1.5 rounded-md text-warm-gray hover:text-success hover:bg-success/10 transition-colors"
+                              title="Mark as solemnized"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {st !== 'scheduled' && (
+                            <button
+                              onClick={() => applyLifecycle(rec.id, 'scheduled')}
+                              className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
+                              title="Reset to scheduled"
+                            >
+                              <Clock className="w-4 h-4" />
+                            </button>
+                          )}
+                          {st !== 'cancelled' && (
+                            <button
+                              onClick={() => handleCancelRecord(rec.id)}
+                              className="p-1.5 rounded-md text-warm-gray hover:text-error hover:bg-error/10 transition-colors"
+                              title="Cancel record"
+                            >
+                              <Ban className="w-4 h-4" />
+                            </button>
+                          )}
+                          {/* ── Certificate — SOLEMNIZED only ── */}
+                          <button
+                            onClick={() => handleGenerateCert(rec)}
+                            disabled={!canCert}
+                            className={`p-1.5 rounded-md transition-colors ${canCert ? 'text-warm-gray hover:text-gold hover:bg-cream-dark' : 'text-warm-gray/40 cursor-not-allowed'}`}
+                            title={canCert ? 'Generate Certificate' : st === 'cancelled' ? 'This record is cancelled — no certificate' : 'Not yet solemnized — no certificate'}
+                            data-tour="registry-certificate"
+                          >
+                            <Printer className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete((row as unknown as { id: string }).id)}
+                            className="p-1.5 rounded-md text-warm-gray hover:text-error hover:bg-error/10 transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      );
+                    })()
                   )}
                 </div>
               )}
@@ -1487,6 +1703,18 @@ export default function RegistryPage() {
         variant="danger"
         onConfirm={confirmDelete}
         onCancel={() => setDeleteDialog({ open: false, id: '' })}
+      />
+
+      {/* ── Cancel-record Confirmation ─────────────── */}
+      <ConfirmationDialog
+        isOpen={cancelDialog.open}
+        title={`Cancel ${activeConfig.label} Record`}
+        message={`Mark this ${activeConfig.label.toLowerCase()} record as cancelled? It stays on file for the audit trail (flagged, de-emphasized) but is NOT certifiable and is NOT counted as a conferred sacrament. The calendar slot is kept — free it manually from the Calendar if needed.`}
+        confirmLabel="Cancel record"
+        cancelLabel="Keep as is"
+        variant="warning"
+        onConfirm={confirmCancelRecord}
+        onCancel={() => setCancelDialog({ open: false, id: '' })}
       />
 
       {/* ── Toasts ─────────────────────────────────── */}
@@ -3050,6 +3278,7 @@ function RecordModal({
         addressStreet: bForm.addressStreet || '', addressBarangay: bForm.addressBarangay || BARANGAYS[0], addressSitio: bForm.addressSitio || '', addressCity: bForm.addressCity || CITIES[0], addressProvince: bForm.addressProvince || PROVINCES[0],
         dateOfBaptism: bForm.dateOfBaptism!, timeOfBaptism: bForm.timeOfBaptism || '9:00 AM', officiant: bForm.officiant!, bookNumber: Number(bForm.bookNumber) || 1, pageNumber: Number(bForm.pageNumber) || 1,
         notations: bForm.notations || '', status: (bForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: bForm.scheduledDate || bForm.dateOfBaptism!, scheduledTime: bForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: bForm.scheduledOfficiant || bForm.officiant!, scheduledLocation: bForm.scheduledLocation || baptismLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
@@ -3089,6 +3318,7 @@ function RecordModal({
         dateOfMarriage: mForm.dateOfMarriage!, timeOfMarriage: mForm.timeOfMarriage || '10:00 AM',
         officiant: mForm.officiant!, bookNumber: Number(mForm.bookNumber) || 1, pageNumber: Number(mForm.pageNumber) || 1,
         notations: mForm.notations || '', status: (mForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: mForm.scheduledDate || mForm.dateOfMarriage!, scheduledTime: mForm.scheduledTime || '10:00 AM',
         scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mVenueName,
         calendarEventId: record?.calendarEventId || undefined,
@@ -3119,6 +3349,7 @@ function RecordModal({
         dateOfConfirmation: cForm.dateOfConfirmation!, timeOfConfirmation: cForm.timeOfConfirmation || '9:00 AM',
         bookNumber: Number(cForm.bookNumber) || 1, pageNumber: Number(cForm.pageNumber) || 1,
         notations: cForm.notations || '', status: (cForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: cForm.scheduledDate || cForm.dateOfConfirmation!, scheduledTime: cForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: cForm.scheduledOfficiant || cForm.officiant!, scheduledLocation: cForm.scheduledLocation || confirmationLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
@@ -3142,6 +3373,7 @@ function RecordModal({
         causeOfDeath: dForm.causeOfDeath || '', cemetery: dForm.cemetery || 'San Lorenzo Cemetery',
         officiant: dForm.officiant!, bookNumber: Number(dForm.bookNumber) || 1, pageNumber: Number(dForm.pageNumber) || 1,
         notations: dForm.notations || '', status: (dForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: dForm.scheduledDate || dForm.dateOfBurial!, scheduledTime: dForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: dForm.scheduledOfficiant || dForm.officiant!, scheduledLocation: dForm.scheduledLocation || burialLocations[0],
         calendarEventId: record?.calendarEventId || undefined,

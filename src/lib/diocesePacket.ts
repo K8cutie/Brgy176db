@@ -10,6 +10,7 @@ import { getModuleRegistry } from './moduleRegistry';
 import { getAttendanceSummary } from './attendance';
 import * as ns from './storageNamespaced';
 import { KEYS } from './storageKeys';
+import { recordStatus, type RecordLifecycleStatus } from './registryData';
 
 // Soft-deleted records (shared contract: optional isDeleted flag) must not
 // inflate diocese-facing counts.
@@ -188,11 +189,21 @@ function buildFinancialSummary(identity: ParishIdentity): FinancialSummary {
 }
 
 // ── Build sacramental counts ──
+// These are CONFERRED-sacrament counts reported to the diocese, so only
+// SOLEMNIZED records count — scheduled (not yet performed) and cancelled (didn't
+// push through) records are excluded. recordStatus() treats legacy records (no
+// lifecycleStatus) as solemnized, so historical counts are unchanged.
+function solemnizedCount(key: string): number {
+  return liveRecords(key).filter(
+    (r) => recordStatus(r as { lifecycleStatus?: RecordLifecycleStatus }) === 'solemnized',
+  ).length;
+}
+
 function buildSacramentalCounts(): SacramentalCounts {
-  const baptisms = liveRecords(KEYS.baptismRecords).length;
-  const weddings = liveRecords(KEYS.marriageRecords).length;
-  const confirmations = liveRecords(KEYS.confirmationRecords).length;
-  const burials = liveRecords(KEYS.deathRecords).length;
+  const baptisms = solemnizedCount(KEYS.baptismRecords);
+  const weddings = solemnizedCount(KEYS.marriageRecords);
+  const confirmations = solemnizedCount(KEYS.confirmationRecords);
+  const burials = solemnizedCount(KEYS.deathRecords);
 
   return { baptisms, weddings, confirmations, burials };
 }
