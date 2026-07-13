@@ -81,6 +81,8 @@ export interface BaptismRecord {
   notations: string;
   annotations?: RegistryAnnotation[];
   status: 'Active' | 'Cancelled' | 'Annotated';
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -128,6 +130,8 @@ export interface MarriageRecord {
   notations: string;
   annotations?: RegistryAnnotation[];
   status: 'Active' | 'Annulled' | 'Dispensed';
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -168,6 +172,8 @@ export interface ConfirmationRecord {
   notations: string;
   annotations?: RegistryAnnotation[];
   status: 'Active' | 'Cancelled';
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -203,6 +209,8 @@ export interface DeathRecord {
   notations: string;
   annotations?: RegistryAnnotation[];
   status: 'Active' | 'Annotated';
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;

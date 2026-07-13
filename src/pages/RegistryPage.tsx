@@ -33,6 +33,8 @@ import {
   Archive,
   Link2,
   Ban,
+  ClipboardCheck,
+  CheckCircle2,
 } from 'lucide-react';
 import DataTable from '@/components/DataTable';
 import type { Column } from '@/components/DataTable';
@@ -115,6 +117,7 @@ import { KEYS } from '@/lib/storageKeys';
 import * as ns from '@/lib/storageNamespaced';
 import { getCurrentUserName } from '@/lib/session';
 import { todayISO } from '@/lib/massIntentions';
+import { getSacramentInfo, buildAckSummary, type RequirementKind } from '@/lib/sacramentRequirements';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -1645,6 +1648,115 @@ function SectionHeader({ icon: Icon, title, color }: { icon: React.ElementType; 
 }
 
 /* =====================================================================
+   SacramentRequirementsChecklist — STAFF-side "did the family bring the
+   papers / do the prep" checklist, reusing the shared sacramentRequirements
+   catalog (same source of truth the parishioner portal uses). WARN-ONLY:
+   nothing here blocks a save — it just tracks what's submitted and surfaces
+   what's still pending. Requirements are grouped by kind with small headers,
+   each detail surfaced through the existing HelpTooltip.
+   ===================================================================== */
+const REQ_KIND_META: Record<RequirementKind, { label: string; bg: string; fg: string }> = {
+  document: { label: 'Documents', bg: '#EEF3F8', fg: '#3D6285' },
+  preparation: { label: 'Preparation', bg: '#EFF6F1', fg: '#2D6A4F' },
+  sponsor: { label: 'Sponsors', bg: '#F6EFF6', fg: '#7A4E7E' },
+  eligibility: { label: 'Eligibility', bg: '#FAF3E4', fg: '#96690F' },
+};
+const REQ_KIND_ORDER: RequirementKind[] = ['document', 'preparation', 'sponsor', 'eligibility'];
+
+function SacramentRequirementsChecklist({
+  sacramentKey,
+  checkedIds,
+  onToggle,
+}: {
+  sacramentKey: string;
+  checkedIds: string[];
+  onToggle: (id: string, checked: boolean) => void;
+}) {
+  const info = getSacramentInfo(sacramentKey);
+  if (!info) return null;
+
+  const checked = new Set(checkedIds);
+  const total = info.requirements.length;
+  const done = info.requirements.filter((r) => checked.has(r.id)).length;
+  const complete = done === total && total > 0;
+  const ack = buildAckSummary(info, checkedIds); // reuse the shared summary builder
+
+  return (
+    <div className="border-t border-parchment dark:border-dm-border pt-5">
+      <SectionHeader icon={ClipboardCheck} title="Requirements Checklist" color="#3D6285" />
+      <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1">
+        Tick off what the family has submitted or completed. This never blocks saving — it only flags what is still pending.
+      </p>
+
+      {/* Completion status — green when complete, amber (persistent) when pending */}
+      <div
+        className={`mt-3 p-3 rounded-lg border flex items-start gap-2 ${
+          complete ? 'bg-success/10 border-success/30' : 'bg-warning/10 border-warning/30'
+        }`}
+      >
+        {complete ? (
+          <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0 mt-0.5" />
+        ) : (
+          <AlertCircle className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+        )}
+        <div className="min-w-0">
+          {complete ? (
+            <p className="body-sm text-success font-semibold">{done} of {total} submitted — all requirements complete</p>
+          ) : (
+            <>
+              <p className="body-sm text-amber-700 dark:text-amber-400 font-semibold">
+                {done} of {total} submitted — {total - done} still pending
+              </p>
+              <p className="body-xs text-amber-600 dark:text-amber-300 mt-0.5">
+                Still pending: {ack.missing}
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Requirements grouped by kind */}
+      <div className="mt-3 space-y-4">
+        {REQ_KIND_ORDER.map((kind) => {
+          const items = info.requirements.filter((r) => r.kind === kind);
+          if (items.length === 0) return null;
+          const meta = REQ_KIND_META[kind];
+          return (
+            <div key={kind}>
+              <span
+                className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+                style={{ backgroundColor: meta.bg, color: meta.fg }}
+              >
+                {meta.label}
+              </span>
+              <div className="mt-2 space-y-1">
+                {items.map((r) => (
+                  <label
+                    key={r.id}
+                    className="flex items-start gap-2.5 cursor-pointer p-1.5 rounded-lg hover:bg-cream-dark/30 dark:hover:bg-dm-surface-raised/30 transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked.has(r.id)}
+                      onChange={(e) => onToggle(r.id, e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded border-parchment text-gold focus:ring-2 focus:ring-gold/30 flex-shrink-0"
+                    />
+                    <span className="inline-flex items-start gap-0.5 body-sm text-charcoal dark:text-dm-text leading-snug">
+                      {r.label}
+                      {r.detail && <HelpTooltip text={r.detail} position="right" />}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
    Field — reusable form input
    ===================================================================== */
 function Field({
@@ -2545,6 +2657,7 @@ function RecordModal({
       childParishionerId: r?.childParishionerId || '',
       addressStreet: r?.addressStreet || '', addressBarangay: r?.addressBarangay || BARANGAYS[0], addressSitio: r?.addressSitio || '', addressCity: r?.addressCity || CITIES[0], addressProvince: r?.addressProvince || PROVINCES[0],
       dateOfBaptism: r?.dateOfBaptism || '', timeOfBaptism: r?.timeOfBaptism || '9:00 AM', officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || baptismLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2560,6 +2673,7 @@ function RecordModal({
       brideLastName: r?.brideLastName || '', brideFirstName: r?.brideFirstName || '', brideMiddleName: r?.brideMiddleName || '', brideAge: r?.brideAge || 25, brideStatus: r?.brideStatus || 'Single', brideFather: r?.brideFather || '', brideMother: r?.brideMother || '', brideParishionerId: r?.brideParishionerId || '',
       witness1Name: r?.witness1Name || '', witness1ParishionerId: r?.witness1ParishionerId || '', witness2Name: r?.witness2Name || '', witness2ParishionerId: r?.witness2ParishionerId || '',
       dateOfMarriage: r?.dateOfMarriage || '', timeOfMarriage: r?.timeOfMarriage || '10:00 AM', officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '10:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || marriageLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2624,6 +2738,7 @@ function RecordModal({
       officiant: r?.officiant || '', bishop: r?.bishop || 'Bishop Florentino Lavarias',
       sponsorLastName: r?.sponsorLastName || '', sponsorFirstName: r?.sponsorFirstName || '', sponsorParishionerId: r?.sponsorParishionerId || '',
       dateOfConfirmation: r?.dateOfConfirmation || '', timeOfConfirmation: r?.timeOfConfirmation || '9:00 AM', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || confirmationLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2639,6 +2754,7 @@ function RecordModal({
       age: r?.age || 0, gender: r?.gender || 'Male',
       dateOfDeath: r?.dateOfDeath || '', dateOfBurial: r?.dateOfBurial || '', timeOfBurial: r?.timeOfBurial || '9:00 AM', causeOfDeath: r?.causeOfDeath || '', cemetery: r?.cemetery || 'San Lorenzo Cemetery',
       officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || burialLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2663,19 +2779,19 @@ function RecordModal({
   };
 
   /* ── Update helpers ── */
-  const bUpdate = (field: string, value: string | number) => {
+  const bUpdate = (field: string, value: string | number | string[]) => {
     setBForm((prev) => ({ ...prev, [field]: value }));
     if (bErrors[field]) setBErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
-  const mUpdate = (field: string, value: string | number) => {
+  const mUpdate = (field: string, value: string | number | string[]) => {
     setMForm((prev) => ({ ...prev, [field]: value }));
     if (mErrors[field]) setMErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
-  const cUpdate = (field: string, value: string | number) => {
+  const cUpdate = (field: string, value: string | number | string[]) => {
     setCForm((prev) => ({ ...prev, [field]: value }));
     if (cErrors[field]) setCErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
-  const dUpdate = (field: string, value: string | number) => {
+  const dUpdate = (field: string, value: string | number | string[]) => {
     setDForm((prev) => ({ ...prev, [field]: value }));
     if (dErrors[field]) setDErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
@@ -2901,6 +3017,19 @@ function RecordModal({
     }
   }, [paymentInfo, sacrament, onToast]);
 
+  /* ── Requirements: warn-only ──
+     Fired AFTER a successful save. Requirements never block saving (unlike the
+     marriage scheduling hard-block); an incomplete checklist just raises a
+     prominent warning toast naming what is still pending. */
+  const warnRequirementsPending = (sacramentKey: string, checkedIds: string[]) => {
+    const info = getSacramentInfo(sacramentKey);
+    if (!info) return;
+    const checkedSet = new Set(checkedIds);
+    const missingLabels = info.requirements.filter((r) => !checkedSet.has(r.id)).map((r) => r.label);
+    if (missingLabels.length === 0) return;
+    onToast(`Saved — ${missingLabels.length} requirement(s) still pending: ${missingLabels.join(', ')}`, 'warning');
+  };
+
   /* ── Save handler ── */
   const handleSave = () => {
     // Fee override validation: non-default payment options require a reason
@@ -2925,10 +3054,12 @@ function RecordModal({
         scheduledOfficiant: bForm.scheduledOfficiant || bForm.officiant!, scheduledLocation: bForm.scheduledLocation || baptismLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        requirementsMet: bForm.requirementsMet && bForm.requirementsMet.length ? bForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       const calCreated = maybeAddToCalendar(newRecord, bAutoCalendar, onToast);
       onSave(newRecord);
+      warnRequirementsPending('baptism', bForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Baptism', bAutoCalendar, calCreated));
     } else if (sacrament === 'marriage') {
@@ -2962,6 +3093,7 @@ function RecordModal({
         scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mVenueName,
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        requirementsMet: mForm.requirementsMet && mForm.requirementsMet.length ? mForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       // Carry a graceful surname-based title + the real time window so the created
@@ -2971,6 +3103,7 @@ function RecordModal({
         durationMin: mDuration,
       });
       onSave(newRecord);
+      warnRequirementsPending('wedding', mForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Marriage', mAutoCalendar, calCreated));
     } else if (sacrament === 'confirmation') {
@@ -2990,10 +3123,12 @@ function RecordModal({
         scheduledOfficiant: cForm.scheduledOfficiant || cForm.officiant!, scheduledLocation: cForm.scheduledLocation || confirmationLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        requirementsMet: cForm.requirementsMet && cForm.requirementsMet.length ? cForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       const calCreated = maybeAddToCalendar(newRecord, cAutoCalendar, onToast);
       onSave(newRecord);
+      warnRequirementsPending('confirmation', cForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Confirmation', cAutoCalendar, calCreated));
     } else if (sacrament === 'death') {
@@ -3011,10 +3146,12 @@ function RecordModal({
         scheduledOfficiant: dForm.scheduledOfficiant || dForm.officiant!, scheduledLocation: dForm.scheduledLocation || burialLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        requirementsMet: dForm.requirementsMet && dForm.requirementsMet.length ? dForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       const calCreated = maybeAddToCalendar(newRecord, dAutoCalendar, onToast);
       onSave(newRecord);
+      warnRequirementsPending('funeral', dForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Burial', dAutoCalendar, calCreated));
     }
@@ -3267,6 +3404,16 @@ function RecordModal({
                 errors={{ date: bErrors.scheduledDate, time: bErrors.scheduledTime, officiant: bErrors.scheduledOfficiant }}
               />
 
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="baptism"
+                checkedIds={bForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = bForm.requirementsMet || [];
+                  bUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
+              />
+
               {/* ═══ PAYMENT ═══ */}
               <PaymentSection sacrament="baptism" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
@@ -3412,6 +3559,16 @@ function RecordModal({
                 errors={{ date: mErrors.scheduledDate, time: mErrors.scheduledTime, officiant: mErrors.scheduledOfficiant }}
               />
 
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only; independent of the scheduling hard-block above) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="wedding"
+                checkedIds={mForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = mForm.requirementsMet || [];
+                  mUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
+              />
+
               {/* ═══ PAYMENT ═══ */}
               <PaymentSection sacrament="marriage" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
@@ -3514,6 +3671,16 @@ function RecordModal({
                 errors={{ date: cErrors.scheduledDate, time: cErrors.scheduledTime, officiant: cErrors.scheduledOfficiant }}
               />
 
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="confirmation"
+                checkedIds={cForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = cForm.requirementsMet || [];
+                  cUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
+              />
+
               {/* ═══ PAYMENT ═══ */}
               <PaymentSection sacrament="confirmation" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
@@ -3595,6 +3762,16 @@ function RecordModal({
                 onChangeAutoCalendar={setDAutoCalendar}
                 eventTitle={`Burial: ${dForm.deceasedFirstName || ''} ${dForm.deceasedMiddleName || ''} ${dForm.deceasedLastName || ''}`}
                 errors={{ date: dErrors.scheduledDate, time: dErrors.scheduledTime, officiant: dErrors.scheduledOfficiant }}
+              />
+
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="funeral"
+                checkedIds={dForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = dForm.requirementsMet || [];
+                  dUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
               />
 
               {/* ═══ PAYMENT ═══ */}
