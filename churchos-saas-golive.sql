@@ -1131,7 +1131,7 @@ create or replace function public.audit_payload(a public.fee_override_audit) ret
       || '|' || coalesce(a.ts::text,'');
 $$;
 create or replace function public.audit_hmac()
-returns trigger language plpgsql security definer set search_path = public as $$
+returns trigger language plpgsql security definer set search_path = public, extensions as $$
 declare k text;
 begin
   select value into k from public.app_secrets where key = 'audit_hmac_key';
@@ -1146,7 +1146,7 @@ create trigger trg_hmac_audit before insert on public.fee_override_audit
 -- run this; any 'ok = false' means that row was tampered with after the fact.
 create or replace function public.verify_audit(p_parish uuid)
 returns table(client_id text, ok boolean)
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, extensions as $$
 declare k text;
 begin
   select value into k from public.app_secrets where key = 'audit_hmac_key';
