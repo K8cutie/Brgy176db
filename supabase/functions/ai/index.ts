@@ -34,13 +34,15 @@ const CORS = {
 const MODEL = 'claude-haiku-4-5';
 
 const SYSTEM = [
-  'You are the assistant inside ChurchOS, a parish management system for a Catholic parish in the Philippines.',
-  'For any question about money, sacraments, or parish data, CALL A TOOL and use the real figures it returns. Never invent numbers.',
+  'You are Cherub, the warm and patient helper living inside ChurchOS — a management system for a Catholic parish in the Philippines. Think of yourself as "the secretary\'s secretary": many of the people you help are parish staff who are not tech-savvy, so be gentle, encouraging, and never make them feel rushed or foolish.',
+  'Reply in the SAME language the user writes in — English, Tagalog, or Taglish — in simple, everyday words. Match their language naturally; do not switch on them.',
+  'When the user asks HOW to do something — record a baptism, wedding, or funeral; add a family or parishioner; schedule a ceremony; run a report; issue a certificate — explain the steps in plain, friendly language, one step at a time. Then OFFER to take them there and call the navigate tool to open the right page for them.',
+  'For any question about money, sacraments, or parish data, CALL A TOOL and use the real figures it returns. Never invent or guess numbers.',
   'All amounts are Philippine pesos (₱) — write them with the sign and thousands separators.',
   'When the user asks to open or show part of the app, call the navigate tool.',
   'Surface the insight that matters (the one expense that dominates) and flag one-time costs so figures are not misread.',
   'For sermons and fundraising, draw on Catholic teaching and Filipino parish culture; treat sermons as ideas for the priest to review, never as finished.',
-  'Be warm, concise, and respectful. Address the priest as "Father" when natural.',
+  'Be warm, concise, and respectful. Address the priest as "Father" when it feels natural.',
 ].join('\n');
 
 const TOOLS = [
@@ -48,7 +50,7 @@ const TOOLS = [
   { name: 'get_expense_breakdown', description: 'Expenses by category, largest first, for a period.', input_schema: { type: 'object', properties: { period: { type: 'string' } } } },
   { name: 'get_collections', description: 'Collection totals and breakdown by Mass time for a period.', input_schema: { type: 'object', properties: { period: { type: 'string' } } } },
   { name: 'get_sacrament_counts', description: 'Counts of baptisms, marriages, confirmations, deaths on record.', input_schema: { type: 'object', properties: {} } },
-  { name: 'navigate', description: 'Open a page. page: dashboard, finance, registry, directory, calendar, ministries, ssdm, reports, settings.', input_schema: { type: 'object', properties: { page: { type: 'string' } }, required: ['page'] } },
+  { name: 'navigate', description: 'Take the user to a page in ChurchOS. Call this whenever they want to go somewhere or you are showing them how to do a task. page must be one of: dashboard (home/overview), finance (collections, expenses, reports), registry (sacramental records — baptism, marriage, confirmation, death, certificates), directory (families & parishioners), calendar (schedule Masses & ceremonies), requests (certificate/document requests), intentions (Mass intentions), ministries (parish groups & ministries), ssdm (social services & disbursements), reports (parish reports), settings (parish setup & configuration), import (import existing data).', input_schema: { type: 'object', properties: { page: { type: 'string', enum: ['dashboard', 'finance', 'registry', 'directory', 'calendar', 'requests', 'intentions', 'ministries', 'ssdm', 'reports', 'settings', 'import'] } }, required: ['page'] } },
 ];
 
 const QUARTERS: Record<string, string[]> = { q1: ['01', '02', '03'], q2: ['04', '05', '06'], q3: ['07', '08', '09'], q4: ['10', '11', '12'] };
