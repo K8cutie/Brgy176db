@@ -51,7 +51,25 @@ export function initMonitoring(): void {
 
 // Route the app's error path through Sentry. Safe to call whether or not
 // monitoring was initialized — it no-ops when there's no DSN.
-export function captureError(error: unknown, context?: Record<string, unknown>): void {
+//
+// `context` is attached as Sentry "extra" data; `tags` become searchable Sentry
+// tags. Pass a correlation id here (e.g. { request_id }) so the client-side event
+// and the server log line that share that id can be stitched together in Sentry.
+export function captureError(
+  error: unknown,
+  context?: Record<string, unknown>,
+  tags?: Record<string, string>,
+): void {
   if (!initialized) return
-  Sentry.captureException(error, context ? { extra: context } : undefined)
+  if (!context && !tags) {
+    Sentry.captureException(error)
+    return
+  }
+  Sentry.withScope((scope) => {
+    if (context) scope.setExtras(context)
+    if (tags) {
+      for (const [key, value] of Object.entries(tags)) scope.setTag(key, value)
+    }
+    Sentry.captureException(error)
+  })
 }

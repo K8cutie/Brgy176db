@@ -4,6 +4,7 @@ import { Send, X, KeyRound } from 'lucide-react';
 import { buildAiContext, isAiContextEnabled, setAiContextEnabled, pageNameFromPath } from '@/lib/aiContext';
 import { isCloud } from '@/lib/cloudStore';
 import { getSupabase } from '@/lib/supabaseClient';
+import { captureError } from '@/lib/monitoring';
 
 // The unified shape Cherub speaks in — returned by BOTH the desktop bridge
 // (Electron main process) and the cloud Edge Function (supabase/functions/ai).
@@ -13,6 +14,9 @@ type ChatResult = {
   navigate?: { page: string } | null;
   error?: string;
   message?: string;
+  // Correlation id echoed by the Edge Function on server_error (supabase/functions/ai),
+  // so a client-facing failure can be traced to its server log line.
+  request_id?: string;
 };
 
 // The preload bridge (desktop only). Undefined in a plain browser build.
@@ -54,6 +58,9 @@ export default function AiAssistant() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Correlation id for the current error (from the Edge Function's server_error
+  // response), surfaced to the user as a support reference when present.
+  const [errorRef, setErrorRef] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -89,6 +96,7 @@ export default function AiAssistant() {
     const text = input.trim();
     if (!text || busy) return;
     setError('');
+    setErrorRef('');
     const next = [...messages, { role: 'user' as const, content: text }];
     setMessages(next);
     setInput('');
@@ -127,6 +135,13 @@ export default function AiAssistant() {
         setConfigured(false);
       } else {
         setError(res.message || 'Something went wrong. Please try again.');
+        // The Edge Function returns a request_id on server_error. Surface it as a
+        // support reference and tag the client Sentry event with it, so the two
+        // halves of the failure (browser event + server log line) share one id.
+        if (res.request_id) {
+          setErrorRef(res.request_id);
+          captureError(new Error(`Cherub ${res.error ?? 'error'}`), { source: 'AiAssistant' }, { request_id: res.request_id });
+        }
       }
     } catch {
       setError("Couldn't reach Cherub. Please try again.");
@@ -274,7 +289,14 @@ export default function AiAssistant() {
                   </div>
                 ))}
                 {busy && <div className="text-xs text-warm-gray italic">Thinking…</div>}
-                {error && <div className="text-xs text-error">{error}</div>}
+                {error && (
+                  <div className="text-xs text-error">
+                    {error}
+                    {errorRef && (
+                      <div className="mt-0.5 text-[10px] font-mono text-warm-gray">Ref: {errorRef}</div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Context indicator + persisted opt-out toggle */}

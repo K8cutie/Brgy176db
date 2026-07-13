@@ -153,13 +153,14 @@ Deno.serve(async (req: Request) => {
     const uid = userData?.user?.id;
     if (authErr || !uid) return json({ ok: false, error: 'unauthorized' }, 401);
 
-    // Best-effort per-user throttle so even a valid tenant cannot run the bill up.
-    // rate_check is SECURITY DEFINER (PUBLIC execute) and RAISES on exceed; a missing
-    // grant/function must not break the assistant, so only a real limit error blocks.
-    try {
-      const rl = await supa.rpc('rate_check', { p_key: 'ai:' + uid, p_limit: 20, p_window: '1 minute' });
-      if (rl?.error && /rate limit/i.test(rl.error.message || '')) return json({ ok: false, error: 'rate_limited' }, 429);
-    } catch { /* ignore — throttle is best-effort defense-in-depth */ }
+    // Per-user burst throttle. rate_allow RETURNS a boolean (allowed) — gate on the VALUE, not
+    // on string-matching a raised message. (The old rate_check RAISES 'too many requests…', which
+    // the /rate limit/i test never matched, so this throttle was a silent no-op — Overseer L004 #1.)
+    // A missing grant/function surfaces as an error, not a false, so only an explicit false blocks.
+    {
+      const { data: allowed, error: rlErr } = await supa.rpc('rate_allow', { p_key: 'ai:' + uid, p_limit: 20, p_window: '1 minute' });
+      if (!rlErr && allowed === false) return json({ ok: false, error: 'rate_limited' }, 429);
+    }
 
     const body = await req.json().catch(() => null);
     const messages = (body as { messages?: unknown } | null)?.messages;
@@ -168,6 +169,22 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: 'bad_request' }, 400);
     }
     if (JSON.stringify(messages).length > 100_000) return json({ ok: false, error: 'payload_too_large' }, 413);
+
+    // Per-tenant budget + kill-switch + no-tenant guard — the real spend ceiling, checked BEFORE
+    // any Anthropic call (Overseer L004 #2/#3). ai_budget_allow resolves the caller's parish (or
+    // diocese, for a bishop) from auth.uid(), applies the per-tenant daily cap + enabled flag, and
+    // increments usage. A brand-new self-signup with no tenancy → 'no_tenant' → rejected before
+    // spend, closing the "unlimited free accounts each burn the key" hole. A missing function must
+    // not brick the assistant, so only an explicit block status returns early.
+    {
+      const { data: budget, error: bErr } = await supa.rpc('ai_budget_allow');
+      if (!bErr) {
+        if (budget === 'no_tenant') return json({ ok: false, error: 'no_parish' }, 403);
+        if (budget === 'disabled') return json({ ok: false, error: 'ai_disabled' }, 403);
+        if (budget === 'budget_exceeded') return json({ ok: false, error: 'budget_exceeded' }, 429);
+      }
+    }
+
     const convo = [...messages];
     let navigate: { page: string } | null = null;
 
