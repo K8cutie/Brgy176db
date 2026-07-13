@@ -1434,6 +1434,30 @@ export function mergeCertificateTemplates(
   return [...merged, ...custom.map((t) => ({ ...t, description: t.description ?? '', isSystem: false, isDefault: false }))];
 }
 
+/** Build a custom (editable, non-system) certificate template from uploaded HTML.
+ *  The HTML is rendered via dangerouslySetInnerHTML, so we strip <script> tags and
+ *  inline on* handlers as a courtesy — the secretary is uploading her own file, but
+ *  a pasted-in tracker shouldn't run. A `tcustom-` id keeps it out of the default
+ *  slot and makes mergeCertificateTemplates preserve it across reloads. */
+export function templateFromUpload(
+  html: string,
+  name: string,
+  sacrament: CertificateSacrament,
+): CertificateTemplate {
+  const clean = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  return {
+    id: `tcustom-${Date.now()}`,
+    name: name.trim() || 'Uploaded Template',
+    description: 'Uploaded custom template',
+    sacrament,
+    isDefault: false,
+    isSystem: false,
+    html: clean,
+  };
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    REGISTRY AUDIT — same 'audit_log' key/shape as FinancePage.appendFinanceAudit
    ═══════════════════════════════════════════════════════════════════ */

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -35,6 +35,8 @@ import {
   Ban,
   ClipboardCheck,
   CheckCircle2,
+  Upload,
+  Image as ImageIcon,
 } from 'lucide-react';
 import DataTable from '@/components/DataTable';
 import type { Column } from '@/components/DataTable';
@@ -86,6 +88,7 @@ import {
   buildRegistryCalendarEvent,
   annotateEventWithSchedulingRules,
   mergeCertificateTemplates,
+  templateFromUpload,
   appendRegistryAudit,
 } from '@/lib/registryData';
 import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
@@ -1722,7 +1725,7 @@ export default function RegistryPage() {
       {/* ── Certificate Modal ──────────────────────── */}
       <AnimatePresence>
         {certModal && certRecord && (
-          <CertificateModal record={certRecord} sacrament={activeTab} onClose={() => setCertModal(false)} />
+          <CertificateModal record={certRecord} sacrament={activeTab} onClose={() => setCertModal(false)} onToast={addToast} />
         )}
       </AnimatePresence>
 
@@ -4254,14 +4257,36 @@ function AnnotationsSection({
 /* =====================================================================
    CertificateModal — Generate certificate with template selector
    ===================================================================== */
-function CertificateModal({ record, sacrament, onClose }: { record: RegistryRecord; sacrament: SacramentTab; onClose: () => void }) {
+function CertificateModal({ record, sacrament, onClose, onToast }: { record: RegistryRecord; sacrament: SacramentTab; onClose: () => void; onToast: (msg: string, type: ToastType) => void }) {
   const feeLabel = sacrament === 'baptism' ? 'Baptism' : sacrament === 'marriage' ? 'Marriage' : sacrament === 'confirmation' ? 'Confirmation' : 'Death';
   const personName = getPersonName(record, sacrament);
 
   // Use persisted (user-edited) templates so Template Editor changes apply
   // here; only this sacrament's templates are offered.
-  const [templates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
+  const [templates, setTemplates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
   const [selectedTemplateId, setSelectedTemplateId] = useState(() => (templates.find((t) => t.isDefault) ?? templates[0]).id);
+  const templateFileRef = useRef<HTMLInputElement>(null);
+
+  // Upload a custom .html certificate template. It persists to the shared store,
+  // so it also shows up in the Template Editor for further tweaking.
+  const handleUploadTemplate = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the same file be re-picked later
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (!text.trim()) { onToast('That file is empty', 'error'); return; }
+      const name = file.name.replace(/\.[^.]+$/, '') || 'Uploaded Template';
+      const tmpl = templateFromUpload(text, name, sacrament);
+      const ok = saveCertificateTemplates([...loadCertificateTemplates(), tmpl]);
+      if (!ok) { onToast('Could not save — storage is full', 'error'); return; }
+      setTemplates(loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
+      setSelectedTemplateId(tmpl.id);
+      onToast(`Uploaded "${tmpl.name}". Tip: use tokens like {{child_name}} so it fills in data.`, 'success');
+    } catch {
+      onToast('Could not read that file', 'error');
+    }
+  };
   const [zoom, setZoom] = useState(100);
   const [isCopy, setIsCopy] = useState(false);
   const [certFeeStatus, setCertFeeStatus] = useState<'original' | 'reprint'>('original');
@@ -4395,6 +4420,17 @@ function CertificateModal({ record, sacrament, onClose }: { record: RegistryReco
                 </button>
               ))}
             </div>
+            <input ref={templateFileRef} type="file" accept=".html,.htm,text/html" onChange={handleUploadTemplate} className="hidden" />
+            <button
+              onClick={() => templateFileRef.current?.click()}
+              className="w-full cos-btn cos-btn-secondary text-xs py-2"
+              title="Upload a custom .html certificate template that uses {{tokens}}"
+            >
+              <Upload className="w-3.5 h-3.5" /> Upload template
+            </button>
+            <p className="text-[11px] text-warm-gray dark:text-dm-text-muted leading-snug">
+              An .html file using tokens like <span className="font-mono">{'{{child_name}}'}</span>. Tweak it later in the Template Editor.
+            </p>
           </div>
 
           {/* Center — Live Preview */}
@@ -4626,6 +4662,51 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
   const [activeTmplId, setActiveTmplId] = useState(templates[0].id);
   const [html, setHtml] = useState(templates[0].html);
   const activeTmpl = templates.find((t) => t.id === activeTmplId)!;
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const imageRef = useRef<HTMLInputElement>(null);
+
+  // Upload a custom .html file as a new editable template (persisted immediately).
+  const handleUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (!text.trim()) { onToast('That file is empty', 'error'); return; }
+      const name = file.name.replace(/\.[^.]+$/, '') || 'Uploaded Template';
+      const tmpl = templateFromUpload(text, name, activeTmpl.sacrament);
+      const next = [...templates, tmpl];
+      if (!saveCertificateTemplates(next)) { onToast('Could not save — storage is full', 'error'); return; }
+      setTemplates(next);
+      setActiveTmplId(tmpl.id);
+      setHtml(tmpl.html);
+      onToast(`Uploaded "${tmpl.name}" — now editable`, 'success');
+    } catch {
+      onToast('Could not read that file', 'error');
+    }
+  };
+
+  // Embed a parish seal/logo as a base64 <img> at the end of the template HTML.
+  // Kept small (<1 MB) so the template still fits storage and prints quickly.
+  const handleInsertImage = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { onToast('Please choose an image file', 'error'); return; }
+    if (file.size > 1_000_000) { onToast('That image is over 1 MB — please use a smaller seal/logo so certificates save and print smoothly', 'warning'); return; }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(file);
+      });
+      setHtml((prev) => `${prev}\n<img src="${dataUrl}" alt="seal" style="max-width:120px; height:auto;" />\n`);
+      onToast('Image embedded — reposition it in the HTML, then Save (Duplicate first if this is a system template)', 'success');
+    } catch {
+      onToast('Could not read that image', 'error');
+    }
+  };
 
   const handleSave = () => {
     if (activeTmpl.isSystem) {
@@ -4690,6 +4771,11 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
             <h2 className="heading-lg text-charcoal dark:text-dm-text">Template Editor</h2>
           </div>
           <div className="flex items-center gap-2">
+            <input ref={uploadRef} type="file" accept=".html,.htm,text/html" onChange={handleUpload} className="hidden" />
+            <button onClick={() => uploadRef.current?.click()} className="cos-btn cos-btn-secondary h-8 px-3 text-xs" title="Upload a custom .html template that uses {{tokens}}">
+              <Upload className="w-3.5 h-3.5" />
+              Upload
+            </button>
             <button onClick={handleDuplicate} className="cos-btn cos-btn-secondary h-8 px-3 text-xs" title="Copy this template to a new editable one">
               <Copy className="w-3.5 h-3.5" />
               Duplicate
@@ -4732,7 +4818,13 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
           <div className="flex-1 border-r border-parchment dark:border-dm-border flex flex-col min-w-0">
             <div className="px-4 py-2 border-b border-parchment dark:border-dm-border bg-cream-dark dark:bg-dm-surface-raised flex items-center justify-between">
               <span className="label text-warm-gray">HTML/CSS Editor</span>
-              <span className="text-[10px] text-warm-gray font-mono">{activeTmpl.isSystem ? 'Read-only' : 'Editable'}</span>
+              <div className="flex items-center gap-2">
+                <input ref={imageRef} type="file" accept="image/*" onChange={handleInsertImage} className="hidden" />
+                <button onClick={() => imageRef.current?.click()} className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-gold/30 bg-gold-glow text-[10px] text-charcoal dark:text-dm-text hover:bg-gold/20 transition-colors" title="Embed a parish seal or logo image">
+                  <ImageIcon className="w-3 h-3" /> Insert image
+                </button>
+                <span className="text-[10px] text-warm-gray font-mono">{activeTmpl.isSystem ? 'Read-only' : 'Editable'}</span>
+              </div>
             </div>
             <textarea
               value={html}
