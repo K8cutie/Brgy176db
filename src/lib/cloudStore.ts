@@ -86,6 +86,7 @@ const SINGLETON_KEYS = new Set<string>([
   'calendar_show_liturgical',// CalendarPage — liturgical overlay toggle
   'ai_context_optout',       // lib/aiContext.ts — AI parish-context opt-out
   'notify_outbox',           // lib/notify.ts — SMS/email outbox log
+  'venues',                  // lib/venues.ts — bookable spaces (one list per parish)
 ]);
 
 /** Distinguish a not-yet-created table from a real (RLS/JWT/network) read error. */

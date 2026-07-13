@@ -84,6 +84,16 @@ import {
   appendRegistryAudit,
 } from '@/lib/registryData';
 import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
+import { getActiveVenues, isMultiVenue, type Venue } from '@/lib/venues';
+import {
+  findConflicts,
+  suggestFreeVenues,
+  parseTimeToMinutes,
+  isLiturgicallyBlocked,
+  type BusyInterval,
+  type VenueSuggestion,
+  type CalendarEventLike,
+} from '@/lib/scheduling';
 import { getCertificateTokens, getCurrencySymbol, getParishName } from '@/lib/parishConfig';
 import {
   BARANGAYS,
@@ -431,10 +441,28 @@ function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
 // reused, never duplicated; unchecking the box does not delete a previously
 // created event — staff manage the calendar itself. Returns true only when
 // an event was actually created.
+// Add minutes to an "HH:MM" 24-hour clock string (wraps at midnight).
+function addMinutes24(hhmm: string, minutes: number): string {
+  const [h = 0, m = 0] = (hhmm || '').split(':').map(Number);
+  const total = (((h * 60 + m + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+// Graceful wedding calendar title built from SURNAMES (last-name fields).
+// Fixes the old "Wedding: & " when names were blank.
+function weddingCalendarTitle(groomLast?: string, brideLast?: string): string {
+  const g = (groomLast || '').trim();
+  const b = (brideLast || '').trim();
+  if (g && b) return `Wedding — ${g} & ${b}`;
+  if (g || b) return `Wedding — ${g || b}`;
+  return 'Wedding';
+}
+
 function maybeAddToCalendar(
   record: RegistryRecord,
   autoCalendar: boolean,
   onToast: (message: string, type: ToastType) => void,
+  overrides?: { title?: string; durationMin?: number },
 ): boolean {
   if (!autoCalendar || record.calendarEventId) return false;
   // Run the same liturgical scheduling rules the CalendarPage drag path and the
@@ -442,7 +470,16 @@ function maybeAddToCalendar(
   // a wedding scheduled in Lent) can't slip in unvalidated. WARN only — a rule
   // conflict is a pastoral-dispensation matter, never a hard block; the event
   // is still created, annotated with ruleEnforced/ruleNotes for the calendar.
-  const { event: ev, errors, warnings } = annotateEventWithSchedulingRules(buildRegistryCalendarEvent(record));
+  let built = buildRegistryCalendarEvent(record);
+  // Carry the booking's real title + time window so future bookings detect this
+  // event as busy for the whole ceremony (not a flat 60 min) and so the calendar
+  // shows a graceful title. Venue is carried via `location` (a venue token the
+  // scheduling engine matches on).
+  if (overrides?.title) built = { ...built, title: overrides.title };
+  if (overrides?.durationMin && overrides.durationMin > 0) {
+    built = { ...built, endTime: addMinutes24(built.startTime, overrides.durationMin) };
+  }
+  const { event: ev, errors, warnings } = annotateEventWithSchedulingRules(built);
   const current = ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
   ns.setJSON(KEYS.calendarEvents, [...current, ev]);
   record.calendarEventId = ev.id;
@@ -1828,6 +1865,301 @@ function ScheduleSection({
 }
 
 /* =====================================================================
+   MARRIAGE BOOKING PANEL — venue + live conflict detection
+   =====================================================================
+   Replaces the generic ScheduleSection for weddings. A booking holds a
+   TIME WINDOW (start + editable duration) in a VENUE with an OFFICIANT.
+   Availability is computed LIVE off KEYS.calendarEvents via the pure
+   scheduling engine — no manual "check" button — and a real conflict
+   HARD-BLOCKS Save (the parent reads schedule.blocked). One-venue parishes
+   hide the venue picker entirely; multi-venue parishes get a picker plus
+   capacity-aware free-venue suggestions when the chosen venue is busy.
+*/
+interface MarriageScheduleInfo {
+  startMin: number | null;
+  canCheck: boolean;
+  venue: Venue | undefined;
+  conflicts: BusyInterval[];
+  freeVenues: VenueSuggestion[];
+  lit: { blocked: boolean; note: string };
+  blocked: boolean;
+}
+
+/** Pure: resolve the wedding's live availability from the current calendar. */
+function computeMarriageSchedule(p: {
+  date: string;
+  time: string;
+  officiant: string;
+  duration: number;
+  venueId: string;
+  guests: number | '';
+  excludeId?: string;
+  venues: Venue[];
+  events: CalendarEventLike[];
+}): MarriageScheduleInfo {
+  const startMin = parseTimeToMinutes(p.time);
+  const canCheck = !!p.date && startMin != null;
+  const venue =
+    p.venues.find((v) => v.id === p.venueId) ??
+    p.venues.find((v) => v.isDefault) ??
+    p.venues[0];
+
+  let conflicts: BusyInterval[] = [];
+  if (canCheck) {
+    const base = {
+      date: p.date,
+      startMin: startMin as number,
+      durationMin: p.duration,
+      officiant: p.officiant,
+      excludeId: p.excludeId,
+    };
+    // Test each of the chosen venue's identifying tokens (id/name/location) so
+    // both id-based bookings and legacy location-named sample events conflict;
+    // findConflicts also folds in same-officiant conflicts regardless of venue.
+    const tokens = venue
+      ? [venue.id, venue.name, venue.location].filter((t): t is string => !!t && t.trim() !== '')
+      : [''];
+    const map = new Map<string, BusyInterval>();
+    for (const tk of tokens.length ? tokens : ['']) {
+      for (const c of findConflicts({ ...base, venueId: tk }, p.events)) map.set(c.id, c);
+    }
+    conflicts = [...map.values()].sort((a, b) => a.start - b.start);
+  }
+
+  const lit = p.date ? isLiturgicallyBlocked(p.date, 'wedding') : { blocked: false, note: '' };
+  const guests = p.guests === '' ? null : Number(p.guests);
+  const freeVenues = canCheck
+    ? suggestFreeVenues(
+        {
+          date: p.date,
+          startMin: startMin as number,
+          durationMin: p.duration,
+          officiant: p.officiant,
+          excludeId: p.excludeId,
+        },
+        p.venues,
+        p.events,
+        guests,
+      )
+    : [];
+
+  return { startMin, canCheck, venue, conflicts, freeVenues, lit, blocked: conflicts.length > 0 || lit.blocked };
+}
+
+/** Minutes-from-midnight → "2:30 PM". */
+function minsToLabel(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const ampm = h < 12 ? 'AM' : 'PM';
+  const h12 = ((h + 11) % 12) + 1;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function MarriageScheduleSection({
+  date,
+  time,
+  officiant,
+  duration,
+  expectedGuests,
+  venueId,
+  autoCalendar,
+  multiVenue,
+  venues,
+  schedule,
+  eventTitle,
+  errors,
+  onChangeDate,
+  onChangeTime,
+  onChangeOfficiant,
+  onChangeDuration,
+  onChangeGuests,
+  onChangeVenue,
+  onChangeAutoCalendar,
+}: {
+  date: string;
+  time: string;
+  officiant: string;
+  duration: number;
+  expectedGuests: number | '';
+  venueId: string;
+  autoCalendar: boolean;
+  multiVenue: boolean;
+  venues: Venue[];
+  schedule: MarriageScheduleInfo;
+  eventTitle: string;
+  errors?: { date?: string; time?: string; officiant?: string };
+  onChangeDate: (v: string) => void;
+  onChangeTime: (v: string) => void;
+  onChangeOfficiant: (v: string) => void;
+  onChangeDuration: (v: number) => void;
+  onChangeGuests: (v: number | '') => void;
+  onChangeVenue: (id: string) => void;
+  onChangeAutoCalendar: (v: boolean) => void;
+}) {
+  const { canCheck, venue, conflicts, freeVenues, lit, blocked } = schedule;
+  const day = date ? new Date(date + 'T00:00:00').getDay() : -1;
+  const venueName = venue?.name || 'the venue';
+  const officiantLabel = officiant || 'the officiant';
+
+  // Free venues to OFFER: shown only when the chosen venue is busy and switching
+  // could actually help (an officiant double-booking frees none, so this stays
+  // empty and we don't mislead the user into thinking a venue swap fixes it).
+  const offerVenues =
+    multiVenue && conflicts.length > 0 ? freeVenues.filter((s) => s.venue.id !== venue?.id) : [];
+
+  return (
+    <div className="border-t border-parchment dark:border-dm-border pt-5">
+      <SectionHeader icon={Calendar} title="Schedule Marriage Ceremony" color="#3B6BC9" />
+      <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1">
+        Saturday is the preferred day for weddings. Weddings are prohibited during Lent.
+      </p>
+
+      <div className="grid grid-cols-2 gap-4 mt-3">
+        <Field label="Ceremony Date *" type="date" value={date} onChange={onChangeDate} error={errors?.date} required />
+        <Field label="Time *" as="select" value={time} onChange={onChangeTime} error={errors?.time} required>
+          <option value="">Select time...</option>
+          {marriageTimes.map((t) => <option key={t} value={t}>{t}</option>)}
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mt-3">
+        <Field
+          label="Duration (minutes) *"
+          type="number"
+          value={String(duration || '')}
+          onChange={(v) => onChangeDuration(Math.max(0, parseInt(v) || 0))}
+          placeholder="90"
+          required
+        />
+        <Field
+          label="Expected Guests"
+          type="number"
+          value={expectedGuests === '' ? '' : String(expectedGuests)}
+          onChange={(v) => onChangeGuests(v === '' ? '' : Math.max(0, parseInt(v) || 0))}
+          placeholder="e.g. 120"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mt-3">
+        <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} error={errors?.officiant} required>
+          <option value="">Select officiant...</option>
+          {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+        </Field>
+        {/* One-venue parish → no venue picker (stays simple, uses the single venue). */}
+        {multiVenue && (
+          <Field label="Venue *" as="select" value={venueId} onChange={onChangeVenue} required>
+            {venues.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}{v.capacity ? ` (${v.capacity} seats)` : ''}
+              </option>
+            ))}
+          </Field>
+        )}
+      </div>
+
+      {/* LIVE availability — computed automatically, no manual check button. */}
+      <div className="mt-3">
+        {!canCheck ? (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50 text-warm-gray dark:text-dm-text-muted text-sm">
+            <Clock className="w-4 h-4 flex-shrink-0" />
+            Enter a date and time to check availability.
+          </div>
+        ) : conflicts.length > 0 ? (
+          <div className="space-y-1.5">
+            {conflicts.map((c) => {
+              const where = c.location || c.venueId || (c.officiant ? c.officiant : venueName);
+              return (
+                <div key={c.id} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-error/10 text-error text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Conflict: <strong>{c.title || 'An event'}</strong> is already booked{' '}
+                    {minsToLabel(c.start)}–{minsToLabel(c.end)} at {where}
+                    {c.officiant && officiant && c.officiant.trim().toLowerCase() === officiant.trim().toLowerCase()
+                      ? ` (${c.officiant} is unavailable)` : ''}.
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-success/10 text-success text-sm">
+            <Check className="w-4 h-4 flex-shrink-0" />
+            No conflict — {venueName} and {officiantLabel} are free at this time.
+          </div>
+        )}
+
+        {/* Liturgical advisory / block (e.g. weddings in Lent). */}
+        {lit.note && (
+          <div className={`flex items-start gap-2 mt-2 px-3 py-2 rounded-lg text-sm ${
+            lit.blocked ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'
+          }`}>
+            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            {lit.note}
+          </div>
+        )}
+
+        {/* Multi-venue: offer the venues that ARE free, capacity-aware. */}
+        {offerVenues.length > 0 && (
+          <div className="mt-2 px-3 py-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50">
+            <p className="body-xs font-medium text-charcoal dark:text-dm-text mb-1.5">
+              These venues are free for this slot — switch to one:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {offerVenues.map((s) => (
+                <button
+                  key={s.venue.id}
+                  type="button"
+                  onClick={() => onChangeVenue(s.venue.id)}
+                  className={`cos-btn cos-btn-secondary h-8 px-3 text-xs ${s.fits ? '' : 'opacity-70'}`}
+                  title={s.fits ? '' : `May be too small for ${expectedGuests} guests`}
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  {s.venue.name}
+                  {s.venue.capacity ? ` · ${s.venue.capacity}` : ''}
+                  {!s.fits ? ' · too small' : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {blocked && (
+          <p className="body-xs text-error mt-2">
+            This record cannot be saved into a scheduling conflict. Adjust the date, time, duration
+            {multiVenue ? ', venue' : ''} or officiant.
+          </p>
+        )}
+
+        {day === 6 && !blocked && (
+          <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-success/10 text-success text-sm">
+            <Check className="w-4 h-4" />
+            Saturday — preferred day for weddings.
+          </div>
+        )}
+      </div>
+
+      {/* Auto-add to calendar */}
+      <div className="mt-4 flex items-start gap-3 p-3 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoCalendar}
+            onChange={(e) => onChangeAutoCalendar(e.target.checked)}
+            className="w-4 h-4 rounded border-parchment text-gold focus:ring-gold"
+          />
+          <span className="body-sm text-charcoal dark:text-dm-text font-medium">Auto-add to parish calendar</span>
+        </label>
+      </div>
+      {autoCalendar && (
+        <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1 ml-6">
+          Event: &ldquo;{eventTitle}&rdquo;
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
    PaymentSection — Sacrament fee collection with GL posting
    ===================================================================== */
 function PaymentSection({
@@ -2234,6 +2566,53 @@ function RecordModal({
   const [mAutoCalendar, setMAutoCalendar] = useState(true);
   const [mErrors, setMErrors] = useState<Record<string, string>>({});
 
+  /* ── MARRIAGE BOOKING (venue + live conflict) ── */
+  // Venues + the current calendar are read once per modal open (they don't
+  // change while the form is up); availability recomputes on every field edit.
+  const mVenues = useMemo(() => getActiveVenues(), []);
+  const mMultiVenue = useMemo(() => isMultiVenue(), []);
+  const mCalendarEvents = useMemo(
+    () => ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS) as unknown as CalendarEventLike[],
+    [],
+  );
+  const [mDuration, setMDuration] = useState<number>(90);
+  const [mExpectedGuests, setMExpectedGuests] = useState<number | ''>('');
+  const [mVenueId, setMVenueId] = useState<string>(() => {
+    const r = record as MarriageRecord | null;
+    if (r?.scheduledLocation) {
+      const match = mVenues.find(
+        (v) => v.name === r.scheduledLocation || v.location === r.scheduledLocation,
+      );
+      if (match) return match.id;
+    }
+    return (mVenues.find((v) => v.isDefault) ?? mVenues[0])?.id ?? '';
+  });
+  const mSchedule = useMemo(
+    () =>
+      computeMarriageSchedule({
+        date: mForm.scheduledDate || '',
+        time: mForm.scheduledTime || '',
+        officiant: mForm.scheduledOfficiant || '',
+        duration: mDuration,
+        venueId: mVenueId,
+        guests: mExpectedGuests,
+        excludeId: (record as MarriageRecord | null)?.calendarEventId || undefined,
+        venues: mVenues,
+        events: mCalendarEvents,
+      }),
+    [
+      mForm.scheduledDate,
+      mForm.scheduledTime,
+      mForm.scheduledOfficiant,
+      mDuration,
+      mVenueId,
+      mExpectedGuests,
+      mVenues,
+      mCalendarEvents,
+      record,
+    ],
+  );
+
   /* ── CONFIRMATION FORM STATE ── */
   const [cForm, setCForm] = useState<Partial<ConfirmationRecord>>(() => {
     const r = record as ConfirmationRecord | null;
@@ -2554,6 +2933,19 @@ function RecordModal({
       onToast(...calendarSaveToast('Baptism', bAutoCalendar, calCreated));
     } else if (sacrament === 'marriage') {
       if (!validateMarriage()) return;
+      // HARD-BLOCK: a real venue/officiant/time conflict (or a liturgical block)
+      // can never be saved into. Availability is shown live in the panel; this is
+      // the enforcing gate for the save action itself.
+      if (mSchedule.blocked) {
+        const reason = mSchedule.conflicts.length > 0
+          ? `${mSchedule.conflicts[0].title || 'Another event'} is already booked at that time.`
+          : mSchedule.lit.note;
+        onToast(`Cannot save — scheduling conflict. ${reason}`, 'error');
+        return;
+      }
+      // The chosen venue's name is the record's scheduledLocation (the scheduling
+      // engine matches events by this venue token).
+      const mVenueName = mSchedule.venue?.name || mForm.scheduledLocation || marriageLocations[0];
       const newRecord: MarriageRecord = {
         id: (record as MarriageRecord | null)?.id || genId('m'),
         registryNumber: mForm.registryNumber || `2024-${String(Math.floor(Math.random() * 9000) + 1000)}`,
@@ -2567,12 +2959,17 @@ function RecordModal({
         officiant: mForm.officiant!, bookNumber: Number(mForm.bookNumber) || 1, pageNumber: Number(mForm.pageNumber) || 1,
         notations: mForm.notations || '', status: (mForm.status as 'Active') || 'Active',
         scheduledDate: mForm.scheduledDate || mForm.dateOfMarriage!, scheduledTime: mForm.scheduledTime || '10:00 AM',
-        scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mForm.scheduledLocation || marriageLocations[0],
+        scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mVenueName,
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
-      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar, onToast);
+      // Carry a graceful surname-based title + the real time window so the created
+      // calendar event is detected as busy for the whole ceremony by future bookings.
+      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar, onToast, {
+        title: weddingCalendarTitle(newRecord.groomLastName, newRecord.brideLastName),
+        durationMin: mDuration,
+      });
       onSave(newRecord);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Marriage', mAutoCalendar, calCreated));
@@ -2992,20 +3389,26 @@ function RecordModal({
                 </div>
               </div>
 
-              {/* ═══ SCHEDULE ═══ */}
-              <ScheduleSection
-                sacrament="marriage"
+              {/* ═══ SCHEDULE (venue + live conflict detection) ═══ */}
+              <MarriageScheduleSection
                 date={mForm.scheduledDate || ''}
                 time={mForm.scheduledTime || '10:00 AM'}
                 officiant={mForm.scheduledOfficiant || ''}
-                location={mForm.scheduledLocation || marriageLocations[0]}
+                duration={mDuration}
+                expectedGuests={mExpectedGuests}
+                venueId={mVenueId}
                 autoCalendar={mAutoCalendar}
+                multiVenue={mMultiVenue}
+                venues={mVenues}
+                schedule={mSchedule}
                 onChangeDate={(v) => mUpdate('scheduledDate', v)}
                 onChangeTime={(v) => mUpdate('scheduledTime', v)}
                 onChangeOfficiant={(v) => mUpdate('scheduledOfficiant', v)}
-                onChangeLocation={(v) => mUpdate('scheduledLocation', v)}
+                onChangeDuration={setMDuration}
+                onChangeGuests={setMExpectedGuests}
+                onChangeVenue={setMVenueId}
                 onChangeAutoCalendar={setMAutoCalendar}
-                eventTitle={`Wedding: ${mForm.groomFirstName || ''} ${mForm.groomLastName || ''} & ${mForm.brideFirstName || ''} ${mForm.brideLastName || ''}`}
+                eventTitle={weddingCalendarTitle(mForm.groomLastName, mForm.brideLastName)}
                 errors={{ date: mErrors.scheduledDate, time: mErrors.scheduledTime, officiant: mErrors.scheduledOfficiant }}
               />
 

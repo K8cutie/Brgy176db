@@ -41,6 +41,10 @@ export const KEYS = {
   // Ministries
   ministries: 'ministries',
 
+  // Venues (bookable spaces — see lib/venues.ts). One object-per-parish list,
+  // persisted as a singleton in parish_settings in cloud mode.
+  venues: 'venues',
+
   // SSDM (Social Services & Development Ministry)
   ssdmApplications: 'ssdm_applications',
   ssdmBeneficiaries: 'ssdm_beneficiaries',

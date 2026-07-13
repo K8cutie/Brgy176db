@@ -5,7 +5,7 @@ import {
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
   X, Check, Search, Lock, Unlock, Printer,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
-  Database, Download, FolderOpen, Puzzle, Globe,
+  Database, Download, FolderOpen, Puzzle, Globe, MapPin, Star,
 } from 'lucide-react';
 import DataTable, { type Column } from '@/components/DataTable';
 import PortalConfigSection from '@/components/PortalConfigSection';
@@ -41,6 +41,13 @@ import {
 import type { ParishInfo, MassTime, CertificateTemplate, User, AuditLogEntry } from '@/lib/settingsData';
 import { getJSON, setJSON } from '@/lib/storageNamespaced';
 import { getCurrentUserName } from '@/lib/session';
+import {
+  getVenues,
+  addVenue,
+  updateVenue,
+  deleteVenue,
+  type Venue,
+} from '@/lib/venues';
 import {
   getModuleRegistry,
   setModuleEnabled,
@@ -2125,10 +2132,251 @@ function BackupSection() {
   );
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  SECTION: VENUES
+// ═════════════════════════════════════════════════════════════════
+
+function VenuesSection() {
+  const [venues, setVenues] = useState<Venue[]>(getVenues);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState<Venue | null>(null);
+  const [form, setForm] = useState<{ name: string; capacity: string; location: string }>({
+    name: '',
+    capacity: '',
+    location: '',
+  });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<Venue | null>(null);
+
+  const refresh = () => setVenues(getVenues());
+
+  const openAdd = () => {
+    setEditing(null);
+    setForm({ name: '', capacity: '', location: '' });
+    setShowModal(true);
+  };
+
+  const openEdit = (venue: Venue) => {
+    setEditing(venue);
+    setForm({
+      name: venue.name,
+      capacity: venue.capacity ? String(venue.capacity) : '',
+      location: venue.location,
+    });
+    setShowModal(true);
+  };
+
+  const save = () => {
+    const name = form.name.trim();
+    if (!name) return;
+    const capacity = Math.max(0, parseInt(form.capacity, 10) || 0);
+    const location = form.location.trim();
+    if (editing) {
+      updateVenue(editing.id, { name, capacity, location });
+    } else {
+      addVenue({ name, capacity, location, active: true });
+    }
+    refresh();
+    setShowModal(false);
+    setEditing(null);
+  };
+
+  const confirmDelete = () => {
+    if (showDeleteConfirm) {
+      deleteVenue(showDeleteConfirm.id);
+      refresh();
+    }
+    setShowDeleteConfirm(null);
+  };
+
+  const makeDefault = (venue: Venue) => {
+    updateVenue(venue.id, { isDefault: true });
+    refresh();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="heading-lg text-charcoal dark:text-dm-text">Venues</h2>
+          <p className="body-sm text-warm-gray mt-0.5">
+            Bookable spaces for your parish. Ceremonies scheduled in the same venue at overlapping times are flagged as conflicts.
+          </p>
+        </div>
+        <button onClick={openAdd} className="cos-btn cos-btn-primary text-sm">
+          <Plus className="w-4 h-4" /> Add Venue
+        </button>
+      </div>
+
+      <div className="cos-card p-0 overflow-hidden">
+        <div className="divide-y divide-parchment/30 dark:divide-dm-border">
+          {venues.map((venue) => (
+            <div key={venue.id} className="flex items-center justify-between px-5 py-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center flex-shrink-0">
+                  <MapPin className="w-5 h-5 text-gold" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-charcoal dark:text-dm-text truncate">{venue.name}</span>
+                    {venue.isDefault && (
+                      <span className="cos-badge cos-badge-warning text-xs flex items-center gap-1">
+                        <Star className="w-3 h-3" /> Default
+                      </span>
+                    )}
+                    {!venue.active && (
+                      <span className="cos-badge cos-badge-default text-xs">Inactive</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5 text-xs text-warm-gray">
+                    <span>Seats {venue.capacity > 0 ? venue.capacity : '—'}</span>
+                    {venue.location && <span className="truncate">{venue.location}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                {!venue.isDefault && (
+                  <button
+                    onClick={() => makeDefault(venue)}
+                    className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-gold/10 transition-all"
+                    title="Set as default venue"
+                  >
+                    <Star className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  onClick={() => openEdit(venue)}
+                  className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-gold/10 transition-all"
+                  title="Edit"
+                >
+                  <Edit className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(venue)}
+                  disabled={venues.length <= 1}
+                  title={venues.length <= 1 ? 'A parish must keep at least one venue' : 'Delete'}
+                  className={cn(
+                    'p-1.5 rounded-md transition-all',
+                    venues.length <= 1
+                      ? 'text-warm-gray/40 cursor-not-allowed'
+                      : 'text-warm-gray hover:text-error hover:bg-error/10',
+                  )}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Add/Edit Venue Modal */}
+      <AnimatePresence>
+        {showModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+            onClick={() => setShowModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+              className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[520px] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
+                <h2 className="heading-md text-charcoal dark:text-dm-text">
+                  {editing ? 'Edit Venue' : 'Add Venue'}
+                </h2>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:hover:bg-dm-surface-raised"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                <div>
+                  <label className="label text-warm-gray block mb-1.5">Venue Name *</label>
+                  <input
+                    type="text"
+                    value={form.name}
+                    onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                    className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    placeholder="e.g. Main Church, Parish Hall"
+                    autoFocus
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="label text-warm-gray block mb-1.5">Capacity (seats)</label>
+                    <input
+                      type="number"
+                      value={form.capacity}
+                      onChange={(e) => setForm((p) => ({ ...p, capacity: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                      placeholder="0 = unspecified"
+                      min={0}
+                      step={1}
+                    />
+                    <p className="text-xs text-warm-gray mt-1">Leave 0 if there is no fixed seating limit.</p>
+                  </div>
+                  <div>
+                    <label className="label text-warm-gray block mb-1.5">Location</label>
+                    <input
+                      type="text"
+                      value={form.location}
+                      onChange={(e) => setForm((p) => ({ ...p, location: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                      placeholder="e.g. 2nd floor, Ground level"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-parchment dark:border-dm-border">
+                <button onClick={() => setShowModal(false)} className="cos-btn cos-btn-secondary text-sm">
+                  Cancel
+                </button>
+                <button
+                  onClick={save}
+                  disabled={!form.name.trim()}
+                  className={cn(
+                    'cos-btn text-sm text-white flex items-center gap-2',
+                    form.name.trim() ? 'cos-btn-primary' : 'bg-warm-gray/30 cursor-not-allowed',
+                  )}
+                >
+                  <Save className="w-4 h-4" /> {editing ? 'Save Changes' : 'Add Venue'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <ConfirmationDialog
+        isOpen={!!showDeleteConfirm}
+        title="Delete Venue"
+        message={`Delete "${showDeleteConfirm?.name}"? Existing bookings keep their recorded venue, but it will no longer be selectable.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(null)}
+      />
+    </div>
+  );
+}
+
 const settingsNavItems = [
   { id: 'parish', label: 'Parish Info', icon: Church },
   { id: 'mass', label: 'Mass Schedule', icon: Clock },
   { id: 'fees', label: 'Fee Schedule', icon: DollarSign },
+  { id: 'venues', label: 'Venues', icon: MapPin },
   { id: 'templates', label: 'Certificate Templates', icon: FileText },
   { id: 'portal', label: 'Public Portal', icon: Globe },
   { id: 'users', label: 'Users', icon: Users },
@@ -2137,7 +2385,7 @@ const settingsNavItems = [
   { id: 'audit', label: 'Audit Log', icon: ClipboardList },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'venues' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -2196,6 +2444,8 @@ export default function SettingsPage() {
         return <MassScheduleSection />;
       case 'fees':
         return <FeeScheduleSection />;
+      case 'venues':
+        return <VenuesSection />;
       case 'templates':
         return <CertificateTemplatesSection />;
       case 'portal':
@@ -2237,7 +2487,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">General</span>
             </div>
-            {settingsNavItems.slice(0, 3).map((item) => (
+            {settingsNavItems.slice(0, 4).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2260,7 +2510,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Sacraments &amp; Online</span>
             </div>
-            {settingsNavItems.slice(3, 5).map((item) => (
+            {settingsNavItems.slice(4, 6).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2283,7 +2533,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Administration</span>
             </div>
-            {settingsNavItems.slice(5).map((item) => (
+            {settingsNavItems.slice(6).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
