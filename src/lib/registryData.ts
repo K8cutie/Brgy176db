@@ -8,6 +8,7 @@ import { getParishName, getFullAddress, getPriestName } from './parishConfig';
 import type { AuditLogEntry } from './settingsData';
 import { validateSchedulingRules, eventTypeToRuleKey, type CalendarEvent } from './calendarData';
 import { todayISO } from './massIntentions';
+import { designToHtml, type CertificateDesign } from './certificateDesign';
 
 /* ═══════════════════════════════════════════════════════════════════
    TYPES
@@ -564,6 +565,10 @@ export interface CertificateTemplate {
   isDefault: boolean;
   isSystem: boolean;
   html: string;
+  /** Structured design produced by the guided visual editor. Present on
+   *  templates authored/edited visually; absent on raw-HTML or uploaded ones.
+   *  When present it is the editable source of truth — `html` is its render. */
+  design?: CertificateDesign;
 }
 
 // Optional watermark block for duplicate copies. Templates include the
@@ -1423,14 +1428,17 @@ export function mergeCertificateTemplates(
     // stored entry with id='std-baptism', isSystem:true could swap the html
     // (rendered via dangerouslySetInnerHTML) while masquerading as a trusted
     // system template.
+    // The visual editor's structured `design` must survive a save→reload: an
+    // override carries its own design if it has one, else the default's stays.
     return override
-      ? { ...t, ...override, id: t.id, isSystem: t.isSystem, isDefault: t.isDefault }
+      ? { ...t, ...override, id: t.id, isSystem: t.isSystem, isDefault: t.isDefault, design: override.design ?? t.design }
       : { ...t };
   });
   const custom = saved.filter(
     (t): t is CertificateTemplate =>
       !!t.id && !defaultIds.has(t.id) && typeof t.name === 'string' && typeof t.html === 'string' && !!t.sacrament,
   );
+  // `...t` carries the custom template's `design` through verbatim.
   return [...merged, ...custom.map((t) => ({ ...t, description: t.description ?? '', isSystem: false, isDefault: false }))];
 }
 
@@ -1456,6 +1464,45 @@ export function templateFromUpload(
     isSystem: false,
     html: clean,
   };
+}
+
+/** Build a certificate template from a structured visual `design`. Stores BOTH
+ *  the rendered token `html` (used by generation/print/PDF) and the `design`
+ *  itself (so the guided editor can reopen and keep editing it). A `tcustom-`
+ *  id keeps new designs out of the default slot; pass `id` to re-save an
+ *  existing custom template in place. */
+export function templateFromDesign(
+  design: CertificateDesign,
+  name: string,
+  sacrament: CertificateSacrament,
+  id?: string,
+): CertificateTemplate {
+  return {
+    id: id ?? `tcustom-${Date.now()}`,
+    name: name.trim() || 'Custom Certificate',
+    description: 'Custom design',
+    sacrament,
+    isDefault: false,
+    isSystem: false,
+    html: designToHtml(design),
+    design,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CERTIFICATE TEMPLATE PERSISTENCE — single source of truth
+   Both the app (RegistryPage) and the guided editor load/save through these.
+   Stored under 'certificate_templates'; shipped defaults are merged in so
+   new system templates keep appearing and trust-critical fields can't be forged.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function loadCertificateTemplates(): CertificateTemplate[] {
+  const saved = getJSON<Partial<CertificateTemplate>[]>('certificate_templates', []);
+  return mergeCertificateTemplates(certificateTemplates, saved);
+}
+
+export function saveCertificateTemplates(list: CertificateTemplate[]): boolean {
+  return setJSON('certificate_templates', list);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

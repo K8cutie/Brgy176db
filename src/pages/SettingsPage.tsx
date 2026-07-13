@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, Church, Clock, FileText, Users, ClipboardList,
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
-  X, Check, Search, Lock, Unlock, Printer,
+  X, Check, Search, Lock, Unlock, Sparkles,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
   Database, Download, FolderOpen, Puzzle, Globe, MapPin, Star, UserCheck,
 } from 'lucide-react';
@@ -27,18 +27,22 @@ import {
   daysOfWeek,
   massLanguages,
   massTypes,
-  defaultTemplates,
-  defaultBaptismHTML,
-  defaultTemplateCSS,
-  sampleData,
-  certificateTokens,
   defaultUsers,
   roleDescriptions,
   roleBadgeColors,
   auditLogData,
   actionBadgeColors,
 } from '@/lib/settingsData';
-import type { ParishInfo, MassTime, CertificateTemplate, User, AuditLogEntry } from '@/lib/settingsData';
+import type { ParishInfo, MassTime, User, AuditLogEntry } from '@/lib/settingsData';
+import {
+  loadCertificateTemplates,
+  saveCertificateTemplates,
+  type CertificateTemplate,
+  type CertificateSacrament,
+} from '@/lib/registryData';
+import { previewFill } from '@/lib/certificateDesign';
+import CertificateDesignEditor from '@/components/CertificateDesignEditor';
+import { toast } from 'sonner';
 import { getJSON, setJSON } from '@/lib/storageNamespaced';
 import { getCurrentUserName } from '@/lib/session';
 import {
@@ -70,16 +74,6 @@ import {
 
 function cn(...classes: (string | false | undefined)[]) {
   return classes.filter(Boolean).join(' ');
-}
-
-function replaceTokens(html: string, css: string, data: Record<string, string>) {
-  let result = html;
-  Object.entries(data).forEach(([key, value]) => {
-    result = result.replace(new RegExp(`{{${key}}}`, 'g'), value);
-  });
-  // Also replace any remaining tokens with sample text
-  result = result.replace(/{{(\w+)}}/g, (_, key) => data[key] || `[${key}]`);
-  return `<style>${css}</style>${result}`;
 }
 
 function generateTempPassword() {
@@ -711,208 +705,163 @@ function FeeScheduleSection() {
 // ═════════════════════════════════════════════════════════════════
 
 function CertificateTemplatesSection() {
-  const [templates, setTemplates] = useState<CertificateTemplate[]>([...defaultTemplates]);
-  const [activeSubTab, setActiveSubTab] = useState<'manage' | 'edit'>('manage');
-  const [editingTemplate, setEditingTemplate] = useState<CertificateTemplate | null>(null);
-  const [editHtml, setEditHtml] = useState('');
-  const [editCss, setEditCss] = useState('');
-  const [codeTab, setCodeTab] = useState<'html' | 'css'>('html');
-  const [previewZoom, setPreviewZoom] = useState(75);
-  const [paperSize, setPaperSize] = useState<'A4' | 'Letter' | 'Legal'>('A4');
-  const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
-  const [editName, setEditName] = useState('');
+  // SINGLE SOURCE OF TRUTH: the exact templates the Registry uses to generate
+  // certificates (loadCertificateTemplates / saveCertificateTemplates in
+  // registryData). Editing here is the guided VISUAL editor — no HTML.
+  const [templates, setTemplates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates());
+  const [designEditor, setDesignEditor] = useState<{
+    template: CertificateTemplate | null;
+    sacrament: CertificateSacrament;
+  } | null>(null);
+  const [showCreatePicker, setShowCreatePicker] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const startEdit = (tmpl: CertificateTemplate) => {
-    setEditingTemplate(tmpl);
-    setEditHtml(tmpl.html);
-    setEditCss(tmpl.css);
-    setEditName(tmpl.name);
-    setActiveSubTab('edit');
-  };
+  const reload = () => setTemplates(loadCertificateTemplates());
 
-  const handleDuplicate = (tmpl: CertificateTemplate) => {
-    const dup: CertificateTemplate = {
-      ...tmpl,
-      id: `tmpl-${Date.now()}`,
-      name: `${tmpl.name} (Copy)`,
-      type: 'Custom',
-      isDefault: false,
-      lastModified: 'Just now',
-    };
-    setTemplates((prev) => [...prev, dup]);
+  const notify = (msg: string, type: 'success' | 'error' | 'warning' | 'info') => {
+    if (type === 'success') toast.success(msg);
+    else if (type === 'error') toast.error(msg);
+    else if (type === 'warning') toast.warning(msg);
+    else toast.info(msg);
   };
 
   const handleDelete = (id: string) => {
-    setTemplates((prev) => prev.filter((t) => t.id !== id));
+    const next = loadCertificateTemplates().filter((t) => t.id !== id);
+    const ok = saveCertificateTemplates(next);
+    if (ok) {
+      setTemplates(next);
+      toast.success('Template deleted');
+    } else {
+      toast.error('Could not delete — storage error');
+    }
     setShowDeleteConfirm(null);
   };
 
-  const handleSave = () => {
-    if (!editingTemplate) return;
-    setTemplates((prev) =>
-      prev.map((t) =>
-        t.id === editingTemplate.id
-          ? { ...t, name: editName, html: editHtml, css: editCss, lastModified: 'Just now' }
-          : t
-      )
+  const SACRAMENTS: { value: CertificateSacrament; label: string }[] = [
+    { value: 'baptism', label: 'Baptism' },
+    { value: 'marriage', label: 'Marriage' },
+    { value: 'confirmation', label: 'Confirmation' },
+    { value: 'death', label: 'Death / Funeral' },
+  ];
+  const sacramentLabel = (s: CertificateSacrament) => SACRAMENTS.find((x) => x.value === s)?.label ?? s;
+  const sacramentBadge = (s: CertificateSacrament) =>
+    cn(
+      'cos-badge text-xs',
+      s === 'baptism' && 'bg-forest-green/10 text-forest-green',
+      s === 'marriage' && 'bg-maroon/10 text-maroon',
+      s === 'confirmation' && 'bg-gold/10 text-gold',
+      s === 'death' && 'bg-warm-gray/15 text-warm-gray',
     );
-    setActiveSubTab('manage');
-    setEditingTemplate(null);
-  };
 
-  const handleSaveAs = () => {
-    const newTmpl: CertificateTemplate = {
-      id: `tmpl-${Date.now()}`,
-      name: `${editName} (Copy)`,
-      sacrament: editingTemplate?.sacrament || 'Baptism',
-      type: 'Custom',
-      isDefault: false,
-      lastModified: 'Just now',
-      html: editHtml,
-      css: editCss,
-    };
-    setTemplates((prev) => [...prev, newTmpl]);
-    setActiveSubTab('manage');
-    setEditingTemplate(null);
-  };
-
-  const insertToken = (token: string) => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const current = codeTab === 'html' ? editHtml : editCss;
-    const newValue = current.slice(0, start) + token + current.slice(end);
-    if (codeTab === 'html') setEditHtml(newValue);
-    else setEditCss(newValue);
-    setTimeout(() => {
-      ta.selectionStart = ta.selectionEnd = start + token.length;
-      ta.focus();
-    }, 0);
-  };
-
-  const previewHtml = useMemo(() => {
-    return replaceTokens(editHtml, editCss, sampleData);
-  }, [editHtml, editCss]);
-
-  const handleTestPrint = () => {
-    const w = window.open('', '_blank');
-    if (!w) return;
-    w.document.write(
-      `<!DOCTYPE html><html><head><title>${editName || 'Certificate'} — Test Print</title>` +
-      `<style>@page{size:${paperSize} ${orientation};margin:0}html,body{margin:0;padding:0}</style>` +
-      `</head><body onload="window.focus();window.print();">${previewHtml}</body></html>`
-    );
-    w.document.close();
-  };
-
-  const paperSizeMap = {
-    A4: { w: 210, h: 297 },
-    Letter: { w: 216, h: 279 },
-    Legal: { w: 216, h: 356 },
-  };
-
-  const paperDims = paperSizeMap[paperSize];
-  const previewW = orientation === 'portrait' ? paperDims.w : paperDims.h;
-  const previewH = orientation === 'portrait' ? paperDims.h : paperDims.w;
-
-  // ── Manage View ──
-  if (activeSubTab === 'manage') {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
           <h2 className="heading-lg text-charcoal dark:text-dm-text">Certificate Templates</h2>
+          <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-0.5 max-w-xl">
+            The same templates the Registry uses when generating certificates. Design them visually —
+            no HTML — and they stay in sync everywhere.
+          </p>
+        </div>
+        <div className="relative">
           <button
-            onClick={() => {
-              const newTmpl: CertificateTemplate = {
-                id: `tmpl-${Date.now()}`,
-                name: 'New Baptismal Template',
-                sacrament: 'Baptism',
-                type: 'Custom',
-                isDefault: false,
-                lastModified: 'Just now',
-                html: defaultBaptismHTML,
-                css: defaultTemplateCSS,
-              };
-              setTemplates((prev) => [...prev, newTmpl]);
-              startEdit(newTmpl);
-            }}
+            onClick={() => setShowCreatePicker((v) => !v)}
             className="cos-btn cos-btn-primary text-sm"
           >
-            <Plus className="w-4 h-4" /> Create New Template
+            <Plus className="w-4 h-4" /> Create Template
           </button>
+          <AnimatePresence>
+            {showCreatePicker && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="absolute top-full right-0 mt-2 w-52 bg-white dark:bg-dm-surface rounded-xl shadow-lg border border-parchment dark:border-dm-border z-30 py-1"
+              >
+                <p className="px-4 py-2 text-[11px] uppercase tracking-wide text-warm-gray dark:text-dm-text-muted">
+                  Choose a sacrament
+                </p>
+                {SACRAMENTS.map((s) => (
+                  <button
+                    key={s.value}
+                    onClick={() => {
+                      setShowCreatePicker(false);
+                      setDesignEditor({ template: null, sacrament: s.value });
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-sm text-charcoal hover:bg-cream-dark dark:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
+      </div>
 
+      {templates.length === 0 ? (
+        <div className="cos-card p-10 text-center text-warm-gray dark:text-dm-text-muted">
+          No templates yet. Click “Create Template” to design one.
+        </div>
+      ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {templates.map((tmpl, i) => (
             <motion.div
               key={tmpl.id}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
+              transition={{ delay: i * 0.04 }}
               className="cos-card cos-card-hover p-0 overflow-hidden"
             >
-              {/* Preview Thumbnail */}
+              {/* Preview thumbnail — sample-filled, so it looks like a real certificate */}
               <div className="h-[200px] bg-cream-dark/30 dark:bg-dm-surface-raised overflow-hidden relative border-b border-parchment/40 dark:border-dm-border">
                 <div
                   className="w-full h-full overflow-hidden"
-                  style={{ transform: 'scale(0.35)', transformOrigin: 'top left', width: '285%', height: '285%' }}
-                  dangerouslySetInnerHTML={{
-                    __html: replaceTokens(tmpl.html, tmpl.css, sampleData),
-                  }}
+                  style={{ transform: 'scale(0.32)', transformOrigin: 'top left', width: '312%', height: '312%' }}
+                  dangerouslySetInnerHTML={{ __html: previewFill(tmpl.html) }}
                 />
                 {tmpl.isDefault && (
                   <div className="absolute top-2 right-2 bg-gold text-white text-xs font-semibold px-2 py-0.5 rounded-full">
                     Default
                   </div>
                 )}
+                {tmpl.design && (
+                  <div className="absolute top-2 left-2 inline-flex items-center gap-1 bg-white/90 dark:bg-dm-surface/90 text-gold text-[10px] font-semibold px-2 py-0.5 rounded-full shadow-sm">
+                    <Sparkles className="w-3 h-3" /> Visual
+                  </div>
+                )}
               </div>
 
-              {/* Card Info */}
+              {/* Card info */}
               <div className="p-4">
                 <h3 className="heading-sm text-charcoal dark:text-dm-text mb-1">{tmpl.name}</h3>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={cn(
-                    'cos-badge text-xs',
-                    tmpl.sacrament === 'Baptism' && 'bg-forest-green/10 text-forest-green',
-                    tmpl.sacrament === 'Marriage' && 'bg-maroon/10 text-maroon',
-                    tmpl.sacrament === 'Confirmation' && 'bg-purple/10 text-purple',
-                  )}>
-                    {tmpl.sacrament}
-                  </span>
-                  <span className={cn(
-                    'cos-badge text-xs',
-                    tmpl.type === 'System' ? 'cos-badge-default' : 'cos-badge-info',
-                  )}>
-                    {tmpl.type}
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={sacramentBadge(tmpl.sacrament)}>{sacramentLabel(tmpl.sacrament)}</span>
+                  <span className={cn('cos-badge text-xs', tmpl.isSystem ? 'cos-badge-default' : 'cos-badge-info')}>
+                    {tmpl.isSystem ? 'System' : 'Custom'}
                   </span>
                 </div>
-                <p className="text-xs text-warm-gray mb-3">Modified: {tmpl.lastModified}</p>
 
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => startEdit(tmpl)}
+                    onClick={() => setDesignEditor({ template: tmpl, sacrament: tmpl.sacrament })}
                     className="flex-1 cos-btn cos-btn-primary text-xs py-1.5"
+                    title={
+                      tmpl.isSystem
+                        ? 'Opens as a starting point — saving creates an editable copy (the system template is never overwritten)'
+                        : 'Edit this template visually'
+                    }
                   >
                     <Edit className="w-3.5 h-3.5" /> Edit
                   </button>
                   <button
-                    onClick={() => handleDuplicate(tmpl)}
-                    className="cos-btn cos-btn-secondary text-xs py-1.5 px-2"
-                    title="Duplicate"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => tmpl.type === 'System' ? null : setShowDeleteConfirm(tmpl.id)}
-                    disabled={tmpl.type === 'System'}
-                    title={tmpl.type === 'System' ? 'System templates cannot be deleted' : 'Delete'}
+                    onClick={() => (tmpl.isSystem ? null : setShowDeleteConfirm(tmpl.id))}
+                    disabled={tmpl.isSystem}
+                    title={tmpl.isSystem ? 'System templates cannot be deleted' : 'Delete'}
                     className={cn(
                       'cos-btn text-xs py-1.5 px-2',
-                      tmpl.type === 'System'
+                      tmpl.isSystem
                         ? 'bg-warm-gray/10 text-warm-gray/40 cursor-not-allowed'
                         : 'bg-error/10 text-error hover:bg-error/20',
                     )}
@@ -924,186 +873,30 @@ function CertificateTemplatesSection() {
             </motion.div>
           ))}
         </div>
+      )}
 
-        <ConfirmationDialog
-          isOpen={!!showDeleteConfirm}
-          title="Delete Template"
-          message="Are you sure you want to delete this template? This action cannot be undone."
-          confirmLabel="Delete"
-          variant="danger"
-          onConfirm={() => showDeleteConfirm && handleDelete(showDeleteConfirm)}
-          onCancel={() => setShowDeleteConfirm(null)}
+      <ConfirmationDialog
+        isOpen={!!showDeleteConfirm}
+        title="Delete Template"
+        message="Delete this custom template? Certificates already issued are unaffected. This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => showDeleteConfirm && handleDelete(showDeleteConfirm)}
+        onCancel={() => setShowDeleteConfirm(null)}
+      />
+
+      {designEditor && (
+        <CertificateDesignEditor
+          template={designEditor.template}
+          sacrament={designEditor.sacrament}
+          onClose={() => setDesignEditor(null)}
+          onToast={notify}
+          onSaved={() => {
+            reload();
+            setDesignEditor(null);
+          }}
         />
-      </div>
-    );
-  }
-
-  // ── Editor View ──
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="heading-lg text-charcoal dark:text-dm-text">Template Editor</h2>
-        <button
-          onClick={() => { setActiveSubTab('manage'); setEditingTemplate(null); }}
-          className="cos-btn cos-btn-secondary text-sm"
-        >
-          <X className="w-4 h-4" /> Close Editor
-        </button>
-      </div>
-
-      {/* Split Pane Editor */}
-      <div className="cos-card p-0 overflow-hidden">
-        <div className="flex flex-col lg:flex-row" style={{ height: 'calc(100vh - 280px)', minHeight: '500px' }}>
-          {/* Left Pane: Code Editor (40%) */}
-          <div className="w-full lg:w-[40%] flex flex-col border-r border-parchment/40 dark:border-dm-border">
-            {/* Code Tabs */}
-            <div className="flex border-b border-parchment/40 dark:border-dm-border">
-              {(['html', 'css'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setCodeTab(tab)}
-                  className={cn(
-                    'px-4 py-2.5 text-sm font-medium border-b-2 transition-all',
-                    codeTab === tab
-                      ? 'border-gold text-gold'
-                      : 'border-transparent text-warm-gray hover:text-charcoal dark:hover:text-dm-text',
-                  )}
-                >
-                  {tab.toUpperCase()}
-                </button>
-              ))}
-            </div>
-
-            {/* Code Area */}
-            <div className="flex-1 overflow-auto bg-[#1E1E1E] relative">
-              <textarea
-                ref={textareaRef}
-                value={codeTab === 'html' ? editHtml : editCss}
-                onChange={(e) => codeTab === 'html' ? setEditHtml(e.target.value) : setEditCss(e.target.value)}
-                spellCheck={false}
-                className="w-full h-full p-4 font-mono text-[13px] leading-6 text-[#D4D4D4] bg-transparent resize-none focus:outline-none"
-                style={{ tabSize: 2 }}
-              />
-            </div>
-
-            {/* Token Insertion Panel */}
-            <div className="border-t border-parchment/40 dark:border-dm-border bg-cream-dark/30 dark:bg-dm-surface-raised p-3 max-h-[160px] overflow-y-auto">
-              <p className="text-xs text-warm-gray mb-2 font-medium">Insert Token</p>
-              <div className="space-y-2">
-                {Object.entries(certificateTokens).map(([category, tokens]) => (
-                  <div key={category}>
-                    <span className="text-[10px] uppercase tracking-wider text-warm-gray/70">{category}</span>
-                    <div className="flex flex-wrap gap-1 mt-0.5">
-                      {tokens.map((token) => (
-                        <button
-                          key={token}
-                          onClick={() => insertToken(token)}
-                          className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-white dark:bg-dm-surface border border-parchment dark:border-dm-border text-gold hover:bg-gold/10 transition-colors"
-                        >
-                          {token}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Right Pane: Live Preview (60%) */}
-          <div className="w-full lg:w-[60%] flex flex-col bg-cream-dark/30 dark:bg-dm-bg">
-            {/* Preview Toolbar */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-parchment/40 dark:border-dm-border bg-white dark:bg-dm-surface">
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-warm-gray font-medium">Zoom:</span>
-                {[50, 75, 100, 125, 150].map((z) => (
-                  <button
-                    key={z}
-                    onClick={() => setPreviewZoom(z)}
-                    className={cn(
-                      'text-xs px-2 py-0.5 rounded transition-colors',
-                      previewZoom === z ? 'bg-gold text-white' : 'text-warm-gray hover:bg-cream-dark dark:hover:bg-dm-surface-raised',
-                    )}
-                  >
-                    {z}%
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                {(['A4', 'Letter', 'Legal'] as const).map((size) => (
-                  <button
-                    key={size}
-                    onClick={() => setPaperSize(size)}
-                    className={cn(
-                      'text-xs px-2 py-0.5 rounded transition-colors',
-                      paperSize === size ? 'bg-gold text-white' : 'text-warm-gray hover:bg-cream-dark dark:hover:bg-dm-surface-raised',
-                    )}
-                  >
-                    {size}
-                  </button>
-                ))}
-                <div className="w-px h-4 bg-parchment dark:bg-dm-border mx-1" />
-                {(['portrait', 'landscape'] as const).map((ori) => (
-                  <button
-                    key={ori}
-                    onClick={() => setOrientation(ori)}
-                    className={cn(
-                      'text-xs px-2 py-0.5 rounded transition-colors capitalize',
-                      orientation === ori ? 'bg-gold text-white' : 'text-warm-gray hover:bg-cream-dark dark:hover:bg-dm-surface-raised',
-                    )}
-                  >
-                    {ori}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Preview Frame */}
-            <div className="flex-1 overflow-auto flex items-start justify-center p-6">
-              <div
-                className="bg-white shadow-lg border border-parchment/60 origin-top"
-                style={{
-                  width: `${previewW}mm`,
-                  height: `${previewH}mm`,
-                  transform: `scale(${previewZoom / 100})`,
-                  transformOrigin: 'top center',
-                  minWidth: `${previewW}mm`,
-                  minHeight: `${previewH}mm`,
-                }}
-              >
-                <div
-                  className="w-full h-full"
-                  dangerouslySetInnerHTML={{ __html: previewHtml }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom Bar */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-parchment/40 dark:border-dm-border bg-white dark:bg-dm-surface">
-          <input
-            type="text"
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            className="h-9 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold w-64 dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
-          />
-          <div className="flex items-center gap-2">
-            <button onClick={() => { setActiveSubTab('manage'); setEditingTemplate(null); }} className="cos-btn cos-btn-secondary text-sm">
-              Cancel
-            </button>
-            <button onClick={handleSaveAs} className="cos-btn cos-btn-secondary text-sm">
-              Save As
-            </button>
-            <button onClick={handleSave} className="cos-btn cos-btn-primary text-sm">
-              <Save className="w-4 h-4" /> Save
-            </button>
-            <button onClick={handleTestPrint} className="cos-btn text-sm bg-deep-navy text-white hover:bg-deep-navy-light">
-              <Printer className="w-4 h-4" /> Test Print
-            </button>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

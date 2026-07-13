@@ -41,6 +41,7 @@ import {
 import DataTable from '@/components/DataTable';
 import type { Column } from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
+import CertificateDesignEditor from '@/components/CertificateDesignEditor';
 import HelpTooltip from '@/components/HelpTooltip';
 import { getLabel } from '@/lib/friendlyLabels';
 import EmptyState from '@/components/EmptyState';
@@ -87,9 +88,11 @@ import {
   newlyVoidedAnnotations,
   buildRegistryCalendarEvent,
   annotateEventWithSchedulingRules,
-  mergeCertificateTemplates,
   templateFromUpload,
+  loadCertificateTemplates,
+  saveCertificateTemplates,
   appendRegistryAudit,
+  type CertificateSacrament,
 } from '@/lib/registryData';
 import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
 import { getActiveVenues, isMultiVenue, type Venue } from '@/lib/venues';
@@ -473,25 +476,12 @@ function AnnotationTypeBadge({ type }: { type: RegistryAnnotationType }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Certificate template persistence (per parish, localStorage-backed)  */
+/*  Certificate template type                                           */
 /* ------------------------------------------------------------------ */
+// Load/save now live in registryData.ts (single source of truth, key
+// 'certificate_templates') and are imported above; the guided visual editor
+// uses the SAME exports so the Registry and the editor never drift.
 type CertificateTemplate = (typeof certificateTemplates)[number];
-
-// Namespaced storage key (resolved through storageNamespaced, like KEYS).
-const CERT_TEMPLATES_KEY = 'certificate_templates';
-
-// Load templates: any edits saved by the user override the module defaults
-// (matched by id); defaults without a saved entry are always included so
-// shipping new templates keeps working; saved templates with NON-default ids
-// (user duplicates) are preserved too. Returns a fresh array each call.
-function loadCertificateTemplates(): CertificateTemplate[] {
-  const saved = ns.getJSON<Partial<CertificateTemplate>[]>(CERT_TEMPLATES_KEY, []);
-  return mergeCertificateTemplates(certificateTemplates, saved);
-}
-
-function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
-  return ns.setJSON(CERT_TEMPLATES_KEY, templates);
-}
 
 /* ------------------------------------------------------------------ */
 /*  Auto-add to parish calendar                                        */
@@ -4266,6 +4256,9 @@ function CertificateModal({ record, sacrament, onClose, onToast }: { record: Reg
   const [templates, setTemplates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
   const [selectedTemplateId, setSelectedTemplateId] = useState(() => (templates.find((t) => t.isDefault) ?? templates[0]).id);
   const templateFileRef = useRef<HTMLInputElement>(null);
+  // Guided visual editor — opened from this modal to design a new template or
+  // edit a design-backed one. On save it refreshes this list and selects it.
+  const [designEditor, setDesignEditor] = useState<{ template: CertificateTemplate | null } | null>(null);
 
   // Upload a custom .html certificate template. It persists to the shared store,
   // so it also shows up in the Template Editor for further tweaking.
@@ -4370,6 +4363,7 @@ function CertificateModal({ record, sacrament, onClose, onToast }: { record: Reg
   };
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -4420,6 +4414,24 @@ function CertificateModal({ record, sacrament, onClose, onToast }: { record: Reg
                 </button>
               ))}
             </div>
+            {/* Design a brand-new template in the guided visual editor. */}
+            <button
+              onClick={() => setDesignEditor({ template: null })}
+              className="w-full cos-btn cos-btn-primary text-xs py-2"
+              title="Design a new certificate visually — no HTML"
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Design new template
+            </button>
+            {/* When the selected template was built visually, offer to reopen it. */}
+            {selectedTemplate?.design && (
+              <button
+                onClick={() => setDesignEditor({ template: selectedTemplate })}
+                className="w-full cos-btn cos-btn-secondary text-xs py-2"
+                title="Reopen this template in the guided visual editor"
+              >
+                <Pencil className="w-3.5 h-3.5" /> Edit visually
+              </button>
+            )}
             <input ref={templateFileRef} type="file" accept=".html,.htm,text/html" onChange={handleUploadTemplate} className="hidden" />
             <button
               onClick={() => templateFileRef.current?.click()}
@@ -4429,7 +4441,7 @@ function CertificateModal({ record, sacrament, onClose, onToast }: { record: Reg
               <Upload className="w-3.5 h-3.5" /> Upload template
             </button>
             <p className="text-[11px] text-warm-gray dark:text-dm-text-muted leading-snug">
-              An .html file using tokens like <span className="font-mono">{'{{child_name}}'}</span>. Tweak it later in the Template Editor.
+              Design visually, or upload an .html file using tokens like <span className="font-mono">{'{{child_name}}'}</span>. Fine-tune raw HTML later in the Template Editor.
             </p>
           </div>
 
@@ -4650,6 +4662,20 @@ function CertificateModal({ record, sacrament, onClose, onToast }: { record: Reg
         </div>
       </motion.div>
     </motion.div>
+    {designEditor && (
+      <CertificateDesignEditor
+        template={designEditor.template}
+        sacrament={sacrament}
+        onClose={() => setDesignEditor(null)}
+        onToast={onToast}
+        onSaved={(t) => {
+          setTemplates(loadCertificateTemplates().filter((x) => x.sacrament === sacrament));
+          setSelectedTemplateId(t.id);
+          setDesignEditor(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -4664,6 +4690,13 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
   const activeTmpl = templates.find((t) => t.id === activeTmplId)!;
   const uploadRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
+  // Guided visual editor — the recommended path. Raw HTML below is the
+  // "Advanced" escape hatch. Opened for a design-backed template (Edit
+  // visually) or to author a fresh one (Design new).
+  const [designEditor, setDesignEditor] = useState<{
+    template: CertificateTemplate | null;
+    sacrament: CertificateSacrament;
+  } | null>(null);
 
   // Upload a custom .html file as a new editable template (persisted immediately).
   const handleUpload = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -4751,6 +4784,7 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
   };
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -4768,9 +4802,20 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
         <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
           <div className="flex items-center gap-3">
             <Code className="w-5 h-5 text-gold" />
-            <h2 className="heading-lg text-charcoal dark:text-dm-text">Template Editor</h2>
+            <div>
+              <h2 className="heading-lg text-charcoal dark:text-dm-text">Certificate Templates</h2>
+              <p className="body-xs text-warm-gray dark:text-dm-text-muted">Design visually, or edit raw HTML under Advanced.</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setDesignEditor({ template: null, sacrament: activeTmpl.sacrament })}
+              className="cos-btn cos-btn-primary h-8 px-3 text-xs"
+              title="Design a new certificate visually — no HTML"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Design new
+            </button>
             <input ref={uploadRef} type="file" accept=".html,.htm,text/html" onChange={handleUpload} className="hidden" />
             <button onClick={() => uploadRef.current?.click()} className="cos-btn cos-btn-secondary h-8 px-3 text-xs" title="Upload a custom .html template that uses {{tokens}}">
               <Upload className="w-3.5 h-3.5" />
@@ -4799,26 +4844,55 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
           <div className="w-full lg:w-48 border-r border-parchment dark:border-dm-border p-4 space-y-2">
             <h3 className="heading-sm text-charcoal dark:text-dm-text text-xs uppercase mb-2">Templates</h3>
             {templates.map((t) => (
-              <button
+              <div
                 key={t.id}
-                onClick={() => { setActiveTmplId(t.id); setHtml(t.html); }}
-                className={`w-full text-left p-2.5 rounded-lg text-sm transition-all ${
+                className={`rounded-lg transition-all ${
                   activeTmplId === t.id
-                    ? 'bg-gold-glow border border-gold text-charcoal dark:text-dm-text'
-                    : 'text-warm-gray hover:bg-cream-dark dark:text-dm-text-muted dark:hover:bg-dm-surface-raised'
+                    ? 'bg-gold-glow border border-gold'
+                    : 'hover:bg-cream-dark dark:hover:bg-dm-surface-raised'
                 }`}
               >
-                {t.name}
-                {t.isSystem && <span className="ml-1.5 text-[10px] opacity-50">(system)</span>}
-              </button>
+                <button
+                  onClick={() => { setActiveTmplId(t.id); setHtml(t.html); }}
+                  className={`w-full text-left p-2.5 rounded-lg text-sm ${
+                    activeTmplId === t.id ? 'text-charcoal dark:text-dm-text' : 'text-warm-gray dark:text-dm-text-muted'
+                  }`}
+                >
+                  {t.name}
+                  {t.isSystem && <span className="ml-1.5 text-[10px] opacity-50">(system)</span>}
+                  {t.design && (
+                    <span className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] text-gold">
+                      <Sparkles className="w-2.5 h-2.5" /> visual
+                    </span>
+                  )}
+                </button>
+                {t.design && (
+                  <button
+                    onClick={() => setDesignEditor({ template: t, sacrament: t.sacrament })}
+                    className="w-full text-left px-2.5 pb-2 -mt-1 text-[11px] text-gold hover:underline inline-flex items-center gap-1"
+                    title="Edit this template in the guided visual editor"
+                  >
+                    <Pencil className="w-3 h-3" /> Edit visually
+                  </button>
+                )}
+              </div>
             ))}
           </div>
 
           {/* Code Editor */}
           <div className="flex-1 border-r border-parchment dark:border-dm-border flex flex-col min-w-0">
             <div className="px-4 py-2 border-b border-parchment dark:border-dm-border bg-cream-dark dark:bg-dm-surface-raised flex items-center justify-between">
-              <span className="label text-warm-gray">HTML/CSS Editor</span>
+              <span className="label text-warm-gray">Advanced (HTML)</span>
               <div className="flex items-center gap-2">
+                {activeTmpl.design && (
+                  <button
+                    onClick={() => setDesignEditor({ template: activeTmpl, sacrament: activeTmpl.sacrament })}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-gold/30 bg-gold-glow text-[10px] text-charcoal dark:text-dm-text hover:bg-gold/20 transition-colors"
+                    title="This template was built visually — reopen the guided editor"
+                  >
+                    <Sparkles className="w-3 h-3" /> Edit visually
+                  </button>
+                )}
                 <input ref={imageRef} type="file" accept="image/*" onChange={handleInsertImage} className="hidden" />
                 <button onClick={() => imageRef.current?.click()} className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-gold/30 bg-gold-glow text-[10px] text-charcoal dark:text-dm-text hover:bg-gold/20 transition-colors" title="Embed a parish seal or logo image">
                   <ImageIcon className="w-3 h-3" /> Insert image
@@ -4867,6 +4941,22 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
         </div>
       </motion.div>
     </motion.div>
+    {designEditor && (
+      <CertificateDesignEditor
+        template={designEditor.template}
+        sacrament={designEditor.sacrament}
+        onClose={() => setDesignEditor(null)}
+        onToast={onToast}
+        onSaved={(t) => {
+          const next = loadCertificateTemplates();
+          setTemplates(next);
+          setActiveTmplId(t.id);
+          setHtml(t.html);
+          setDesignEditor(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 
