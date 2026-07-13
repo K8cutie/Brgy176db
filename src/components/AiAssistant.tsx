@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Sparkles, Send, X, KeyRound } from 'lucide-react';
+import { Send, X, KeyRound } from 'lucide-react';
 import { buildAiContext, isAiContextEnabled, setAiContextEnabled, pageNameFromPath } from '@/lib/aiContext';
 import { isCloud } from '@/lib/cloudStore';
 import { getSupabase } from '@/lib/supabaseClient';
@@ -140,11 +140,25 @@ export default function AiAssistant() {
       {/* Launcher */}
       <button
         onClick={() => setOpen((o) => !o)}
-        aria-label="Open Cherub, your parish helper"
-        className="fixed bottom-6 right-6 z-overlay flex items-center justify-center w-14 h-14 rounded-full text-white shadow-modal hover:brightness-105 transition-all"
-        style={{ backgroundColor: '#C9963B' }}
+        aria-label={open ? 'Close Cherub' : 'Open Cherub, your parish helper'}
+        className={`fixed bottom-6 right-6 z-overlay flex items-center justify-center w-16 h-16 rounded-full overflow-hidden shadow-modal transition-shadow ${open ? 'text-white' : 'cherub-float'}`}
+        style={{
+          backgroundColor: open ? '#C9963B' : '#EAF2FF',
+          border: '2px solid #C9963B',
+          boxShadow: open ? undefined : '0 0 16px rgba(120,175,255,0.55), 0 8px 18px rgba(27,42,74,0.28)',
+        }}
       >
-        {open ? <X className="w-6 h-6" /> : <Sparkles className="w-6 h-6" />}
+        {open ? (
+          <X className="w-6 h-6" />
+        ) : (
+          <img
+            src="/cherub/cherubim.png"
+            alt=""
+            aria-hidden="true"
+            className="w-full h-full object-cover pointer-events-none"
+            style={{ objectPosition: 'center 20%', transform: 'scale(1.5)' }}
+          />
+        )}
       </button>
 
       {/* Panel */}
@@ -153,7 +167,9 @@ export default function AiAssistant() {
           className="fixed bottom-24 right-6 z-overlay w-[380px] max-w-[calc(100vw-3rem)] h-[520px] max-h-[calc(100vh-8rem)] flex flex-col rounded-2xl bg-white dark:bg-dm-surface border border-parchment dark:border-dm-border shadow-modal overflow-hidden"
         >
           <div className="flex items-center gap-2 px-4 py-3 border-b border-parchment dark:border-dm-border" style={{ backgroundColor: '#FAF8F3' }}>
-            <Sparkles className="w-5 h-5" style={{ color: '#C9963B' }} />
+            <div className="w-9 h-9 rounded-full overflow-hidden flex-shrink-0" style={{ backgroundColor: '#EAF2FF', border: '1.5px solid #C9963B' }}>
+              <img src="/cherub/cherubim.png" alt="" aria-hidden="true" className="w-full h-full object-cover" style={{ objectPosition: 'center 20%', transform: 'scale(1.5)' }} />
+            </div>
             <div>
               <p className="text-sm font-semibold text-charcoal">Cherub</p>
               <p className="text-[11px] text-warm-gray">Your parish helper — ask me how to do anything</p>
@@ -187,7 +203,7 @@ export default function AiAssistant() {
               // CLOUD: the key is server-side (Edge Function secret). Never show a key
               // field here — just a calm nudge to whoever administers the parish.
               <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
-                <Sparkles className="w-8 h-8" style={{ color: '#C9963B' }} />
+                <img src="/cherub/cherubim.png" alt="Cherub" className="w-28 h-auto object-contain cherub-float" />
                 <p className="text-sm text-charcoal dark:text-dm-text font-medium">Cherub isn't switched on yet</p>
                 <p className="text-xs text-warm-gray">Your parish admin needs to add the AI key before Cherub can help. Once it's set, just come back here.</p>
               </div>
