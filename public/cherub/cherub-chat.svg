@@ -1,0 +1,37 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cherub mascot — chat">
+  <!-- speech bubble -->
+  <path d="M26 60 h76 a12 12 0 0 1 12 12 v22 a12 12 0 0 1 -12 12 h-52 l-16 14 v-14 h-8 a12 12 0 0 1 -12 -12 v-22 a12 12 0 0 1 12 -12 Z"
+        fill="#1B2A4A"/>
+  <!-- typing dots -->
+  <g fill="#F3E4C4">
+    <circle cx="52" cy="83" r="4.5"/>
+    <circle cx="66" cy="83" r="4.5"/>
+    <circle cx="80" cy="83" r="4.5"/>
+  </g>
+  <!-- angel wings behind head -->
+  <g fill="#FFF7EA" stroke="#E0C089" stroke-width="1.4" stroke-linejoin="round">
+    <path d="M57 52 C52 32 44 16 28 8 C17 13 12 24 16 34 C22 33 25 37 29 44 C32 42 36 47 41 54 C44 52 48 56 51 62 C55 56 56 54 57 52 Z"/>
+    <path d="M71 52 C76 32 84 16 100 8 C111 13 116 24 112 34 C106 33 103 37 99 44 C96 42 92 47 87 54 C84 52 80 56 77 62 C73 56 72 54 71 52 Z"/>
+  </g>
+  <!-- halo -->
+  <ellipse cx="64" cy="12" rx="19" ry="5" fill="none" stroke="#C9963B" stroke-width="4"/>
+  <!-- head -->
+  <circle cx="64" cy="44" r="23" fill="#FBE7CB" stroke="#EBD3AE" stroke-width="1.5"/>
+  <g fill="#B77F35">
+    <circle cx="52" cy="29" r="5.5"/>
+    <circle cx="61" cy="25" r="6"/>
+    <circle cx="71" cy="26" r="5.5"/>
+    <circle cx="78" cy="30" r="4.6"/>
+  </g>
+  <g fill="#E79E93" opacity="0.6">
+    <circle cx="52" cy="50" r="4.6"/>
+    <circle cx="76" cy="50" r="4.6"/>
+  </g>
+  <g fill="#1B2A4A">
+    <circle cx="57" cy="43" r="3"/>
+    <circle cx="71" cy="43" r="3"/>
+  </g>
+  <circle cx="58" cy="42.1" r="0.9" fill="#FFFFFF"/>
+  <circle cx="72" cy="42.1" r="0.9" fill="#FFFFFF"/>
+  <path d="M58 52 Q64 57 70 52" fill="none" stroke="#1B2A4A" stroke-width="2.6" stroke-linecap="round"/>
+</svg>

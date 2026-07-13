@@ -1,0 +1,45 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cherub mascot — putto">
+  <!-- angel wings spread -->
+  <g fill="#FFF7EA" stroke="#E0C089" stroke-width="1.5" stroke-linejoin="round">
+    <path d="M52 76 C46 48 32 24 10 16 C1 24 0 40 8 52 C15 50 20 55 27 65 C30 62 36 68 44 78 C47 75 51 79 55 86 C55 80 54 78 52 76 Z"/>
+    <path d="M76 76 C82 48 96 24 118 16 C127 24 128 40 120 52 C113 50 108 55 101 65 C98 62 92 68 84 78 C81 75 77 79 73 86 C73 80 74 78 76 76 Z"/>
+  </g>
+  <g stroke="#E4C68F" stroke-width="1.1" fill="none" opacity="0.75" stroke-linecap="round">
+    <path d="M46 72 C38 52 28 34 14 26"/>
+    <path d="M82 72 C90 52 100 34 114 26"/>
+  </g>
+  <!-- legs -->
+  <g fill="#FBE7CB" stroke="#EBD3AE" stroke-width="1.4">
+    <ellipse cx="54" cy="106" rx="9" ry="11"/>
+    <ellipse cx="74" cy="106" rx="9" ry="11"/>
+  </g>
+  <!-- body -->
+  <ellipse cx="64" cy="84" rx="21" ry="20" fill="#FBE7CB" stroke="#EBD3AE" stroke-width="1.5"/>
+  <!-- arms -->
+  <g fill="#FBE7CB" stroke="#EBD3AE" stroke-width="1.4">
+    <ellipse cx="42" cy="80" rx="10" ry="7" transform="rotate(-24 42 80)"/>
+    <ellipse cx="86" cy="80" rx="10" ry="7" transform="rotate(24 86 80)"/>
+  </g>
+  <!-- belly button -->
+  <circle cx="64" cy="88" r="1.6" fill="#E0B98C"/>
+  <!-- halo -->
+  <ellipse cx="64" cy="15" rx="19" ry="5" fill="none" stroke="#C9963B" stroke-width="4.4"/>
+  <ellipse cx="64" cy="15" rx="19" ry="5" fill="none" stroke="#E3C06B" stroke-width="1.4"/>
+  <!-- head -->
+  <circle cx="64" cy="42" r="21" fill="#FBE7CB" stroke="#EBD3AE" stroke-width="1.5"/>
+  <g fill="#B77F35">
+    <circle cx="52" cy="28" r="5.2"/>
+    <circle cx="60" cy="24" r="5.8"/>
+    <circle cx="69" cy="25" r="5.2"/>
+    <circle cx="77" cy="30" r="4.3"/>
+  </g>
+  <g fill="#E79E93" opacity="0.6">
+    <circle cx="52" cy="48" r="4.4"/>
+    <circle cx="76" cy="48" r="4.4"/>
+  </g>
+  <g fill="#1B2A4A">
+    <circle cx="57" cy="41" r="2.9"/>
+    <circle cx="71" cy="41" r="2.9"/>
+  </g>
+  <path d="M58 50 Q64 55 70 50" fill="none" stroke="#1B2A4A" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
