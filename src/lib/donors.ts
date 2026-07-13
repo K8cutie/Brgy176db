@@ -203,6 +203,13 @@ export function addPledge(input: Omit<Pledge, 'id'>): Pledge | null {
 // series regressed, bump lastNumber past the highest number already issued
 // before recording new contributions.
 export interface OrSeries {
+  /**
+   * Stable per-(prefix,year) id — one series per year, so `${prefix}-${year}`.
+   * Present so each series round-trips through the cloud storage seam, whose
+   * write-through keys every row on the item's `id` (client_id). Without it a
+   * cloud upsert would send a null client_id and the whole series write fails.
+   */
+  id: string;
   prefix: string;
   year: number;
   lastNumber: number;
@@ -210,10 +217,18 @@ export interface OrSeries {
 
 export const OR_PREFIX = 'OR';
 
+/** Deterministic series id — one series per (prefix, year). */
+function orSeriesId(prefix: string, year: number): string {
+  return `${prefix}-${year}`;
+}
+
 export function getOrSeriesList(): OrSeries[] {
   const list = getJSON<OrSeries[]>(KEYS.orSeries, []);
   return Array.isArray(list)
-    ? list.filter((s) => s && typeof s.year === 'number' && typeof s.lastNumber === 'number')
+    ? list
+        .filter((s) => s && typeof s.year === 'number' && typeof s.lastNumber === 'number')
+        // Backfill id for any legacy series persisted before it existed.
+        .map((s) => ({ ...s, id: s.id ?? orSeriesId(s.prefix ?? OR_PREFIX, s.year) }))
     : [];
 }
 
@@ -228,10 +243,10 @@ export function issueOrNumber(now: Date = new Date()): string {
   const idx = list.findIndex((s) => s.prefix === OR_PREFIX && s.year === year);
   let series: OrSeries;
   if (idx === -1) {
-    series = { prefix: OR_PREFIX, year, lastNumber: 1 };
+    series = { id: orSeriesId(OR_PREFIX, year), prefix: OR_PREFIX, year, lastNumber: 1 };
     list.push(series);
   } else {
-    series = { ...list[idx], lastNumber: list[idx].lastNumber + 1 };
+    series = { ...list[idx], id: list[idx].id ?? orSeriesId(OR_PREFIX, year), lastNumber: list[idx].lastNumber + 1 };
     list[idx] = series;
   }
   setJSON(KEYS.orSeries, list);
