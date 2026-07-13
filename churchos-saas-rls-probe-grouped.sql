@@ -29,7 +29,7 @@ begin;
     ('c1b aida cannot tenant-hop (parish frozen)',    (select parish_id from public.profiles where id=auth.uid()) = 'a1111111-1111-1111-1111-111111111111'),
     ('c2 forged parish_id forced back to own parish', (select parish_id from public.collections where client_id='PROBE-1') = 'a1111111-1111-1111-1111-111111111111'),
     ('c2b flat total derived from data (=100)',       (select total from public.collections where client_id='PROBE-1') = 100)
-  ) as t(check, pass);
+  ) as t("check", pass);
 rollback;
 
 -- ═══ BLOCK 2 — Bishop Tomás (Manila diocese). Highlight from this BEGIN to its ROLLBACK, Run. ═══
@@ -41,5 +41,5 @@ begin;
     ('d1 bishop sees st.mary + san roque',            (select count(distinct parish_id) = 2 from public.collections where parish_id in ('a1111111-1111-1111-1111-111111111111','a2222222-2222-2222-2222-222222222222'))),
     ('d2 bishop cannot see other diocese (sto niño)', (select count(*) = 0 from public.collections where parish_id='b1111111-1111-1111-1111-111111111111')),
     ('d3 bishop read-only (no parish to write)',      public.auth_parish_id() is null)
-  ) as t(check, pass);
+  ) as t("check", pass);
 rollback;
