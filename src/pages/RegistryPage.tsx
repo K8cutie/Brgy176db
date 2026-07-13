@@ -140,6 +140,8 @@ interface TabConfig {
   label: string;
   icon: React.ElementType;
   color: string;
+  /** Lightened accent for dark mode — the raw sacrament colors (charcoal, maroon) are too dark on a dark surface. */
+  darkColor: string;
   count: number;
 }
 
@@ -181,10 +183,10 @@ interface AccountsReceivableEntry {
 /*  Tab definitions                                                    */
 /* ------------------------------------------------------------------ */
 const tabs = (b: number, m: number, c: number, d: number): TabConfig[] => [
-  { key: 'baptism', label: 'Baptism', icon: Droplets, color: '#2D6A4F', count: b },
-  { key: 'marriage', label: 'Marriage', icon: Heart, color: '#6B2737', count: m },
-  { key: 'confirmation', label: 'Confirmation', icon: Flame, color: '#C9963B', count: c },
-  { key: 'death', label: 'Death / Funeral', icon: Cross, color: '#3D3A36', count: d },
+  { key: 'baptism', label: 'Baptism', icon: Droplets, color: '#2D6A4F', darkColor: '#5FBF95', count: b },
+  { key: 'marriage', label: 'Marriage', icon: Heart, color: '#6B2737', darkColor: '#D98BA0', count: m },
+  { key: 'confirmation', label: 'Confirmation', icon: Flame, color: '#C9963B', darkColor: '#E3C06B', count: c },
+  { key: 'death', label: 'Death / Funeral', icon: Cross, color: '#3D3A36', darkColor: '#B8B2A8', count: d },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -1356,6 +1358,8 @@ export default function RegistryPage() {
         {tabConfigs.map((t) => {
           const Icon = t.icon;
           const isActive = activeTab === t.key;
+          const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+          const accent = isDark ? t.darkColor : t.color;
           return (
             <button
               key={t.key}
@@ -1368,29 +1372,29 @@ export default function RegistryPage() {
               }`}
               style={
                 isActive
-                  ? { borderColor: t.color, backgroundColor: `${t.color}14`, boxShadow: `0 6px 16px ${t.color}22` }
+                  ? { borderColor: accent, backgroundColor: `${accent}14`, boxShadow: `0 6px 16px ${accent}22` }
                   : undefined
               }
             >
               {isActive && (
-                <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: t.color }} />
+                <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: accent }} />
               )}
               <span
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg"
-                style={{ backgroundColor: `${t.color}1F` }}
+                style={{ backgroundColor: `${accent}1F` }}
               >
-                <Icon className="w-5 h-5" style={{ color: t.color }} />
+                <Icon className="w-5 h-5" style={{ color: accent }} />
               </span>
               <span className="flex min-w-0 flex-col">
                 <span
                   className="text-2xl font-bold leading-none text-charcoal dark:text-dm-text"
-                  style={isActive ? { color: t.color } : undefined}
+                  style={isActive ? { color: accent } : undefined}
                 >
                   {t.count}
                 </span>
                 <span
                   className="mt-1 truncate text-sm font-medium text-warm-gray dark:text-dm-text-muted"
-                  style={isActive ? { color: t.color } : undefined}
+                  style={isActive ? { color: accent } : undefined}
                 >
                   {t.label}
                 </span>
