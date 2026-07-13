@@ -5,9 +5,6 @@ import { generatePriestIcs, generateTextSummary, downloadIcs } from '@/lib/icsGe
 import { getPriestName, getParishName } from '@/lib/parishConfig';
 import type { CalendarEvent } from '@/lib/calendarData';
 
-// QRCode is loaded dynamically to avoid SSR issues
-let QRCodeModule: typeof import('qrcode') | null = null;
-
 interface PriestScheduleExportProps {
   // Live parish events from the calendar's persisted store — the generator
   // never reads them from bare localStorage keys.
@@ -29,15 +26,15 @@ export default function PriestScheduleExport({ events, onClose }: PriestSchedule
   const [icsContent, setIcsContent] = useState('');
   const [textSummary, setTextSummary] = useState('');
   const [qrDataUrl, setQrDataUrl] = useState('');
+  const [qrLib, setQrLib] = useState<typeof import('qrcode') | null>(null);
+  const [qrError, setQrError] = useState(false);
   const [eventCount, setEventCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<'qr' | 'download' | 'text'>('qr');
 
-  /* ── Load QR library once ── */
+  /* ── Load QR library once (into state, so its arrival re-triggers generation) ── */
   useEffect(() => {
-    import('qrcode').then((mod) => {
-      QRCodeModule = mod;
-    });
+    import('qrcode').then(setQrLib).catch(() => setQrError(true));
   }, []);
 
   /* ── Regenerate on option change ── */
@@ -53,19 +50,22 @@ export default function PriestScheduleExport({ events, onClose }: PriestSchedule
     const count = (ics.match(/BEGIN:VEVENT/g) || []).length;
     setEventCount(count);
 
-    // Generate QR code pointing to a data URL (for phone scan)
-    // We encode the .ics content as base64 in a data URL the phone can download
-    if (QRCodeModule) {
+    // Generate a QR the phone can scan. We encode the .ics as a base64 data URL.
+    // A QR physically holds only ~2-3 KB, so a large schedule won't fit: toDataURL
+    // then rejects, and we surface a "too large" hint instead of hanging forever.
+    setQrError(false);
+    if (qrLib) {
       const b64 = btoa(unescape(encodeURIComponent(ics)));
       const dataUrl = `data:text/calendar;base64,${b64}`;
-      QRCodeModule.toDataURL(dataUrl, {
+      qrLib.toDataURL(dataUrl, {
         width: 280,
         margin: 2,
         color: { dark: '#1A1A2E', light: '#FDFCF8' },
-        errorCorrectionLevel: 'M',
-      }).then(setQrDataUrl).catch(() => setQrDataUrl(''));
+        errorCorrectionLevel: 'L',
+      }).then((url) => { setQrDataUrl(url); setQrError(false); })
+        .catch(() => { setQrDataUrl(''); setQrError(true); });
     }
-  }, [days, includeMass, includeSacraments, includeEvents, events]);
+  }, [days, includeMass, includeSacraments, includeEvents, events, qrLib]);
 
   useEffect(() => {
     // Small delay to let QR lib load on first mount
@@ -249,6 +249,12 @@ export default function PriestScheduleExport({ events, onClose }: PriestSchedule
                       Android: Open Camera or Google Lens. Tap the link to download and import.
                     </p>
                   </>
+                ) : qrError ? (
+                  <div className="w-full max-w-[340px] py-10 flex flex-col items-center text-center gap-2">
+                    <Smartphone className="w-8 h-8 text-warm-gray" />
+                    <p className="body-sm text-charcoal dark:text-dm-text font-medium">This schedule is too large for a QR code</p>
+                    <p className="body-xs text-warm-gray dark:text-dm-text-muted">A QR holds only a small amount of data. Pick a shorter date range, or use <strong>Download File</strong> or <strong>Copy Text</strong> to sync the whole schedule.</p>
+                  </div>
                 ) : (
                   <div className="w-[260px] h-[260px] bg-cream-dark/50 dark:bg-dm-surface-raised/50 rounded-xl flex items-center justify-center">
                     <p className="body-sm text-warm-gray">Generating QR code...</p>
