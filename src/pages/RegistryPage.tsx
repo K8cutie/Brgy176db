@@ -1354,7 +1354,7 @@ export default function RegistryPage() {
       </div>
 
       {/* ── Sacrament Cards ─────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" data-tour="registry-tabs">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3" data-tour="registry-tabs">
         {tabConfigs.map((t) => {
           const Icon = t.icon;
           const isActive = activeTab === t.key;
