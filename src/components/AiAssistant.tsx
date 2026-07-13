@@ -135,30 +135,66 @@ export default function AiAssistant() {
     }
   };
 
+  // Cursor-follow tilt — makes the floating cherub feel dimensional as the mouse moves.
+  const tiltRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) return;
+    const el = tiltRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onMove = (e: MouseEvent) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const r = el.getBoundingClientRect();
+        const dx = e.clientX - (r.left + r.width / 2);
+        const dy = e.clientY - (r.top + r.height / 2);
+        const ry = Math.max(-14, Math.min(14, (dx / 260) * 14));
+        const rx = Math.max(-11, Math.min(11, (-dy / 260) * 11));
+        el.style.transform = `rotateX(${rx}deg) rotateY(${ry}deg)`;
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => { window.removeEventListener('mousemove', onMove); cancelAnimationFrame(raf); };
+  }, []);
+
   return (
     <>
-      {/* Launcher */}
+      {/* Floating Cherub launcher — free-floating, glowing, cursor-aware */}
       <button
         onClick={() => setOpen((o) => !o)}
         aria-label={open ? 'Close Cherub' : 'Open Cherub, your parish helper'}
-        className={`fixed bottom-6 right-6 z-overlay flex items-center justify-center w-16 h-16 rounded-full overflow-hidden shadow-modal transition-shadow ${open ? 'text-white' : 'cherub-float'}`}
-        style={{
-          backgroundColor: open ? '#C9963B' : '#EAF2FF',
-          border: '2px solid #C9963B',
-          boxShadow: open ? undefined : '0 0 16px rgba(120,175,255,0.55), 0 8px 18px rgba(27,42,74,0.28)',
-        }}
+        className="group fixed bottom-4 right-4 z-overlay flex h-20 w-[136px] cursor-pointer items-end justify-center border-0 bg-transparent p-0"
       >
-        {open ? (
-          <X className="w-6 h-6" />
-        ) : (
-          <img
-            src="/cherub/cherubim.png"
-            alt=""
-            aria-hidden="true"
-            className="w-full h-full object-cover pointer-events-none"
-            style={{ objectPosition: 'center 20%', transform: 'scale(1.5)' }}
-          />
-        )}
+        {/* breathing glow */}
+        <span
+          aria-hidden="true"
+          className="cherub-glow pointer-events-none absolute bottom-1 left-1/2 -ml-12 h-24 w-24 rounded-full"
+          style={{ background: 'radial-gradient(circle, rgba(120,175,255,0.6), rgba(120,175,255,0) 66%)', opacity: 0.5 }}
+        />
+        {/* hover tooltip */}
+        <span
+          className="pointer-events-none absolute bottom-10 right-[78%] translate-x-1 whitespace-nowrap rounded-xl px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-all duration-200 group-hover:translate-x-0 group-hover:opacity-100"
+          style={{ backgroundColor: '#1B2A4A' }}
+        >
+          {open ? 'Close' : 'Ask me anything ✨'}
+        </span>
+        {/* mascot: outer bob + inner cursor tilt */}
+        <span className="cherub-float relative block h-full w-full" style={{ perspective: '620px' }}>
+          <span
+            ref={tiltRef}
+            className="block h-full w-full transition-transform duration-150 ease-out"
+            style={{ willChange: 'transform' }}
+          >
+            <img
+              src="/cherub/cherubim.png"
+              alt=""
+              aria-hidden="true"
+              className="h-full w-full object-contain transition-transform duration-200 group-hover:scale-105"
+              style={{ filter: 'drop-shadow(0 6px 8px rgba(27,42,74,0.35))' }}
+            />
+          </span>
+        </span>
       </button>
 
       {/* Panel */}
@@ -174,6 +210,13 @@ export default function AiAssistant() {
               <p className="text-sm font-semibold text-charcoal">Cherub</p>
               <p className="text-[11px] text-warm-gray">Your parish helper — ask me how to do anything</p>
             </div>
+            <button
+              onClick={() => setOpen(false)}
+              aria-label="Close Cherub"
+              className="ml-auto p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
           {configured === false ? (
