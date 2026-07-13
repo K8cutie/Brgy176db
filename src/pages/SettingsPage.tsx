@@ -50,15 +50,6 @@ import {
   getModulesSnapshot,
   type ChurchOSModule,
 } from '@/lib/moduleRegistry';
-import {
-  getAvailableTours,
-  getTourStatus,
-  resetTourProgress,
-  areAllToursDisabled,
-  setAllToursDisabled,
-  type TourConfig,
-} from '@/lib/tours';
-import type { Step } from 'react-joyride';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -1747,189 +1738,6 @@ function AuditLogSection() {
 }
 
 
-// ═════════════════════════════════════════════════════════════════
-//  SECTION 7: GUIDED TOURS
-// ═════════════════════════════════════════════════════════════════
-
-function GuidedToursSection() {
-  const [toursDisabled, setToursDisabled] = useState(() => areAllToursDisabled());
-  const [resetting, setResetting] = useState(false);
-
-  // Get current user's role from parish config
-  const userRole = 'Secretary'; // Default; in a real app this comes from auth context
-  const availableTours = getAvailableTours(userRole);
-
-  const handleToggleTours = () => {
-    const newValue = !toursDisabled;
-    setAllToursDisabled(newValue);
-    setToursDisabled(newValue);
-  };
-
-  const handleResetAll = () => {
-    resetTourProgress();
-    setResetting(true);
-    setTimeout(() => setResetting(false), 2000);
-  };
-
-  const handleStartTour = (tour: TourConfig) => {
-    // Start the tour via the global handler set up in App.tsx.
-    // App.tsx defines it as (steps, id) — pass in that order.
-    const startFn = (window as unknown as Record<string, unknown>).__startChurchOSTour;
-    if (typeof startFn === 'function') {
-      (startFn as (steps: Step[], id: string) => void)(tour.steps, tour.id);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="heading-lg text-charcoal dark:text-dm-text">Guided Tours</h2>
-      </div>
-
-      {/* Description Card */}
-      <div className="cos-card bg-gold-glow/50 border border-gold/20">
-        <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-lg bg-gold/20 flex items-center justify-center shrink-0">
-            <HelpCircle className="w-5 h-5 text-gold" />
-          </div>
-          <div>
-            <h3 className="heading-sm text-charcoal dark:text-dm-text mb-1">
-              Interactive Step-by-Step Guides
-            </h3>
-            <p className="body-sm text-warm-gray dark:text-dm-text-muted leading-relaxed">
-              These friendly walkthroughs help new staff members learn the system at their own pace.
-              Think of them like having a patient colleague sitting right beside you. Perfect for
-              anyone who\u2019s feeling a bit nervous about using new technology!
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Master Toggle */}
-      <div className="cos-card">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-success/10 flex items-center justify-center">
-              <Settings className="w-4 h-4 text-success" />
-            </div>
-            <div>
-              <h3 className="font-medium text-charcoal dark:text-dm-text">Enable Guided Tours</h3>
-              <p className="body-sm text-warm-gray">
-                {toursDisabled
-                  ? 'Tours are turned off. New staff won\u2019t see walkthroughs.'
-                  : 'Tours are on. Staff will see walkthroughs for new features.'}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={handleToggleTours}
-            className={cn(
-              'relative w-14 h-7 rounded-full transition-colors duration-200',
-              toursDisabled ? 'bg-warm-gray/30' : 'bg-gold'
-            )}
-            role="switch"
-            aria-checked={!toursDisabled}
-          >
-            <span
-              className={cn(
-                'absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white shadow-sm transition-transform duration-200',
-                toursDisabled ? 'translate-x-0' : 'translate-x-7'
-              )}
-            />
-          </button>
-        </div>
-      </div>
-
-      {/* Restart All Tours */}
-      <div className="cos-card">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-info/10 flex items-center justify-center">
-              <ResetIcon className="w-4 h-4 text-info" />
-            </div>
-            <div>
-              <h3 className="font-medium text-charcoal dark:text-dm-text">Restart All Tours</h3>
-              <p className="body-sm text-warm-gray">
-                Reset all tour progress. Every tour will show again as if it\u2019s the first time.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={handleResetAll}
-            className="cos-btn cos-btn-secondary text-sm"
-          >
-            {resetting ? (
-              <>
-                <Check className="w-4 h-4" /> Reset Done
-              </>
-            ) : (
-              <>
-                <ResetIcon className="w-4 h-4" /> Reset All
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Available Tours List */}
-      <h3 className="heading-sm text-charcoal dark:text-dm-text pt-2">Available Tours</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {availableTours.map((tour) => {
-          const status = getTourStatus(tour.id);
-          const isCompleted = status.completed;
-          const isSkipped = status.skipped;
-
-          return (
-            <motion.div
-              key={tour.id}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25 }}
-              className="cos-card cos-card-hover"
-            >
-              <div className="flex items-start justify-between mb-3">
-                <h4 className="font-semibold text-charcoal dark:text-dm-text text-sm">
-                  {tour.title}
-                </h4>
-                {isCompleted && (
-                  <span className="cos-badge cos-badge-success text-[10px]">Completed</span>
-                )}
-                {isSkipped && (
-                  <span className="cos-badge cos-badge-default text-[10px]">Skipped</span>
-                )}
-                {!isCompleted && !isSkipped && (
-                  <span className="cos-badge cos-badge-info text-[10px]">New</span>
-                )}
-              </div>
-              <p className="body-sm text-warm-gray dark:text-dm-text-muted mb-4 leading-relaxed">
-                {tour.description}
-              </p>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-warm-gray/70">
-                  {tour.steps.length} steps &middot; For: {tour.targetRoles.join(', ')}
-                </span>
-                <button
-                  onClick={() => handleStartTour(tour)}
-                  disabled={toursDisabled}
-                  className={cn(
-                    'cos-btn text-sm flex items-center gap-1.5',
-                    toursDisabled
-                      ? 'bg-warm-gray/20 text-warm-gray/50 cursor-not-allowed'
-                      : 'cos-btn-primary'
-                  )}
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {isCompleted ? 'Retake Tour' : 'Take Tour'}
-                </button>
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ═════════════════════════════════════════════════════════════════
 //  SECTION 8: MODULES
@@ -2327,10 +2135,9 @@ const settingsNavItems = [
   { id: 'modules', label: 'Modules', icon: Puzzle },
   { id: 'data', label: 'Backup', icon: Database },
   { id: 'audit', label: 'Audit Log', icon: ClipboardList },
-  { id: 'tours', label: 'Guided Tours', icon: HelpCircle },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit' | 'tours';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -2401,8 +2208,6 @@ export default function SettingsPage() {
         return <BackupSection />;
       case 'audit':
         return <AuditLogSection />;
-      case 'tours':
-        return <GuidedToursSection />;
       default:
         return null;
     }

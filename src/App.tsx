@@ -23,24 +23,10 @@ import ReportsPage from '@/pages/ReportsPage'
 import SettingsPage from '@/pages/SettingsPage'
 import RequestsPage from '@/pages/RequestsPage'
 import ImportPage from '@/pages/ImportPage'
-import TourGuide from '@/components/TourGuide';
 import FirstRunDetector from '@/components/FirstRunDetector';
 import CelebrationToast from '@/components/CelebrationToast';
 import AiAssistant from '@/components/AiAssistant';
-import {
-  shouldRunFirstLogin,
-  firstLoginTour,
-  getTourStatus,
-  areAllToursDisabled,
-} from '@/lib/tours';
 import { checkFirstAction, type Achievement } from '@/lib/achievements';
-import type { Step } from 'react-joyride';
-
-interface ActiveTour {
-  id: string;
-  steps: Step[];
-  run: boolean;
-}
 
 // /diocese is SaaS-only (cross-parish roll-up) and restricted to diocese-level
 // roles. Lazy so the cockpit chunk (and its Supabase queries) never loads on
@@ -91,59 +77,7 @@ function AppRoutes() {
   const isPortal = location.pathname.startsWith('/portal');
   const isStandalone = location.pathname === '/login' || location.pathname === '/setup' || isPortal;
 
-  // ── Tour State ──
-  const [activeTour, setActiveTour] = useState<ActiveTour | null>(null);
   const [celebration, setCelebration] = useState<Achievement | null>(null);
-
-  // ── Check for first-login tour on mount ──
-  useEffect(() => {
-    if (shouldRunFirstLogin()) {
-      const timer = setTimeout(() => {
-        setActiveTour({
-          id: firstLoginTour.id,
-          steps: firstLoginTour.steps,
-          run: true,
-        });
-      }, 1500);
-      return () => clearTimeout(timer);
-    }
-  }, []);
-
-  // ── Listen for module navigation tours ──
-  useEffect(() => {
-    if (areAllToursDisabled()) return;
-
-    const tourMap: Record<string, { id: string; steps: Step[] }> = {
-      '/registry': { id: 'registry', steps: [] },
-      '/directory': { id: 'directory', steps: [] },
-      '/calendar': { id: 'calendar', steps: [] },
-      '/finance': { id: 'finance', steps: [] },
-      '/ministries': { id: 'ministries', steps: [] },
-      '/ssdm': { id: 'ssdm', steps: [] },
-      '/reports': { id: 'reports', steps: [] },
-      '/settings': { id: 'settings', steps: [] },
-    };
-
-    const tourInfo = tourMap[location.pathname];
-    if (tourInfo) {
-      const status = getTourStatus(tourInfo.id);
-      if (!status.completed && !status.skipped) {
-        // Import tours dynamically or load from a registry
-        import('@/lib/tours').then((mod) => {
-          const tours = [mod.firstLoginTour, mod.registryTour, mod.directoryTour,
-            mod.calendarTour, mod.financeTour, mod.ministriesTour,
-            mod.ssdmTour, mod.reportsTour, mod.settingsTour];
-          const found = tours.find(t => t.id === tourInfo.id);
-          if (found) {
-            const timer = setTimeout(() => {
-              setActiveTour({ id: found.id, steps: found.steps, run: true });
-            }, 3000);
-            return () => clearTimeout(timer);
-          }
-        });
-      }
-    }
-  }, [location.pathname]);
 
   // ── Listen for achievement events ──
   useEffect(() => {
@@ -153,20 +87,9 @@ function AppRoutes() {
         const ach = checkFirstAction(detail.type);
         if (ach) setCelebration(ach);
       }
-      if (detail?.milestone) {
-        // Handle milestones
-      }
     };
     window.addEventListener('churchos-achievement', handler);
     return () => window.removeEventListener('churchos-achievement', handler);
-  }, []);
-
-  // Expose global tour starter for Settings page
-  useEffect(() => {
-    (window as any).__startChurchOSTour = (steps: Step[], id: string) => {
-      setActiveTour({ id, steps, run: true });
-    };
-    return () => { delete (window as any).__startChurchOSTour; };
   }, []);
 
   // Warn the user if a save fails (e.g. localStorage quota exceeded)
@@ -247,17 +170,6 @@ function AppRoutes() {
           <Route path="/diocese" element={<DioceseGate />} />
         </Routes>
       </Layout>
-
-      {/* Active Tour */}
-      {activeTour && (
-        <TourGuide
-          tourId={activeTour.id}
-          steps={activeTour.steps}
-          run={activeTour.run}
-          onComplete={() => setActiveTour(null)}
-          onSkip={() => setActiveTour(null)}
-        />
-      )}
 
       {/* Achievement Celebration */}
       <CelebrationToast
