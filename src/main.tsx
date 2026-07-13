@@ -14,6 +14,20 @@ import DemoBanner from './components/DemoBanner'
 // unless VITE_SENTRY_DSN is set (desktop/local stay fully offline).
 initMonitoring()
 
+// After a new deployment, chunk filenames are re-hashed; a tab still running the
+// old shell 404s the moment it lazy-loads a route ("Failed to fetch dynamically
+// imported module"). Vite emits `vite:preloadError` for exactly this — reload
+// once to pull the fresh shell. Guarded by a 10s window so a genuinely-missing
+// chunk can't send us into a reload loop.
+window.addEventListener('vite:preloadError', () => {
+  const KEY = 'churchos_chunk_reload_at'
+  const last = Number(sessionStorage.getItem(KEY) || 0)
+  if (Date.now() - last > 10_000) {
+    sessionStorage.setItem(KEY, String(Date.now()))
+    window.location.reload()
+  }
+})
+
 // In a VITE_CHURCHOS_DEMO build, seed a signed-in session + completed setup
 // (synchronously, before reconcileSession and the first render) so a fresh
 // web visitor lands straight in the app. No-op in every normal build.
