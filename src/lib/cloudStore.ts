@@ -69,11 +69,17 @@ let hydrated = false;
 // the reads, the cache went empty, and the first mount write-through reconciled [] →
 // a full DELETE of the parish's records, with no user action.)
 let hydrationOk = false;
+// A diocese-level user (bishop / diocese_admin) has NO parish_id: they read
+// cross-parish data through the diocese cockpit and never write parish tables.
+// That is a VALID state, not a hydration failure — it must NOT fail-closed or
+// raise the "could not save" warning on every page's mount write-through.
+let noParishUser = false;
 
 /** Load this parish's data from Supabase into the cache. Call once before render. */
 export async function hydrateCloudStore(): Promise<void> {
   if (!isCloud()) return;
   let ok = true;
+  noParishUser = false;
   try {
     const supa = await sb();
     const { data: userData } = await supa.auth.getUser();
@@ -82,13 +88,16 @@ export async function hydrateCloudStore(): Promise<void> {
       ok = false; // not signed in → cannot have loaded this parish's data
     } else {
       const prof = await supa.from('profiles').select('parish_id').eq('id', uid).single();
-      if (prof.error || !prof.data?.parish_id) {
+      if (prof.error) {
         ok = false;
+      } else if (!prof.data?.parish_id) {
+        noParishUser = true;   // diocese-level user: nothing to load, nothing to write
+        parishId = null;
       } else {
         parishId = prof.data.parish_id as string;
       }
     }
-    if (ok) {
+    if (ok && !noParishUser) {
       for (const key of TABLE_KEYS) {
         const { data, error } = await supa.from(key).select('*');
         if (error) { ok = false; break; } // a FAILED read must NOT look like an empty table
@@ -99,7 +108,8 @@ export async function hydrateCloudStore(): Promise<void> {
     ok = false;
   }
   hydrated = true;     // hydration was ATTEMPTED → the app may render
-  hydrationOk = ok;    // …but writes only persist if it actually SUCCEEDED (fail-closed)
+  hydrationOk = ok && !noParishUser;  // a diocese user has no writable parish cache
+  // Warn ONLY on a genuine failure — never for a legitimate no-parish diocese user.
   if (!ok && onWriteError) onWriteError(); // surface the degraded / read-only state to the UI
 }
 export function isCloudHydrated(): boolean { return hydrated; }
@@ -133,6 +143,9 @@ export function cloudKeys(): string[] { return Object.keys(cache); }
 // Write-through: upsert the array's rows by (parish_id, client_id), and delete
 // any rows that are no longer present.
 async function reconcile(key: string, arr: Item[]): Promise<void> {
+  // A diocese-level user owns no parish data — silently skip any write-through
+  // (e.g. a page's mount write-back) without warning; there is nothing to save.
+  if (noParishUser) return;
   // FAIL-CLOSED: never write through — and ABOVE ALL never DELETE — unless hydration
   // actually succeeded and the parish is known. If the cache is not a faithful copy,
   // reconciling it would delete real rows that merely failed to load. Refuse and surface

@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, useLocation, Navigate } from 'react-router-dom'
-import { isAuthenticated } from '@/lib/session'
+import { isAuthenticated, getCurrentUserRole } from '@/lib/session'
 import { hasDioceseRole } from '@/lib/dioceseAccess'
 import { hasSetupBeenCompleted } from '@/lib/store'
 import { setPersistedWriteErrorHandler } from '@/hooks/usePersistedState'
@@ -214,6 +214,11 @@ function AppRoutes() {
   }
   if (!isAuthenticated()) {
     return <Navigate to="/login" replace />;
+  }
+  // Diocese-level users (bishop / diocese_admin) have no parish — their home is the
+  // diocese cockpit, not the (empty) parish dashboard. Send them there from the root.
+  if (isCloud() && location.pathname === '/' && ['bishop', 'diocese_admin'].includes(getCurrentUserRole())) {
+    return <Navigate to="/diocese" replace />;
   }
 
   return (
