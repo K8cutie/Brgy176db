@@ -954,14 +954,14 @@ export interface DuplicateInfo {
   reason: string;
 }
 
-const normText = (v: unknown) => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+export const normText = (v: unknown) => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 // Token-sorted so an unsplit PIMS full name ("MARIA CLARA SANTOS") still
 // matches a hand-entered record split into first "Maria Clara" + last "Santos".
-const normName = (...parts: unknown[]) =>
+export const normName = (...parts: unknown[]) =>
   parts.map(normText).join(' ').split(' ').filter(Boolean).sort().join(' ');
 
-const normDateKey = (v: unknown) => {
+export const normDateKey = (v: unknown) => {
   const s = String(v ?? '').trim();
   return convertDate(s) ?? s;
 };
@@ -973,7 +973,7 @@ const normAmount = (v: unknown) => {
 
 export type RegistryRecordType = 'baptism' | 'marriage' | 'confirmation' | 'death';
 
-const REGISTRY_KEY_FIELDS: Record<RegistryRecordType, { last: string; first: string; date: string }> = {
+export const REGISTRY_KEY_FIELDS: Record<RegistryRecordType, { last: string; first: string; date: string }> = {
   baptism: { last: 'childLastName', first: 'childFirstName', date: 'dateOfBaptism' },
   marriage: { last: 'groomLastName', first: 'groomFirstName', date: 'dateOfMarriage' },
   confirmation: { last: 'confirmandLastName', first: 'confirmandFirstName', date: 'dateOfConfirmation' },
@@ -998,7 +998,7 @@ function financeAmountOf(rec: Record<string, any>): string {
 
 // A record only gets a key when every key component is present — an
 // incomplete key must not flag half the file as duplicates.
-function dedupKey(rec: Record<string, any>, module: ImportTarget): string | null {
+export function dedupKey(rec: Record<string, any>, module: ImportTarget): string | null {
   if (module === 'registry') {
     const type = registryTypeOf(rec);
     if (!type) return null;

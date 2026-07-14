@@ -29,6 +29,26 @@ export interface RegistryAnnotation {
   voided?: boolean;
 }
 
+// A scanned original form (or other source document) attached to a record as
+// its provenance/evidence — the digital paper trail. The image bytes live in
+// the private per-parish `form-scans` Supabase Storage bucket; the record
+// carries only the storage PATH (never base64 — that would blow the browser
+// storage cap and trap the evidence on one device instead of making it
+// cloud-portable). Absent = no attachment, so every record written before this
+// feature keeps working unchanged.
+export type AttachmentProvenance = 'pms-sourced' | 'scan-read';
+
+export interface RecordAttachment {
+  id: string;
+  storagePath: string;        // object path in the private `form-scans` bucket
+  fileName?: string;
+  mimeType?: string;
+  provenance: AttachmentProvenance;
+  uploadedAt: string;         // ISO
+  uploadedBy: string;
+  note?: string;
+}
+
 // SHARED CONTRACT — soft delete. Absent fields = live record, so all stored
 // data written before this feature keeps working unchanged.
 export interface SoftDeletable {
@@ -94,6 +114,8 @@ export interface BaptismRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Cancelled' | 'Annotated';
   // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
   lifecycleStatus?: RecordLifecycleStatus;
@@ -145,6 +167,8 @@ export interface MarriageRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Annulled' | 'Dispensed';
   // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
   lifecycleStatus?: RecordLifecycleStatus;
@@ -189,6 +213,8 @@ export interface ConfirmationRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Cancelled';
   // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
   lifecycleStatus?: RecordLifecycleStatus;
@@ -228,6 +254,8 @@ export interface DeathRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Annotated';
   // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
   lifecycleStatus?: RecordLifecycleStatus;
@@ -246,6 +274,10 @@ export interface DeathRecord {
 }
 
 export type RegistryRecord = BaptismRecord | MarriageRecord | ConfirmationRecord | DeathRecord;
+
+// The persisted-store name for each registry type (used when attaching a
+// scanned form to a specific record after a scan→match or scan→create).
+export type RegistryStore = 'baptismRecords' | 'marriageRecords' | 'confirmationRecords' | 'deathRecords';
 
 /* ═══════════════════════════════════════════════════════════════════
    CONSTANTS

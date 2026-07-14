@@ -93,7 +93,9 @@ import {
   saveCertificateTemplates,
   appendRegistryAudit,
   type CertificateSacrament,
+  type RecordAttachment,
 } from '@/lib/registryData';
+import { getFormScanUrl } from '@/lib/formScans';
 import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
 import { getActiveVenues, isMultiVenue, type Venue } from '@/lib/venues';
 import {
@@ -2901,6 +2903,11 @@ function RecordModal({
     setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, voided: true } : a)));
   };
 
+  /* ── ATTACHED ORIGINAL FORMS (scanned provenance; added via the Scan page,
+        removable here). Preserved through Save so an edit never drops them. ── */
+  const [attachments, setAttachments] = useState<RecordAttachment[]>(() => (record?.attachments ? [...record.attachments] : []));
+  const handleRemoveAttachment = (id: string) => setAttachments((prev) => prev.filter((a) => a.id !== id));
+
   /* ── BAPTISM FORM STATE ── */
   const [bForm, setBForm] = useState<Partial<BaptismRecord>>(() => {
     const r = record as BaptismRecord | null;
@@ -3313,6 +3320,7 @@ function RecordModal({
         scheduledOfficiant: bForm.scheduledOfficiant || bForm.officiant!, scheduledLocation: bForm.scheduledLocation || baptismLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: attachments.length ? attachments : undefined,
         requirementsMet: bForm.requirementsMet && bForm.requirementsMet.length ? bForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -3353,6 +3361,7 @@ function RecordModal({
         scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mVenueName,
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: attachments.length ? attachments : undefined,
         requirementsMet: mForm.requirementsMet && mForm.requirementsMet.length ? mForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -3384,6 +3393,7 @@ function RecordModal({
         scheduledOfficiant: cForm.scheduledOfficiant || cForm.officiant!, scheduledLocation: cForm.scheduledLocation || confirmationLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: attachments.length ? attachments : undefined,
         requirementsMet: cForm.requirementsMet && cForm.requirementsMet.length ? cForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -3408,6 +3418,7 @@ function RecordModal({
         scheduledOfficiant: dForm.scheduledOfficiant || dForm.officiant!, scheduledLocation: dForm.scheduledLocation || burialLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: attachments.length ? attachments : undefined,
         requirementsMet: dForm.requirementsMet && dForm.requirementsMet.length ? dForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -4043,6 +4054,9 @@ function RecordModal({
 
           {/* ═══ MARGINAL ANNOTATIONS (all sacraments, existing records) ═══ */}
           {isEdit && <AnnotationsSection annotations={annotations} onAdd={handleAddAnnotation} onVoid={handleVoidAnnotation} />}
+
+          {/* ═══ ATTACHED ORIGINAL FORMS (scanned provenance / paper trail) ═══ */}
+          {isEdit && <AttachedFormsSection attachments={attachments} onRemove={handleRemoveAttachment} />}
         </div>
 
         {/* Footer */}
@@ -4055,6 +4069,79 @@ function RecordModal({
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+/* =====================================================================
+   AttachedFormsSection — scanned original forms filed against a record.
+   The digital paper trail: data + image unified. Added on the Scan page
+   when a form is matched to (or created as) this record; viewable +
+   removable here. Images live private in the form-scans bucket; we mint a
+   short-lived signed URL per attachment to preview them.
+   ===================================================================== */
+function AttachedFormsSection({
+  attachments,
+  onRemove,
+}: {
+  attachments: RecordAttachment[];
+  onRemove: (id: string) => void;
+}) {
+  const [urls, setUrls] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    let alive = true;
+    void Promise.all(
+      attachments.map(async (a) => [a.id, await getFormScanUrl(a.storagePath)] as const),
+    ).then((entries) => { if (alive) setUrls(Object.fromEntries(entries)); });
+    return () => { alive = false; };
+  }, [attachments]);
+
+  return (
+    <div className="mt-6 pt-4 border-t border-parchment dark:border-dm-border">
+      <div className="flex items-center gap-2 mb-2">
+        <Link2 className="w-4 h-4 text-gold" />
+        <h4 className="heading-xs text-charcoal dark:text-dm-text">
+          Original form{attachments.length === 1 ? '' : 's'} on file{attachments.length ? ` (${attachments.length})` : ''}
+        </h4>
+      </div>
+      {attachments.length === 0 ? (
+        <p className="body-xs text-warm-gray dark:text-dm-text-muted">
+          No original form attached yet. Scan the paper form on the Scan page — Cherub matches it to this record and files the image here.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {attachments.map((a) => {
+            const url = urls[a.id];
+            const badge = a.provenance === 'pms-sourced' ? 'From PMS' : 'Scanned original';
+            return (
+              <div key={a.id} className="rounded-lg border border-parchment dark:border-dm-border overflow-hidden bg-cream-dark dark:bg-dm-surface-raised">
+                <div className="h-28 flex items-center justify-center bg-white/60 dark:bg-black/20">
+                  {url === undefined ? (
+                    <span className="body-xs text-warm-gray">Loading…</span>
+                  ) : url ? (
+                    <a href={url} target="_blank" rel="noreferrer" title="Open the original form">
+                      <img src={url} alt={a.fileName || 'Scanned form'} className="max-h-28 w-auto object-contain" />
+                    </a>
+                  ) : (
+                    <span className="body-xs text-warm-gray text-center px-2">Image unavailable</span>
+                  )}
+                </div>
+                <div className="p-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="cos-badge bg-gold/15 text-gold text-[10px]">{badge}</span>
+                    <button type="button" onClick={() => onRemove(a.id)} className="p-1 rounded text-warm-gray hover:text-error hover:bg-error/10" title="Remove attachment">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1 truncate" title={a.fileName}>
+                    {formatDate(a.uploadedAt)} · {a.uploadedBy}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

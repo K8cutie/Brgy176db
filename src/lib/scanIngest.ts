@@ -21,7 +21,7 @@ import {
   collectionsData, journalEntries as journalSeed, getLeafAccounts,
   type Collection, type JournalEntry,
 } from './financeData';
-import { baptismRecords as baptismSeed, type BaptismRecord } from './registryData';
+import { baptismRecords as baptismSeed, type BaptismRecord, type RegistryStore } from './registryData';
 import type { ScannedExtraction } from './scanTypes';
 
 // ── small, local helpers (dependency-light) ─────────────────
@@ -109,7 +109,7 @@ function commitExpense(f: Record<string, string>): { ok: boolean; message: strin
   return { ok: true, message: `Recorded expense "${description}" — ₱${amount.toLocaleString('en-PH')} to ${acct.name}` };
 }
 
-function commitBaptism(f: Record<string, string>): { ok: boolean; message: string } {
+function commitBaptism(f: Record<string, string>): { ok: boolean; message: string; recordId: string; store: RegistryStore } {
   const child = splitName(f.childName);
   const father = splitName(f.fatherName);
   const mother = splitName(f.motherName);
@@ -142,14 +142,14 @@ function commitBaptism(f: Record<string, string>): { ok: boolean; message: strin
   const existing = getJSON<BaptismRecord[]>(KEYS.baptismRecords, baptismSeed);
   setJSON(KEYS.baptismRecords, [rec, ...existing]);
   const name = [child.first, child.last].filter(Boolean).join(' ') || 'child';
-  return { ok: true, message: `Recorded baptism of ${name} (registry ${rec.registryNumber})` };
+  return { ok: true, message: `Recorded baptism of ${name} (registry ${rec.registryNumber})`, recordId: rec.id, store: 'baptismRecords' };
 }
 
 /**
  * Commit a validated extraction to the correct parish store. Switches on
  * docType; 'unknown' is rejected (the UI should make the human pick a type first).
  */
-export async function commitScannedRecord(x: ScannedExtraction): Promise<{ ok: boolean; message: string }> {
+export async function commitScannedRecord(x: ScannedExtraction): Promise<{ ok: boolean; message: string; recordId?: string; store?: RegistryStore }> {
   switch (x.docType) {
     case 'collection': return commitCollection(x.fields);
     case 'expense': return commitExpense(x.fields);

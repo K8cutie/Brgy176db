@@ -136,6 +136,11 @@ const cache: Record<string, Item[]> = {};
 // Singleton settings values (one per SINGLETON_KEYS entry) — any JSON shape.
 const settingsCache: Record<string, unknown> = {};
 let parishId: string | null = null;
+
+/** The current parish's id (from profiles at hydrate), or null in
+ *  desktop/local mode or for a diocese-level user. Used to build the
+ *  parish-scoped object path when uploading a scanned form to Storage. */
+export function getCloudParishId(): string | null { return parishId; }
 let hydrated = false;
 // hydrationOk is true ONLY when EVERY read succeeded — i.e. the cache is a FAITHFUL
 // copy of the parish's data. A failed read (RLS/JWT/network blip) leaves it FALSE,
