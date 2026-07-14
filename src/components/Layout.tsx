@@ -21,6 +21,7 @@ function getPageTitle(pathname: string): string {
     '/ssdm': 'SSDM & Assistance',
     '/reports': 'Reports',
     '/settings': 'Settings',
+    '/scan': 'Scan Documents',
   };
   return titles[pathname] || 'ChurchOS';
 }

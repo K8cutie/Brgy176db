@@ -23,6 +23,7 @@ import ReportsPage from '@/pages/ReportsPage'
 import SettingsPage from '@/pages/SettingsPage'
 import RequestsPage from '@/pages/RequestsPage'
 import ImportPage from '@/pages/ImportPage'
+import ScanPage from '@/pages/ScanPage'
 import FirstRunDetector from '@/components/FirstRunDetector';
 import CelebrationToast from '@/components/CelebrationToast';
 import AiAssistant from '@/components/AiAssistant';
@@ -167,6 +168,7 @@ function AppRoutes() {
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/import" element={<ImportPage />} />
+          <Route path="/scan" element={<ScanPage />} />
           <Route path="/diocese" element={<DioceseGate />} />
         </Routes>
       </Layout>

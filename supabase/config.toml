@@ -415,3 +415,6 @@ enabled = true
 
 [functions.ai]
 verify_jwt = true
+
+[functions.scan-extract]
+verify_jwt = true
