@@ -20,3 +20,7 @@ events
 !.env.example
 .vercel
 .env*
+
+# PIMS parish backups (personal sacramental data — never commit)
+*.PAR
+*.par

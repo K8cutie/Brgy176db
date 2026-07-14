@@ -29,6 +29,7 @@ import {
   CHURCHOS_REGISTRY_FIELDS, CHURCHOS_DIRECTORY_FIELDS, CHURCHOS_FINANCE_FIELDS,
   SAMPLE_BAPTISM_DBF, SAMPLE_MARRIAGE_DBF, SAMPLE_FINANCE_CSV,
 } from '@/lib/importEngine';
+import { parseParArchiveToSamples, parseDbfToSample } from '@/lib/pimsPar';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { KEYS } from '@/lib/storageKeys';
 import {
@@ -108,6 +109,9 @@ export default function ImportPage() {
   const [historyVersion, setHistoryVersion] = useState(0);
   // rowIndex -> true means the user chose "import anyway" for a flagged duplicate.
   const [dupOverrides, setDupOverrides] = useState<Record<number, boolean>>({});
+  // A .PAR backup holds several registers; when >1 has records the user picks
+  // which one to import. null = no multi-register backup pending.
+  const [parRegisters, setParRegisters] = useState<SampleLegacyFile[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Existing records per module (same keys + seeds the module pages use) —
@@ -136,17 +140,48 @@ export default function ImportPage() {
     setUploadedFile({ name: sample.name, type: sample.type });
     setDetectedModule(sample.targetModule);
     setDupOverrides({});
+    setParRegisters(null);
     goToStep('detect', 1);
-    toast.success(`Loaded sample: ${sample.name}`);
+    toast.success(`Loaded: ${sample.name}`);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const lower = file.name.toLowerCase();
+
+    // PIMS native backup (.PAR archive) or a lone FoxPro table (.DBF) — read
+    // directly. This is the whole point: staff drop in the raw daily backup
+    // instead of first prying a CSV out of the locked relic.
+    if (lower.endsWith('.par') || lower.endsWith('.dbf')) {
+      toast.info(`Reading PIMS backup ${file.name}...`);
+      try {
+        const ab = await file.arrayBuffer();
+        const samples = lower.endsWith('.par')
+          ? await parseParArchiveToSamples(ab, file.name)
+          : [parseDbfToSample(new Uint8Array(ab), file.name)].filter((s) => s.rows.length > 0);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        if (samples.length === 0) {
+          toast.error(`No registry records found in ${file.name}.`);
+          return;
+        }
+        if (samples.length === 1) {
+          handleSelectSample(samples[0]);
+          return;
+        }
+        setParRegisters(samples);
+        toast.success(`${file.name}: ${samples.length} registers with records — pick one to import.`);
+      } catch {
+        toast.error(`Could not read ${file.name}. Make sure it's a PIMS .PAR or .DBF backup.`);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+      return;
+    }
+
     const type = detectFileType(file.name);
     const module = detectTargetModule(file.name);
-    if (type === 'dbf' || type === 'json') {
-      toast.error(`${type.toUpperCase()} files can't be parsed yet — export the data as CSV or XLSX and upload that instead.`);
+    if (type === 'json') {
+      toast.error(`JSON files can't be parsed yet — export the data as CSV or XLSX and upload that instead.`);
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -381,6 +416,7 @@ export default function ImportPage() {
     setIsImporting(false);
     setShowHistory(false);
     setDupOverrides({});
+    setParRegisters(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -418,6 +454,7 @@ export default function ImportPage() {
               onSelectSample={handleSelectSample}
               onFileUpload={handleFileUpload}
               fileInputRef={fileInputRef}
+              parRegisters={parRegisters}
               onShowHistory={() => setShowHistory(v => !v)}
               showHistory={showHistory}
               importHistory={importHistory}
@@ -484,6 +521,7 @@ function UploadStep({
   onSelectSample,
   onFileUpload,
   fileInputRef,
+  parRegisters,
   onShowHistory,
   showHistory,
   importHistory,
@@ -492,6 +530,7 @@ function UploadStep({
   onSelectSample: (s: SampleLegacyFile) => void;
   onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
+  parRegisters: SampleLegacyFile[] | null;
   onShowHistory: () => void;
   showHistory: boolean;
   importHistory: ImportHistoryEntry[];
@@ -510,8 +549,9 @@ function UploadStep({
           />
         </h2>
         <p className="body-sm text-warm-gray mb-6">
-          Select a file exported from PIMS, Excel, or another church management system.
-          Don't have a file yet? Try a sample below.
+          Drop in your PIMS backup itself — a <span className="font-medium text-charcoal">.PAR</span> daily
+          backup (MON.PAR … SUN.PAR) or a <span className="font-medium text-charcoal">.DBF</span> table —
+          and ChurchOS reads it directly. Excel/CSV exports work too. Don't have a file yet? Try a sample below.
         </p>
 
         {/* Drag & Drop Zone */}
@@ -519,13 +559,13 @@ function UploadStep({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".dbf,.csv,.xlsx,.xls,.json"
+            accept=".par,.dbf,.csv,.xlsx,.xls,.json"
             onChange={onFileUpload}
             className="hidden"
           />
           <Upload className="w-12 h-12 text-parchment-dark group-hover:text-gold transition-colors mb-3" />
           <p className="text-sm font-medium text-charcoal">Click to browse or drag & drop</p>
-          <p className="text-xs text-warm-gray mt-1">.DBF, .CSV, .XLSX files supported</p>
+          <p className="text-xs text-warm-gray mt-1">PIMS .PAR &amp; .DBF, plus .CSV / .XLSX supported</p>
         </label>
 
         {/* Supported Formats */}
@@ -538,6 +578,48 @@ function UploadStep({
           ))}
         </div>
       </div>
+
+      {/* Registers found inside an uploaded .PAR backup */}
+      {parRegisters && parRegisters.length > 0 && (
+        <div className="cos-card p-8 border-2 border-gold/50 bg-gold/5">
+          <h2 className="heading-md text-charcoal mb-2 flex items-center gap-2">
+            <Database className="w-5 h-5 text-gold" />
+            Registers Found in Your Backup
+          </h2>
+          <p className="body-sm text-warm-gray mb-6">
+            Your PIMS backup opened cleanly. These registers have records — pick one to import now;
+            you can come back and import the others afterward.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {parRegisters.map((reg) => {
+              const label = reg.name.split('·')[1]?.trim() || reg.name;
+              return (
+                <button
+                  key={reg.name}
+                  onClick={() => onSelectSample(reg)}
+                  className="text-left p-5 rounded-xl border-2 border-gold/30 bg-white hover:border-gold hover:shadow-card-hover transition-all group"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center">
+                      <FileText className="w-5 h-5 text-gold" />
+                    </div>
+                    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gold/15 text-gold">
+                      {reg.recordCount} record{reg.recordCount === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <h3 className="font-semibold text-charcoal text-sm group-hover:text-gold transition-colors">
+                    {label}
+                  </h3>
+                  <p className="text-xs text-warm-gray mt-1">Sacramental Registry</p>
+                  <span className="inline-flex items-center gap-1 text-xs text-gold mt-3 font-medium">
+                    Import this register <ArrowRight className="w-3 h-3" />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Sample Files */}
       <div className="cos-card p-8">
