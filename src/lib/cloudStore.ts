@@ -179,14 +179,25 @@ export async function hydrateCloudStore(): Promise<void> {
     }
     if (ok && !noParishUser) {
       for (const key of TABLE_KEYS) {
-        const { data, error } = await supa.from(key).select('*');
-        if (error) {
+        // Paginate — PostgREST caps a plain select at 1000 rows, which would silently
+        // hide a parish's records beyond 1000 (a real case for PMS-migrated registries).
+        const PAGE = 1000;
+        const all: Row[] = [];
+        let readErr: unknown = null;
+        for (let from = 0; ; from += PAGE) {
+          const { data, error } = await supa.from(key).select('*').range(from, from + PAGE - 1);
+          if (error) { readErr = error; break; }
+          const batch = (data as Row[]) || [];
+          all.push(...batch);
+          if (batch.length < PAGE) break;
+        }
+        if (readErr) {
           // A not-yet-migrated OPTIONAL table reads as empty (see OPTIONAL_KEYS);
           // any other read error must NOT look like an empty table → fail-closed.
-          if (OPTIONAL_KEYS.has(key) && isMissingRelation(error)) { cache[key] = []; continue; }
+          if (OPTIONAL_KEYS.has(key) && isMissingRelation(readErr)) { cache[key] = []; continue; }
           ok = false; break;
         }
-        cache[key] = ((data as Row[]) || []).map((row) => ({ ...(row.data as Item), id: (row.client_id as string) ?? (row.id as string) }));
+        cache[key] = all.map((row) => ({ ...(row.data as Item), id: (row.client_id as string) ?? (row.id as string) }));
       }
       // Singleton settings live in one shared table (may not be migrated yet).
       if (ok) {
@@ -224,8 +235,9 @@ export function cloudSet(fullKey: string, value: string): boolean {
   if (key) {
     let arr: Item[];
     try { arr = JSON.parse(value); } catch { return false; }
+    const prev = cache[key] ?? [];   // capture BEFORE overwrite so reconcile can diff
     cache[key] = arr;
-    void reconcile(key, arr);
+    void reconcile(key, arr, prev);
     return true;
   }
   const skey = singletonFor(fullKey);
@@ -241,16 +253,23 @@ export function cloudSet(fullKey: string, value: string): boolean {
 
 export function cloudRemove(fullKey: string): void {
   const key = tableFor(fullKey);
-  if (key) { cache[key] = []; void reconcile(key, []); return; }
+  if (key) { const prev = cache[key] ?? []; cache[key] = []; void reconcile(key, [], prev); return; }
   const skey = singletonFor(fullKey);
   if (skey) { delete settingsCache[skey]; void removeSingleton(skey); }
 }
 
 export function cloudKeys(): string[] { return [...Object.keys(cache), ...Object.keys(settingsCache)]; }
 
-// Write-through: upsert the array's rows by (parish_id, client_id), and delete
-// any rows that are no longer present.
-async function reconcile(key: string, arr: Item[]): Promise<void> {
+// Write-through: DIFF the new array against the previous cache (by client_id) and
+// send ONLY what changed — upsert added/modified rows, delete just the rows this
+// change removed (targeted + chunked). Never re-send the whole table, and never
+// issue a blanket "delete everything not in my array" DELETE. That old approach
+// had two structural failures at real-parish volume:
+//   (1) the delete put every id in the URL query string → HTTP 414 past ~215 rows;
+//   (2) a stale snapshot's blanket delete wiped rows other staff had just added.
+// Diffing fixes both: an unchanged mount writes NOTHING, and a save only ever
+// touches the rows the user actually changed.
+async function reconcile(key: string, arr: Item[], prev: Item[]): Promise<void> {
   // A diocese-level user owns no parish data — silently skip any write-through
   // (e.g. a page's mount write-back) without warning; there is nothing to save.
   if (noParishUser) return;
@@ -264,27 +283,38 @@ async function reconcile(key: string, arr: Item[]): Promise<void> {
     return;
   }
   // fee_override_audit is a server-enforced APPEND-ONLY ledger (trg_audit_no_mutate
-  // raises on any UPDATE/DELETE). Re-sending the whole array with a normal upsert
-  // executes ON CONFLICT DO UPDATE on already-persisted rows → the trigger throws and
-  // the whole write is abandoned, so only the FIRST waiver ever persisted. For this
-  // table: INSERT unseen rows only (ON CONFLICT DO NOTHING, which never UPDATEs) and
-  // NEVER issue the reconcile DELETE.
+  // raises on any UPDATE/DELETE). Only ever INSERT unseen rows (ON CONFLICT DO NOTHING)
+  // and NEVER delete. The diff below already sends only new rows, so this is safe.
   const appendOnly = key === KEYS.feeOverrideAudit;
   try {
     const supa = await sb();
-    const rows = arr.map((i) => ({ parish_id: parishId, client_id: i.id, data: i, ...FLAT[key](i) }));
-    if (rows.length) {
+    const prevById = new Map(prev.filter((i) => i.id).map((i) => [i.id as string, i]));
+    const nextIds = new Set(arr.map((i) => i.id).filter(Boolean) as string[]);
+
+    // Upsert only NEW or CHANGED rows (a deep-equal row is skipped, so an
+    // unchanged page mount writes nothing).
+    const changed = arr.filter((i) => {
+      if (!i.id) return false;
+      const p = prevById.get(i.id as string);
+      return !p || JSON.stringify(p) !== JSON.stringify(i);
+    });
+    if (changed.length) {
+      const rows = changed.map((i) => ({ parish_id: parishId, client_id: i.id, data: i, ...FLAT[key](i) }));
       const up = appendOnly
         ? await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id', ignoreDuplicates: true })
         : await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id' });
       if (up.error) throw up.error;
     }
+
+    // Delete ONLY the rows this change actually removed — scoped to explicit
+    // removals (never rows another user added), chunked so the URL never overflows.
     if (!appendOnly) {
-      const ids = arr.map((i) => i.id).filter(Boolean);
-      let del = supa.from(key).delete().eq('parish_id', parishId);
-      del = ids.length ? del.not('client_id', 'in', `(${ids.join(',')})`) : del;
-      const res = await del;
-      if (res.error) throw res.error;
+      const removedIds = prev.map((i) => i.id).filter((id): id is string => !!id && !nextIds.has(id));
+      for (let i = 0; i < removedIds.length; i += 100) {
+        const chunk = removedIds.slice(i, i + 100);
+        const res = await supa.from(key).delete().eq('parish_id', parishId).in('client_id', chunk);
+        if (res.error) throw res.error;
+      }
     }
   } catch {
     if (onWriteError) onWriteError();
