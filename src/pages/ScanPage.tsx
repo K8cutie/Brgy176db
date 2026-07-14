@@ -13,7 +13,7 @@ import {
   matchScannedForm, attachToRegistryRecord, registryTypeOfDoc,
   type MatchResult,
 } from '@/lib/registryMatch';
-import { uploadFormScan, formScansAvailable } from '@/lib/formScans';
+import { uploadFormScan, formScansAvailable, removeFormScan } from '@/lib/formScans';
 import { getCurrentUserName } from '@/lib/session';
 import type { RegistryRecord, RecordAttachment } from '@/lib/registryData';
 
@@ -54,6 +54,7 @@ interface QueueItem {
   match?: MatchResult;        // candidate existing records this form may belong to
   chosenRecordId?: string;    // attach the scan to this existing record
   createNew?: boolean;        // ignore matches — create a fresh record
+  saving?: boolean;           // a commit/attach is in flight (blocks double-submit)
 }
 
 const DOC_TYPE_OPTIONS: ScanDocType[] = ['collection', 'expense', 'baptism', 'unknown'];
@@ -121,6 +122,24 @@ function computeDecision(
   if (m.action === 'auto' && m.best) return { match: m, chosenRecordId: m.best.record.id, createNew: false };
   if (m.action === 'create') return { match: m, chosenRecordId: undefined, createNew: true };
   return { match: m, chosenRecordId: undefined, createNew: false }; // 'pick' — undecided
+}
+
+// After a field edit, recompute the match but PRESERVE an explicit user choice
+// while it's still valid, and DROP it when it isn't — so a decision can never
+// outlive the data it was made on (e.g. the identity fields were corrected).
+function recomputePreserving(
+  fields: Record<string, string>,
+  docType: ScanDocType,
+  prevChosen?: string,
+  prevCreateNew?: boolean,
+): Pick<QueueItem, 'match' | 'chosenRecordId' | 'createNew'> {
+  const d = computeDecision(fields, docType);
+  if (!d.match) return d;
+  if (prevChosen && d.match.candidates.some((c) => c.record.id === prevChosen)) {
+    return { match: d.match, chosenRecordId: prevChosen, createNew: false };
+  }
+  if (prevCreateNew) return { match: d.match, chosenRecordId: undefined, createNew: true };
+  return d;
 }
 
 export default function ScanPage() {
@@ -231,6 +250,10 @@ export default function ScanPage() {
   }, [extractFile, notConfigured]);
 
   const approve = useCallback(async (item: QueueItem) => {
+    if (item.saving) return;                       // in-flight guard: no double-submit
+    patchItem(item.id, { saving: true });
+    const fail = (msg: string) => { toast.error(msg); patchItem(item.id, { saving: false }); };
+
     const isRegistry = !!registryTypeOfDoc(item.docType);
     const attaching = isRegistry && !!item.chosenRecordId && !item.createNew;
 
@@ -244,44 +267,49 @@ export default function ScanPage() {
       uploadedBy: getCurrentUserName(),
     });
 
-    // ── Branch A: attach the scanned original to an EXISTING matched record ──
-    if (attaching && item.match) {
-      const path = await uploadFormScan(item.chosenRecordId!, item.file);
-      if (!path) {
-        toast.error("Couldn't save the scanned image — storage is unavailable. The record was not changed.");
-        return;
-      }
-      const ok = attachToRegistryRecord(item.match.store, item.chosenRecordId!, makeAttachment(path));
-      if (ok) {
-        toast.success('Original form attached to the matching record.');
-        removeItem(item.id);
-      } else {
-        toast.error('That record could not be found — try creating a new one instead.');
-      }
-      return;
-    }
-
-    // ── Branch B: create a new record from the form, then attach the image ──
     const extraction: ScannedExtraction = {
       docType: item.docType,
       confidence: item.confidence,
       fields: item.fields,
       note: item.note,
     };
-    const res = await commitScannedRecord(extraction);
-    if (!res.ok) {
-      toast.error(res.message);
+
+    // ── Branch A: attach the scanned original to an EXISTING matched record ──
+    if (attaching) {
+      // Re-validate against the CURRENT fields — never attach to a record the
+      // form (possibly edited since the match was computed) no longer supports.
+      const fresh = matchScannedForm(extraction);
+      if (!fresh || !fresh.candidates.some((c) => c.record.id === item.chosenRecordId)) {
+        return fail('The details changed since the match — tap Re-check and confirm the record before attaching.');
+      }
+      const path = await uploadFormScan(item.chosenRecordId!, item.file);
+      if (!path) return fail("Couldn't save the scanned image — storage is unavailable. The record was not changed.");
+      const ok = attachToRegistryRecord(fresh.store, item.chosenRecordId!, makeAttachment(path));
+      if (!ok) {
+        await removeFormScan(path);               // clean up the orphan we just uploaded
+        return fail('That record could not be found (it may have been deleted) — create a new record instead.');
+      }
+      toast.success('Original form attached to the matching record.');
+      removeItem(item.id);
       return;
     }
+
+    // ── Branch B: create a new record from the form, then attach the image ──
+    const res = await commitScannedRecord(extraction);
+    if (!res.ok) return fail(res.message);
     // Registry records get the scanned original attached as provenance.
     if (res.recordId && res.store) {
       const path = await uploadFormScan(res.recordId, item.file);
-      if (path) attachToRegistryRecord(res.store, res.recordId, makeAttachment(path));
-      else if (isRegistry) toast.message('Record saved — the scanned image could not be stored this time.');
+      if (path) {
+        const ok = attachToRegistryRecord(res.store, res.recordId, makeAttachment(path));
+        if (!ok) await removeFormScan(path);      // orphan cleanup
+      } else if (isRegistry) {
+        toast.message('Record saved — the scanned image could not be stored this time.');
+      }
     }
     toast.success(res.message);
     removeItem(item.id);
-  }, [removeItem]);
+  }, [patchItem, removeItem]);
 
   return (
     <div>
@@ -359,7 +387,10 @@ export default function ScanPage() {
                   key={item.id}
                   item={item}
                   onDocType={(dt) => patchItem(item.id, { docType: dt, ...computeDecision(item.fields, dt) })}
-                  onField={(k, v) => patchItem(item.id, { fields: { ...item.fields, [k]: v } })}
+                  onField={(k, v) => {
+                    const fields = { ...item.fields, [k]: v };
+                    patchItem(item.id, { fields, ...recomputePreserving(fields, item.docType, item.chosenRecordId, item.createNew) });
+                  }}
                   onRecheck={() => patchItem(item.id, computeDecision(item.fields, item.docType))}
                   onChooseRecord={(recId) => patchItem(item.id, { chosenRecordId: recId, createNew: false })}
                   onCreateNew={() => patchItem(item.id, { chosenRecordId: undefined, createNew: true })}
@@ -506,10 +537,11 @@ function ReviewCard({ item, onDocType, onField, onRecheck, onChooseRecord, onCre
               <div className="flex items-center gap-2">
                 <button
                   onClick={onApprove}
-                  disabled={!decided}
+                  disabled={!decided || item.saving}
                   className="cos-btn cos-btn-primary text-sm flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {attaching ? <Link2 className="w-4 h-4" /> : <Check className="w-4 h-4" />} {approveLabel}
+                  {item.saving ? <Loader2 className="w-4 h-4 animate-spin" /> : attaching ? <Link2 className="w-4 h-4" /> : <Check className="w-4 h-4" />}
+                  {item.saving ? 'Saving…' : approveLabel}
                 </button>
                 <button onClick={onDiscard} className="cos-btn cos-btn-secondary text-sm flex items-center gap-1.5">
                   <X className="w-4 h-4" /> Discard

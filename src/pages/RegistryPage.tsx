@@ -94,8 +94,10 @@ import {
   appendRegistryAudit,
   type CertificateSacrament,
   type RecordAttachment,
+  type RegistryStore,
 } from '@/lib/registryData';
 import { getFormScanUrl } from '@/lib/formScans';
+import { resolveAttachmentsForSave } from '@/lib/registryMatch';
 import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
 import { getActiveVenues, isMultiVenue, type Venue } from '@/lib/venues';
 import {
@@ -2907,6 +2909,9 @@ function RecordModal({
         removable here). Preserved through Save so an edit never drops them. ── */
   const [attachments, setAttachments] = useState<RecordAttachment[]>(() => (record?.attachments ? [...record.attachments] : []));
   const handleRemoveAttachment = (id: string) => setAttachments((prev) => prev.filter((a) => a.id !== id));
+  // Attachment ids present when the editor OPENED — lets Save distinguish a
+  // removal made here from an addition made elsewhere (merge-on-save).
+  const [seededAttachmentIds] = useState<string[]>(() => (record?.attachments ?? []).map((a) => a.id));
 
   /* ── BAPTISM FORM STATE ── */
   const [bForm, setBForm] = useState<Partial<BaptismRecord>>(() => {
@@ -3300,6 +3305,13 @@ function RecordModal({
     // Fee override validation: non-default payment options require a reason
     if (!validatePaymentOverride()) return;
 
+    // Merge attachments with the CURRENT store so a scan attached out-of-band
+    // (from the Scan page, in another session) since this editor opened is not
+    // clobbered by our stale snapshot; removals made here are still honored.
+    const mergedAttachments = record
+      ? resolveAttachmentsForSave(`${sacrament}Records` as RegistryStore, record.id, seededAttachmentIds, attachments)
+      : (attachments.length ? attachments : undefined);
+
     if (sacrament === 'baptism') {
       if (!validateBaptism()) return;
       const newRecord: BaptismRecord = {
@@ -3320,7 +3332,7 @@ function RecordModal({
         scheduledOfficiant: bForm.scheduledOfficiant || bForm.officiant!, scheduledLocation: bForm.scheduledLocation || baptismLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
-        attachments: attachments.length ? attachments : undefined,
+        attachments: mergedAttachments,
         requirementsMet: bForm.requirementsMet && bForm.requirementsMet.length ? bForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -3361,7 +3373,7 @@ function RecordModal({
         scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mVenueName,
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
-        attachments: attachments.length ? attachments : undefined,
+        attachments: mergedAttachments,
         requirementsMet: mForm.requirementsMet && mForm.requirementsMet.length ? mForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -3393,7 +3405,7 @@ function RecordModal({
         scheduledOfficiant: cForm.scheduledOfficiant || cForm.officiant!, scheduledLocation: cForm.scheduledLocation || confirmationLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
-        attachments: attachments.length ? attachments : undefined,
+        attachments: mergedAttachments,
         requirementsMet: cForm.requirementsMet && cForm.requirementsMet.length ? cForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
@@ -3418,7 +3430,7 @@ function RecordModal({
         scheduledOfficiant: dForm.scheduledOfficiant || dForm.officiant!, scheduledLocation: dForm.scheduledLocation || burialLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
-        attachments: attachments.length ? attachments : undefined,
+        attachments: mergedAttachments,
         requirementsMet: dForm.requirementsMet && dForm.requirementsMet.length ? dForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };

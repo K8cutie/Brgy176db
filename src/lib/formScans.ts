@@ -77,6 +77,18 @@ export async function uploadFormScan(recordId: string, file: File): Promise<stri
   }
 }
 
+/** Best-effort delete of a stored scan (e.g. to clean up an orphan when the
+ *  record it was meant for could not be linked). Never throws. */
+export async function removeFormScan(storagePath: string): Promise<void> {
+  if (!isCloud() || !storagePath) return;
+  try {
+    const supa = (await getSupabase()) as unknown as StorageLike;
+    await supa.storage.from(BUCKET).remove([storagePath]);
+  } catch {
+    /* best-effort — an orphaned private object is harmless */
+  }
+}
+
 /** Short-lived signed URL to view a stored scan (private bucket → no public URL). */
 export async function getFormScanUrl(storagePath: string, expiresInSeconds = 3600): Promise<string | null> {
   if (!isCloud() || !storagePath) return null;

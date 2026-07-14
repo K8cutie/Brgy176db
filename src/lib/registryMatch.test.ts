@@ -65,13 +65,13 @@ describe('registry matcher', () => {
     expect(m.store).toBe('baptismRecords');
   });
 
-  it('registry-number agreement clamps to a confident auto-match even with partial name', () => {
+  it('a registry hit with only a partial name is a PICK, not an auto (number never overrides identity)', () => {
     const m = matchScannedForm(ex({
       childName: 'Juan Dela Cruz', registryNumber: 'BAP-1/1/1', dateOfBaptism: '',
     }))!;
-    expect(m.best?.registryHit).toBe(true);
     expect(m.best?.record.id).toBe('b1');
-    expect(m.action).toBe('auto');
+    expect(m.best?.registryHit).toBe(true);
+    expect(m.action).not.toBe('auto'); // 0.75 name < 0.85 strong-name gate
   });
 
   it('an ambiguous partial lands in the pick range (human chooses)', () => {
@@ -109,6 +109,28 @@ describe('registry matcher', () => {
     expect(m.action).not.toBe('auto');
     expect(m.best?.registryHit).toBe(true);
     expect(m.best?.score ?? 0).toBeLessThan(0.9);
+  });
+
+  it('does NOT auto-attach on an order-free name collision (batch-baptism cohort)', () => {
+    // Two different children with the same token multiset, same date, and no
+    // corroborating parents on the scan → must be a human 'pick', never 'auto'.
+    seed(KEYS.baptismRecords, [
+      { id: 'x1', registryNumber: 'BAP-5/1/1', childFirstName: 'Maria Clara', childLastName: 'Santos', dateOfBaptism: '2024-02-10', status: 'Active' },
+      { id: 'x2', registryNumber: 'BAP-5/1/2', childFirstName: 'Santos Maria', childLastName: 'Clara', dateOfBaptism: '2024-02-10', status: 'Active' },
+    ]);
+    const m = matchScannedForm(ex({ childName: 'Maria Clara Santos', dateOfBaptism: '2024-02-10' }))!;
+    expect(m.action).not.toBe('auto');
+  });
+
+  it('never auto-attaches when the scanned registry number is shared by multiple records', () => {
+    seed(KEYS.baptismRecords, [
+      { id: 'y1', registryNumber: 'BAP-DUP', childFirstName: 'Juan', childLastName: 'Cruz', dateOfBaptism: '2021-03-03', status: 'Active' },
+      { id: 'y2', registryNumber: 'BAP-DUP', childFirstName: 'Pedro', childLastName: 'Reyes', dateOfBaptism: '2021-03-03', status: 'Active' },
+    ]);
+    // y1: strong name + exact date + registry hit — but the number is ambiguous
+    // (shared), so it can't corroborate identity → must not auto.
+    const m = matchScannedForm(ex({ childName: 'Juan Cruz', registryNumber: 'BAP-DUP', dateOfBaptism: '2021-03-03' }))!;
+    expect(m.action).not.toBe('auto');
   });
 });
 
