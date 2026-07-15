@@ -12,7 +12,7 @@
 // ingest) — blanks are expected and fine; the human fills the rest.
 // ═══════════════════════════════════════════════════════════
 
-export type ScanDocType = 'collection' | 'expense' | 'baptism' | 'unknown';
+export type ScanDocType = 'collection' | 'expense' | 'baptism' | 'parish' | 'unknown';
 
 export interface ScannedExtraction {
   docType: ScanDocType;
@@ -29,6 +29,9 @@ export const DOC_TYPE_FIELDS: Record<ScanDocType, string[]> = {
   collection: ['date', 'massTime', 'cash', 'checks', 'digital'],
   expense: ['date', 'description', 'amount', 'category'],
   baptism: ['childName', 'dateOfBaptism', 'fatherName', 'motherName', 'godparents', 'registryNumber'],
+  // A parish's OWN details, read off its letterhead / seal / an existing
+  // certificate — used to auto-fill onboarding, not to create a record.
+  parish: ['parishName', 'diocese', 'parishPriest', 'addressStreet', 'addressBarangay', 'addressCity', 'addressProvince', 'contactNumber', 'email'],
   unknown: [],
 };
 
@@ -38,5 +41,6 @@ export const DOC_TYPE_LABELS: Record<ScanDocType, string> = {
   collection: 'Mass Collection Sheet',
   expense: 'Expense / Receipt / Voucher',
   baptism: 'Baptismal Record',
+  parish: 'Parish Letterhead / Profile',
   unknown: 'Unrecognized Document',
 };

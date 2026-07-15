@@ -249,7 +249,9 @@ export default function LoginPage() {
           }
           const ob = await onboardNewAdmin(dioceseName.trim(), parishName.trim());
           if (!ob.ok) { setAuthError(ob.error || 'Could not set up your diocese.'); setIsSubmitting(false); return; }
-          goToAppRoot();
+          // Hand off to the AI-powered welcome step (snap-a-photo parish auto-fill).
+          try { localStorage.setItem('churchos_onboarding_seed', JSON.stringify({ parishName: parishName.trim(), diocese: dioceseName.trim() })); } catch { /* ignore */ }
+          window.location.assign('/welcome');
           return;
         }
         const res = await cloudSignIn(username.trim(), password);

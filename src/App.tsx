@@ -12,6 +12,7 @@ import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import LoginPage from '@/pages/LoginPage'
 import WizardPage from '@/pages/WizardPage'
+import WelcomePage from '@/pages/WelcomePage'
 import PublicPortal from '@/pages/PublicPortal'
 import RegistryPage from '@/pages/RegistryPage'
 import DirectoryPage from '@/pages/DirectoryPage'
@@ -76,7 +77,7 @@ function AppRoutes() {
   const location = useLocation();
   // The public parishioner portal is a standalone, no-auth route (anon access).
   const isPortal = location.pathname.startsWith('/portal');
-  const isStandalone = location.pathname === '/login' || location.pathname === '/setup' || isPortal;
+  const isStandalone = location.pathname === '/login' || location.pathname === '/setup' || location.pathname === '/welcome' || isPortal;
 
   const [celebration, setCelebration] = useState<Achievement | null>(null);
 
@@ -122,6 +123,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/setup" element={<WizardPage />} />
+        <Route path="/welcome" element={<WelcomePage />} />
         <Route path="/portal/:slug" element={<PublicPortal />} />
       </Routes>
     );

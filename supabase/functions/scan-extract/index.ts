@@ -40,20 +40,22 @@ const CORS = {
 const MODEL = 'claude-haiku-4-5';
 
 // Duplicated from src/lib/scanTypes.ts (Deno can't reach the app src tree).
-type ScanDocType = 'collection' | 'expense' | 'baptism' | 'unknown';
+type ScanDocType = 'collection' | 'expense' | 'baptism' | 'parish' | 'unknown';
 const DOC_TYPE_FIELDS: Record<ScanDocType, string[]> = {
   collection: ['date', 'massTime', 'cash', 'checks', 'digital'],
   expense: ['date', 'description', 'amount', 'category'],
   baptism: ['childName', 'dateOfBaptism', 'fatherName', 'motherName', 'godparents', 'registryNumber'],
+  parish: ['parishName', 'diocese', 'parishPriest', 'addressStreet', 'addressBarangay', 'addressCity', 'addressProvince', 'contactNumber', 'email'],
   unknown: [],
 };
 
 const SYSTEM = [
   'You are digitizing a Philippine Catholic parish\'s paper document.',
-  'Identify the document type (a Mass collection sheet, an expense/receipt/voucher, or a baptismal record) and extract the fields.',
+  'Identify the document type (a Mass collection sheet, an expense/receipt/voucher, a baptismal record, or a parish letterhead/profile) and extract the fields.',
+  'A "parish" document is the parish\'s OWN identity — its official letterhead, seal, a signage/ID, or an existing certificate — from which you read the parish\'s own name, diocese, address, and parish priest (NOT a parishioner\'s details).',
   'Amounts are Philippine pesos — return digits only, no ₱ sign and no thousands commas (e.g. "12500.50", not "₱12,500.50").',
   'Dates as YYYY-MM-DD if determinable.',
-  'Return ONLY strict JSON of the form: {"docType": "collection"|"expense"|"baptism"|"unknown", "confidence": 0-1, "fields": { ... }, "note": "..."}.',
+  'Return ONLY strict JSON of the form: {"docType": "collection"|"expense"|"baptism"|"parish"|"unknown", "confidence": 0-1, "fields": { ... }, "note": "..."}.',
   'Put anything you could not read confidently in "note".',
   'Never invent values; leave a field out entirely if it is not present on the document.',
   'The target field keys per document type are: ' + JSON.stringify(DOC_TYPE_FIELDS) + '.',
@@ -89,7 +91,7 @@ function coerceExtraction(text: string): { docType: ScanDocType; confidence: num
     return fallback;
   }
   const dt = parsed.docType;
-  const docType: ScanDocType = dt === 'collection' || dt === 'expense' || dt === 'baptism' ? dt : 'unknown';
+  const docType: ScanDocType = dt === 'collection' || dt === 'expense' || dt === 'baptism' || dt === 'parish' ? dt : 'unknown';
   let confidence = typeof parsed.confidence === 'number' ? parsed.confidence : Number(parsed.confidence);
   if (!Number.isFinite(confidence)) confidence = 0;
   confidence = Math.max(0, Math.min(1, confidence));
@@ -157,7 +159,7 @@ Deno.serve(async (req: Request) => {
     // base64 length → approx decoded byte count.
     if ((image.length * 3) / 4 > MAX_DECODED_BYTES) return json({ ok: false, error: 'payload_too_large' }, 413);
     const hint = body?.hint;
-    const hintText = hint === 'collection' || hint === 'expense' || hint === 'baptism'
+    const hintText = hint === 'collection' || hint === 'expense' || hint === 'baptism' || hint === 'parish'
       ? `The user believes this is a ${hint} document — verify, but prefer that type if plausible.`
       : 'Identify the document type yourself.';
 
