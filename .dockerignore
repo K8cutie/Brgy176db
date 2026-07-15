@@ -1,0 +1,11 @@
+node_modules
+dist
+release
+coverage
+.git
+.env*
+*.log
+*.PAR
+*.par
+supabase/.temp
+supabase/.branches
