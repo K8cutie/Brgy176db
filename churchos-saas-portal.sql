@@ -122,7 +122,11 @@ create policy req_public_submit on public.service_requests for insert to anon
   -- amount is SERVER-FORCED by normalize_request() (the fee/donation), so it is NOT
   -- checked here. (Was `and amount is null`, which the BEFORE trigger contradicted →
   -- rejected 100% of anon intake. See FIX BUG-1g in churchos-saas-authz-fix.sql.)
-  with check (status = 'submitted' and payment_status = 'unpaid' and payment_ref is null);
+  -- The 8KB details cap is ALSO enforced here (BUG-INTAKE-CAP): normalize_request's cap
+  -- sits behind is_untrusted_client_write() which can skip on a null auth.role(); RLS
+  -- WITH CHECK always runs, so an oversized anon payload can never slip through.
+  with check (status = 'submitted' and payment_status = 'unpaid' and payment_ref is null
+    and length(coalesce(details, '{}'::jsonb)::text) <= 8000);
 
 -- (2) Parish staff read + manage their own parish's requests (the inbox).
 drop policy if exists req_parish_all on public.service_requests;
