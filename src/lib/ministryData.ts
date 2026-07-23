@@ -1,3 +1,6 @@
+import { getJSON, setJSON } from './storageNamespaced';
+import { KEYS } from './storageKeys';
+
 export type MinistryAccent = 'gold' | 'blue' | 'purple' | 'green' | 'orange';
 
 export interface MinistryMember {
@@ -353,3 +356,31 @@ export const MINISTRIES: Ministry[] = [
     ],
   },
 ];
+
+// The five canonical parish ministries as EMPTY-roster shells — the fixed set every
+// parish has, with no fake members (unlike the MINISTRIES demo rosters above).
+const MINISTRY_SHELLS: Ministry[] = MINISTRIES.map((m) => ({
+  ...m, members: [], scheduleAssignments: [], attendance: [], memberCount: 0, activeAssignments: 0, coordinator: '',
+}));
+
+/**
+ * The ministries for the current parish. Seeds and persists the five default shells the
+ * first time it is read for a parish that has none, so the page is never empty.
+ *
+ * Required in CLOUD mode: hydration reads the (empty) Supabase `ministries` table to [],
+ * so cloudGet returns "[]" (not null) and the MINISTRIES default in usePersistedState is
+ * never reached — leaving the Ministries page blank with no way to add members.
+ *
+ * Idempotent: the ministry ids are stable strings, so the cloud write-through upserts on
+ * (parish_id, client_id) — a concurrent seed from two tabs writes the same 5 rows (no
+ * duplicates), an already-populated parish is returned untouched (never re-seeded or
+ * wiped), and it only ever fires on a genuinely empty list.
+ */
+export function getMinistries(): Ministry[] {
+  const list = getJSON<Ministry[]>(KEYS.ministries, []);
+  if (!Array.isArray(list) || list.length === 0) {
+    setJSON(KEYS.ministries, MINISTRY_SHELLS);
+    return MINISTRY_SHELLS;
+  }
+  return list;
+}

@@ -27,9 +27,12 @@ create index if not exists idx_reports_diocese_period on public.diocese_reports(
 -- parish row, recompute net, and bound the money — so a parish can't post a
 -- report for another parish or forge a mismatched net.
 create or replace function public.derive_report()
-returns trigger language plpgsql security definer set search_path = public as $$
+returns trigger language plpgsql security definer set search_path = public, auth as $$
 begin
-  if current_user in ('authenticated','anon') then
+  -- FIX BUG-1h: current_user is always the owner inside a SECURITY DEFINER body, so the
+  -- old `current_user in ('authenticated','anon')` gate was dead and parish_id was never
+  -- forced. Use is_untrusted_client_write() (JWT role + capability nonce) like force_parish_id.
+  if public.is_untrusted_client_write() then
     new.parish_id := auth_parish_id();
   end if;
   new.diocese_id := (select diocese_id from public.parishes where id = new.parish_id);

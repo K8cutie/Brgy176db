@@ -571,3 +571,29 @@ end $$;
 --   -- select on public.rate_limits with the anon key must return 0 rows / be denied
 --   -- an anon reserve_slot with p_email='' must RAISE 'an email address is required'
 --   -- a ≥100k journal insert via the anon/authenticated key must land status='Pending'
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- FIX BUG-1h — derive_report()'s parish_id auto-set was dead code (gated on
+-- current_user, always the owner inside SECURITY DEFINER). Re-gate on
+-- is_untrusted_client_write() like force_parish_id (BUG-1b). Placed here (end of
+-- authz-fix) so a from-scratch golive/ALL regeneration defines is_untrusted_client_write
+-- AND runs the diocese_reports seed BEFORE this override — the seed uses the old
+-- (owner-trusted) function, then this replaces it for live client writes.
+-- ══════════════════════════════════════════════════════════════════════════
+create or replace function public.derive_report()
+returns trigger language plpgsql security definer set search_path = public, auth as $$
+begin
+  if public.is_untrusted_client_write() then
+    new.parish_id := auth_parish_id();
+  end if;
+  new.diocese_id := (select diocese_id from public.parishes where id = new.parish_id);
+  new.collections_total := coalesce(new.collections_total, 0);
+  new.expense_total := coalesce(new.expense_total, 0);
+  if not (new.collections_total >= 0 and new.expense_total >= 0
+          and new.collections_total <= 1000000000 and new.expense_total <= 1000000000) then
+    raise exception 'report amounts must be finite, >= 0, and within range';
+  end if;
+  new.net := new.collections_total - new.expense_total;
+  if new.period !~ '^\d{4}-\d{2}$' then raise exception 'period must be YYYY-MM'; end if;
+  return new;
+end $$;

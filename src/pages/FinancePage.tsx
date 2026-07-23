@@ -2896,27 +2896,40 @@ function WaiversTab() {
   const [waivedAmount, setWaivedAmount] = useState('');
   const [reason, setReason] = useState('');
   const [approvedBy, setApprovedBy] = useState('');
+  // Re-entrancy guard: the cloud write is fire-and-forget, so without this an impatient
+  // double-click records the SAME waiver twice into the append-only chain (each with a
+  // fresh random id, so nothing dedupes them). The ref timestamp is the reliable backstop
+  // for a double-click that lands before React disables the button.
+  const lastRecordAt = useRef(0);
+  const [recording, setRecording] = useState(false);
 
   const handleRecord = () => {
-    const res = recordFeeWaiver({
-      sacrament,
-      personName,
-      originalFee: parseFloat(originalFee),
-      waivedAmount: parseFloat(waivedAmount),
-      reason,
-      approvedBy,
-    });
-    if (!res.ok) {
-      toast.error(res.error);
-      return;
+    if (Date.now() - lastRecordAt.current < 1500) return;
+    lastRecordAt.current = Date.now();
+    setRecording(true);
+    try {
+      const res = recordFeeWaiver({
+        sacrament,
+        personName,
+        originalFee: parseFloat(originalFee),
+        waivedAmount: parseFloat(waivedAmount),
+        reason,
+        approvedBy,
+      });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success('Waiver recorded in the tamper-evident audit chain');
+      setPersonName('');
+      setOriginalFee('');
+      setWaivedAmount('');
+      setReason('');
+      setApprovedBy('');
+      setVersion((v) => v + 1);
+    } finally {
+      setRecording(false);
     }
-    toast.success('Waiver recorded in the tamper-evident audit chain');
-    setPersonName('');
-    setOriginalFee('');
-    setWaivedAmount('');
-    setReason('');
-    setApprovedBy('');
-    setVersion((v) => v + 1);
   };
 
   // Newest first for display; chainIndex keeps the verification position.
@@ -3060,7 +3073,7 @@ function WaiversTab() {
           </div>
         </div>
         <div className="flex justify-end mt-3">
-          <button onClick={handleRecord} className="cos-btn cos-btn-primary text-sm">Record Waiver</button>
+          <button onClick={handleRecord} disabled={recording} className="cos-btn cos-btn-primary text-sm disabled:opacity-50 disabled:pointer-events-none">Record Waiver</button>
         </div>
       </div>
 

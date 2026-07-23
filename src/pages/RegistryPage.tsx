@@ -111,6 +111,7 @@ import {
 } from '@/lib/scheduling';
 import { getCertificateTokens, getCurrencySymbol, getParishName } from '@/lib/parishConfig';
 import { clergyNames } from '@/lib/clergy';
+import { getParishConfig } from '@/lib/parishConfig';
 import {
   BARANGAYS,
   SITIOS,
@@ -254,8 +255,25 @@ function LifecycleBadge({ record }: { record: RegistryRecord }) {
 }
 
 function genId(prefix: string) {
-  return `${prefix}-${Date.now()}`;
+  // Needs collision-free entropy: this id becomes the Supabase client_id, which is
+  // BOTH the cloud-sync diff key and the upsert conflict key. A bare `${prefix}-${Date.now()}`
+  // (millisecond precision, no randomness) collides on a double-click or rapid entry, so the
+  // second record silently overwrites the first (or the diff sees "no change" and never POSTs).
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  const rand = c?.randomUUID ? c.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${rand}`;
 }
+
+// The address option lists (BARANGAYS/CITIES/PROVINCES) are Mabalacat/Pampanga defaults.
+// Prepend the PARISH's own configured location so a parish outside that region can still
+// pick (and defaults to) its real barangay/city/province instead of being locked to Pampanga.
+function withParishLocation(list: readonly string[], parishValue: string | undefined): string[] {
+  const v = (parishValue || '').trim();
+  return v && !list.includes(v) ? [v, ...list] : [...list];
+}
+const parishBarangays = () => withParishLocation(BARANGAYS, getParishConfig().addressBarangay);
+const parishCities = () => withParishLocation(CITIES, getParishConfig().addressCity);
+const parishProvinces = () => withParishLocation(PROVINCES, getParishConfig().addressProvince);
 
 /* Officiant picker options: the active clergy full names (managed in Settings),
    which are exactly the strings the ICS schedule export matches on. TOLERANT:
@@ -2627,6 +2645,15 @@ function PaymentSection({
                       className="h-9 w-full pl-8 pr-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
                     />
                   </div>
+                  {ceremonyFee > 0 && paymentInfo.amount !== ceremonyFee && (
+                    <p className="body-xs text-amber-600 dark:text-amber-300 mt-1 flex items-start gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                      <span>
+                        Entered amount ({currency}{(paymentInfo.amount || 0).toLocaleString()}) differs from the
+                        standard {sacramentLabel} fee of {currency}{ceremonyFee.toLocaleString()}.
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="label block text-warm-gray mb-1">Method</label>
@@ -2919,13 +2946,13 @@ function RecordModal({
     return {
       registryNumber: r?.registryNumber || '',
       childLastName: r?.childLastName || '', childFirstName: r?.childFirstName || '', childMiddleName: r?.childMiddleName || '',
-      dateOfBirth: r?.dateOfBirth || '', placeOfBirthCity: r?.placeOfBirthCity || 'Mabalacat', placeOfBirthProvince: r?.placeOfBirthProvince || 'Pampanga', gender: r?.gender || 'Male',
+      dateOfBirth: r?.dateOfBirth || '', placeOfBirthCity: r?.placeOfBirthCity || parishCities()[0], placeOfBirthProvince: r?.placeOfBirthProvince || parishProvinces()[0], gender: r?.gender || 'Male',
       fatherLastName: r?.fatherLastName || '', fatherFirstName: r?.fatherFirstName || '', fatherMiddleName: r?.fatherMiddleName || '', fatherParishionerId: r?.fatherParishionerId || '',
       motherLastName: r?.motherLastName || '', motherFirstName: r?.motherFirstName || '', motherMiddleName: r?.motherMiddleName || '', motherMaidenName: r?.motherMaidenName || '', motherParishionerId: r?.motherParishionerId || '',
       godfatherLastName: r?.godfatherLastName || '', godfatherFirstName: r?.godfatherFirstName || '', godfatherParishionerId: r?.godfatherParishionerId || '',
       godmotherLastName: r?.godmotherLastName || '', godmotherFirstName: r?.godmotherFirstName || '', godmotherParishionerId: r?.godmotherParishionerId || '',
       childParishionerId: r?.childParishionerId || '',
-      addressStreet: r?.addressStreet || '', addressBarangay: r?.addressBarangay || BARANGAYS[0], addressSitio: r?.addressSitio || '', addressCity: r?.addressCity || CITIES[0], addressProvince: r?.addressProvince || PROVINCES[0],
+      addressStreet: r?.addressStreet || '', addressBarangay: r?.addressBarangay || parishBarangays()[0], addressSitio: r?.addressSitio || '', addressCity: r?.addressCity || parishCities()[0], addressProvince: r?.addressProvince || parishProvinces()[0],
       dateOfBaptism: r?.dateOfBaptism || '', timeOfBaptism: r?.timeOfBaptism || '9:00 AM', officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
       requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || baptismLocations[0], calendarEventId: r?.calendarEventId || '',
@@ -3318,13 +3345,13 @@ function RecordModal({
         id: (record as BaptismRecord | null)?.id || genId('b'),
         registryNumber: bForm.registryNumber || `2024-${String(Math.floor(Math.random() * 9000) + 1000)}`,
         childLastName: bForm.childLastName!, childFirstName: bForm.childFirstName!, childMiddleName: bForm.childMiddleName || '',
-        dateOfBirth: bForm.dateOfBirth || '', placeOfBirthCity: bForm.placeOfBirthCity || 'Mabalacat', placeOfBirthProvince: bForm.placeOfBirthProvince || 'Pampanga', gender: bForm.gender || 'Male',
+        dateOfBirth: bForm.dateOfBirth || '', placeOfBirthCity: bForm.placeOfBirthCity || parishCities()[0], placeOfBirthProvince: bForm.placeOfBirthProvince || parishProvinces()[0], gender: bForm.gender || 'Male',
         fatherLastName: bForm.fatherLastName!, fatherFirstName: bForm.fatherFirstName!, fatherMiddleName: bForm.fatherMiddleName || '', fatherParishionerId: bForm.fatherParishionerId || undefined,
         motherLastName: bForm.motherLastName!, motherFirstName: bForm.motherFirstName!, motherMiddleName: bForm.motherMiddleName || '', motherMaidenName: bForm.motherMaidenName || '', motherParishionerId: bForm.motherParishionerId || undefined,
         godfatherLastName: bForm.godfatherLastName || '', godfatherFirstName: bForm.godfatherFirstName || '', godfatherParishionerId: bForm.godfatherParishionerId || undefined,
         godmotherLastName: bForm.godmotherLastName || '', godmotherFirstName: bForm.godmotherFirstName || '', godmotherParishionerId: bForm.godmotherParishionerId || undefined,
         childParishionerId: bForm.childParishionerId || undefined,
-        addressStreet: bForm.addressStreet || '', addressBarangay: bForm.addressBarangay || BARANGAYS[0], addressSitio: bForm.addressSitio || '', addressCity: bForm.addressCity || CITIES[0], addressProvince: bForm.addressProvince || PROVINCES[0],
+        addressStreet: bForm.addressStreet || '', addressBarangay: bForm.addressBarangay || parishBarangays()[0], addressSitio: bForm.addressSitio || '', addressCity: bForm.addressCity || parishCities()[0], addressProvince: bForm.addressProvince || parishProvinces()[0],
         dateOfBaptism: bForm.dateOfBaptism!, timeOfBaptism: bForm.timeOfBaptism || '9:00 AM', officiant: bForm.officiant!, bookNumber: Number(bForm.bookNumber) || 1, pageNumber: Number(bForm.pageNumber) || 1,
         notations: bForm.notations || '', status: (bForm.status as 'Active') || 'Active',
         lifecycleStatus: record ? recordStatus(record) : 'scheduled',
@@ -3547,11 +3574,11 @@ function RecordModal({
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="Place of Birth (City) *" as="select" value={bForm.placeOfBirthCity || ''} onChange={(v) => bUpdate('placeOfBirthCity', v)} error={bErrors.placeOfBirthCity} required>
                     <option value="">Select city...</option>
-                    {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {parishCities().map((c) => <option key={c} value={c}>{c}</option>)}
                   </Field>
                   <Field label="Place of Birth (Province) *" as="select" value={bForm.placeOfBirthProvince || ''} onChange={(v) => bUpdate('placeOfBirthProvince', v)} error={bErrors.placeOfBirthProvince} required>
                     <option value="">Select province...</option>
-                    {PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {parishProvinces().map((p) => <option key={p} value={p}>{p}</option>)}
                   </Field>
                 </div>
               </div>
@@ -3644,7 +3671,7 @@ function RecordModal({
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="Barangay *" as="select" value={bForm.addressBarangay || ''} onChange={(v) => { bUpdate('addressBarangay', v); bUpdate('addressSitio', ''); }} required>
-                    {BARANGAYS.map((b) => <option key={b} value={b}>{b}</option>)}
+                    {parishBarangays().map((b) => <option key={b} value={b}>{b}</option>)}
                   </Field>
                   <Field label="Sitio" as="select" value={bForm.addressSitio || ''} onChange={(v) => bUpdate('addressSitio', v)}>
                     <option value="">Select sitio...</option>
@@ -3653,10 +3680,10 @@ function RecordModal({
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="City *" as="select" value={bForm.addressCity || ''} onChange={(v) => bUpdate('addressCity', v)} required>
-                    {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {parishCities().map((c) => <option key={c} value={c}>{c}</option>)}
                   </Field>
                   <Field label="Province *" as="select" value={bForm.addressProvince || ''} onChange={(v) => bUpdate('addressProvince', v)} required>
-                    {PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {parishProvinces().map((p) => <option key={p} value={p}>{p}</option>)}
                   </Field>
                 </div>
               </div>

@@ -21,6 +21,21 @@ async function rpc<T = unknown>(name: string, params: Record<string, unknown>): 
 export const onboardNewAdmin = (diocese: string, parish: string) =>
   rpc<{ diocese_id: string; parish_id: string }>('onboard_new_admin', { p_diocese: diocese, p_parish: parish });
 
+/** Is the signed-in user already attached to a diocese/parish? true = onboarded,
+ *  false = still an un-onboarded shell (handle_new_user default), null = unknown/not signed in.
+ *  Used to finish onboarding after a confirm-email→sign-in delayed the diocese creation. */
+export async function isCurrentUserOnboarded(): Promise<boolean | null> {
+  try {
+    const s = await getSupabase();
+    const { data: sess } = await s.auth.getSession();
+    const uid = sess?.session?.user?.id;
+    if (!uid) return null;
+    const { data, error } = await s.from('profiles').select('diocese_id, parish_id').eq('id', uid).single();
+    if (error || !data) return null;
+    return data.diocese_id != null || data.parish_id != null;
+  } catch { return null; }
+}
+
 export const provisionParish = (name: string) =>
   rpc<string>('provision_parish', { p_name: name });
 

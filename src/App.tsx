@@ -6,7 +6,7 @@ import { hasSetupBeenCompleted } from '@/lib/store'
 import { setPersistedWriteErrorHandler } from '@/hooks/usePersistedState'
 import { setCorruptionHandler } from '@/lib/storageNamespaced'
 import { setDesktopWriteErrorHandler } from '@/lib/desktopStore'
-import { setCloudWriteErrorHandler, isCloud } from '@/lib/cloudStore'
+import { setCloudWriteErrorHandler, isCloud, retryPendingCloudWrites } from '@/lib/cloudStore'
 import { toast } from 'sonner'
 import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
@@ -102,9 +102,23 @@ function AppRoutes() {
         duration: 8000,
       });
     };
+    // Cloud writes are fire-and-forget, so a failed sync must be a VISIBLE, actionable
+    // state — not a transient toast that scrolls away leaving data only in this browser.
+    const warnCloud = () => {
+      toast.error('Not saved to the cloud — your changes are only on this device. Check your connection and retry.', {
+        id: 'cloud-write-error', duration: Infinity,
+        action: {
+          label: 'Retry',
+          onClick: () => { void retryPendingCloudWrites().then((ok) => {
+            if (ok) { toast.dismiss('cloud-write-error'); toast.success('All changes saved.'); }
+            else toast.error('Still not saved — kept safely on this device.');
+          }); },
+        },
+      });
+    };
     setPersistedWriteErrorHandler(warn);
     setDesktopWriteErrorHandler(warn);
-    setCloudWriteErrorHandler(warn);
+    setCloudWriteErrorHandler(warnCloud);
     setCorruptionHandler((key) => {
       toast.error(`Some saved data ("${key}") was unreadable and has been set aside (kept as a "${key}__corrupt" copy). Your other records are safe — restore from a backup in Settings if needed.`, {
         duration: 12000,

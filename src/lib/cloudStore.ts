@@ -155,6 +155,21 @@ let hydrationOk = false;
 // raise the "could not save" warning on every page's mount write-through.
 let noParishUser = false;
 
+// Per-table queue of writes that could NOT be persisted (hydration not faithful, or a
+// network/RLS/JWT error on the upsert). We keep the {arr,prev} snapshot so the write can
+// be retried, and — crucially — so a failed write is a VISIBLE, actionable state ("Not
+// saved — retry") instead of silently living only in this browser's cache.
+const failedWrites = new Map<string, { arr: Item[]; prev: Item[] }>();
+export function hasPendingCloudWrites(): boolean { return failedWrites.size > 0; }
+/** Re-attempt every write that previously failed. Returns true once the queue is empty.
+ *  Idempotent — safe to call from a "Retry" button (re-diffs the stored snapshot). */
+export async function retryPendingCloudWrites(): Promise<boolean> {
+  for (const [key, { arr, prev }] of [...failedWrites.entries()]) {
+    await reconcile(key, arr, prev);
+  }
+  return failedWrites.size === 0;
+}
+
 /** Load this parish's data from Supabase into the cache. Call once before render. */
 export async function hydrateCloudStore(): Promise<void> {
   if (!isCloud()) return;
@@ -279,6 +294,7 @@ async function reconcile(key: string, arr: Item[], prev: Item[]): Promise<void> 
   // the failure rather than destroy data. (Closes the data-loss bug: a failed hydrate
   // could otherwise reconcile [] and wipe the parish.)
   if (!hydrationOk || !parishId) {
+    failedWrites.set(key, { arr, prev });
     if (onWriteError) onWriteError();
     return;
   }
@@ -316,7 +332,9 @@ async function reconcile(key: string, arr: Item[], prev: Item[]): Promise<void> 
         if (res.error) throw res.error;
       }
     }
+    failedWrites.delete(key);   // this table is now fully persisted
   } catch {
+    failedWrites.set(key, { arr, prev });
     if (onWriteError) onWriteError();
   }
 }
