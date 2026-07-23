@@ -460,7 +460,7 @@ begin
   -- chain is structurally broken/forked at the root → nothing can be certified ok.
   select count(*) into v_genesis_count
   from public.fee_override_audit a
-  where a.parish_id = p_parish and (a.prev_hash is null or a.prev_hash = 'GENESIS');
+  where a.parish_id = p_parish and (a.prev_hash is null or upper(a.prev_hash) = 'GENESIS');
 
   return query
   with recursive chain as (
@@ -468,7 +468,7 @@ begin
            (a.hash = encode(hmac(public.audit_payload(a), k, 'sha256'), 'hex')) as hmac_ok
     from public.fee_override_audit a
     where a.parish_id = p_parish
-      and (a.prev_hash is null or a.prev_hash = 'GENESIS')
+      and (a.prev_hash is null or upper(a.prev_hash) = 'GENESIS')
       and v_genesis_count = 1
     union all
     select n.id, n.hash,
@@ -525,6 +525,12 @@ begin
     select coalesce(nullif(btrim(p.full_name), ''), auth.uid()::text)
       into v_actor from public.profiles p where p.id = auth.uid();
     new.recorded_by := coalesce(v_actor, auth.uid()::text);
+    -- Server-chain the linkage (BUG-AUDIT-CHAIN): the client can't know the server HMAC,
+    -- so prev_hash must be set to the real stored tip hash (or GENESIS), not the client's.
+    new.prev_hash := coalesce(
+      (select a.hash from public.fee_override_audit a
+        where a.parish_id = new.parish_id order by a.ts desc, a.id desc limit 1),
+      'GENESIS');
   end if;
   return new;
 end $$;
