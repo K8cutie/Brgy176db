@@ -31,7 +31,7 @@ import type { AuditLogEntry } from '@/lib/settingsData';
 import {
   getDonors, addDonor, getCampaigns, addCampaign, getPledges, addPledge,
   getContributions, recordContribution, donorPledgeProgress, summarizeCampaigns,
-  buildDonorStatement, recordFeeWaiver, getFeeOverrideChain, verifyFeeOverrideChain,
+  buildDonorStatement, recordFeeWaiver, getFeeOverrideChain, verifyFeeOverrideChain, serverVerifyFeeOverrideChain,
   isSelfApprovedWaiver, flagSelfApprovals, SELF_APPROVAL_FLAG_THRESHOLD,
 } from '@/lib/donors';
 import type { Donor, Campaign, Pledge, Contribution, ContributionMethod, PledgeFrequency, FeeOverrideChainEntry } from '@/lib/donors';
@@ -2872,8 +2872,22 @@ interface WaiverRow extends FeeOverrideChainEntry {
 function WaiversTab() {
   const [version, setVersion] = useState(0);
   const chain = useMemo(() => getFeeOverrideChain(), [version]);
-  const verdict = useMemo(() => verifyFeeOverrideChain(chain), [chain]);
+  const localVerdict = useMemo(() => verifyFeeOverrideChain(chain), [chain]);
   const flags = useMemo(() => flagSelfApprovals(chain), [chain]);
+
+  // AUTHORITATIVE verification: in cloud mode the local djb2 is forgeable (the client
+  // both writes and recomputes it), so trust the server verify_audit RPC (keyed HMAC +
+  // linkage walk) when it answers; fall back to the local advisory check otherwise.
+  const [serverVerdict, setServerVerdict] = useState<Awaited<ReturnType<typeof serverVerifyFeeOverrideChain>>>(null);
+  useEffect(() => {
+    let alive = true;
+    serverVerifyFeeOverrideChain().then((v) => { if (alive) setServerVerdict(v); });
+    return () => { alive = false; };
+  }, [version]);
+  const serverChecked = !!serverVerdict?.checked;
+  const verdict = serverChecked
+    ? { intact: serverVerdict!.allOk, brokenAt: serverVerdict!.allOk ? -1 : 0 }
+    : localVerdict;
   const flaggedApprovers = useMemo(() => new Set(flags.map((f) => f.by.toLowerCase())), [flags]);
 
   const [sacrament, setSacrament] = useState(WAIVER_SACRAMENTS[0]);
@@ -2882,27 +2896,40 @@ function WaiversTab() {
   const [waivedAmount, setWaivedAmount] = useState('');
   const [reason, setReason] = useState('');
   const [approvedBy, setApprovedBy] = useState('');
+  // Re-entrancy guard: the cloud write is fire-and-forget, so without this an impatient
+  // double-click records the SAME waiver twice into the append-only chain (each with a
+  // fresh random id, so nothing dedupes them). The ref timestamp is the reliable backstop
+  // for a double-click that lands before React disables the button.
+  const lastRecordAt = useRef(0);
+  const [recording, setRecording] = useState(false);
 
   const handleRecord = () => {
-    const res = recordFeeWaiver({
-      sacrament,
-      personName,
-      originalFee: parseFloat(originalFee),
-      waivedAmount: parseFloat(waivedAmount),
-      reason,
-      approvedBy,
-    });
-    if (!res.ok) {
-      toast.error(res.error);
-      return;
+    if (Date.now() - lastRecordAt.current < 1500) return;
+    lastRecordAt.current = Date.now();
+    setRecording(true);
+    try {
+      const res = recordFeeWaiver({
+        sacrament,
+        personName,
+        originalFee: parseFloat(originalFee),
+        waivedAmount: parseFloat(waivedAmount),
+        reason,
+        approvedBy,
+      });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success('Waiver recorded in the tamper-evident audit chain');
+      setPersonName('');
+      setOriginalFee('');
+      setWaivedAmount('');
+      setReason('');
+      setApprovedBy('');
+      setVersion((v) => v + 1);
+    } finally {
+      setRecording(false);
     }
-    toast.success('Waiver recorded in the tamper-evident audit chain');
-    setPersonName('');
-    setOriginalFee('');
-    setWaivedAmount('');
-    setReason('');
-    setApprovedBy('');
-    setVersion((v) => v + 1);
   };
 
   // Newest first for display; chainIndex keeps the verification position.
@@ -2986,10 +3013,14 @@ function WaiversTab() {
           <p className="text-sm font-medium">
             {verdict.intact
               ? `Audit chain intact — ${chain.length} entr${chain.length === 1 ? 'y' : 'ies'} verified`
-              : `Audit chain BROKEN at entry #${verdict.brokenAt + 1} — history was edited or deleted outside the app`}
+              : serverChecked
+                ? `Audit chain BROKEN — the server flagged ${serverVerdict!.failedClientIds.length} tampered or back-dated entr${serverVerdict!.failedClientIds.length === 1 ? 'y' : 'ies'}`
+                : `Audit chain BROKEN at entry #${verdict.brokenAt + 1} — history was edited or deleted outside the app`}
           </p>
           <p className="text-xs opacity-80">
-            Every waiver is hash-chained to the one before it (shared with the Registry fee-override trail), so silent edits are detectable.
+            {serverChecked
+              ? 'Verified on the server: each waiver carries a keyed HMAC (key never leaves the database) and is linked genesis-to-tip, so forged or back-dated entries are detectable.'
+              : 'Every waiver is hash-chained to the one before it (shared with the Registry fee-override trail), so silent edits are detectable.'}
           </p>
         </div>
       </div>
@@ -3042,7 +3073,7 @@ function WaiversTab() {
           </div>
         </div>
         <div className="flex justify-end mt-3">
-          <button onClick={handleRecord} className="cos-btn cos-btn-primary text-sm">Record Waiver</button>
+          <button onClick={handleRecord} disabled={recording} className="cos-btn cos-btn-primary text-sm disabled:opacity-50 disabled:pointer-events-none">Record Waiver</button>
         </div>
       </div>
 

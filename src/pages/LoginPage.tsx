@@ -14,7 +14,7 @@ import { getParishConfig } from '@/lib/parishConfig';
 import { setSession, desktopAuth } from '@/lib/session';
 import { isCloud } from '@/lib/cloudStore';
 import { cloudSignIn, cloudResetPassword, cloudSignUp } from '@/lib/cloudAuth';
-import { onboardNewAdmin } from '@/lib/onboarding';
+import { onboardNewAdmin, isCurrentUserOnboarded } from '@/lib/onboarding';
 
 /* ─── Role definitions ─── */
 interface Role {
@@ -147,6 +147,22 @@ const ERROR_TEXT: Record<string, string> = {
   not_authorized: 'You are not allowed to do that.',
 };
 
+// After a successful login, go to the app root. The WEB build uses BrowserRouter
+// (routing is by PATHNAME), so we must change the PATH — setting location.hash
+// leaves the pathname at /login and the app just re-renders the login page
+// (the "signed in but stuck on Welcome Back" bug). A full-document navigation
+// also re-runs main.tsx so reconcileSession()/hydrate pick up the new session.
+// Desktop (Electron, file://) uses HashRouter, where the hash IS the route.
+function goToAppRoot(): void {
+  const isDesktop = !!(window as unknown as { churchos?: { isDesktop?: boolean } }).churchos?.isDesktop;
+  if (isDesktop) {
+    window.location.hash = '/';
+    window.location.reload();
+  } else {
+    window.location.assign('/');
+  }
+}
+
 export default function LoginPage() {
   const config = useMemo(() => getParishConfig(), []);
   const auth = useMemo(() => desktopAuth(), []);
@@ -208,8 +224,7 @@ export default function LoginPage() {
 
   const finishLogin = (user: { username: string; role: string }) => {
     setSession({ username: user.username, role: user.role, roleLabel: roleLabel(user.role) });
-    window.location.hash = '/';
-    window.location.reload();
+    goToAppRoot();
   };
 
   /* ── Handle Sign In / Create admin ── */
@@ -226,31 +241,49 @@ export default function LoginPage() {
           // Create the account, sign in, then onboard the diocese + first parish.
           const su = await cloudSignUp(username.trim(), password, fullName.trim());
           if (!su.ok) { setAuthError(su.error || 'Could not create the account.'); setIsSubmitting(false); return; }
+          // Stash diocese + first-parish BEFORE sign-in so they survive email confirmation.
+          // If confirmation is ON there is no session yet, so onboarding completes on the
+          // NEXT sign-in (branch below) instead of being lost — previously it was stashed
+          // only AFTER onboarding, so the confirm-email path never created the tenant.
+          try { localStorage.setItem('churchos_onboarding_seed', JSON.stringify({ parishName: parishName.trim(), diocese: dioceseName.trim() })); } catch { /* ignore */ }
           const si = await cloudSignIn(username.trim(), password);
           if (!si.ok) {
-            // Email confirmation is on → no session yet. Finish after they confirm.
+            // Email confirmation is on → no session yet. Finish after they confirm + sign in.
             setNotice('Account created! Please confirm your email, then sign in to finish setting up your diocese.');
             setCloudSignup(false); setIsSubmitting(false); return;
           }
           const ob = await onboardNewAdmin(dioceseName.trim(), parishName.trim());
           if (!ob.ok) { setAuthError(ob.error || 'Could not set up your diocese.'); setIsSubmitting(false); return; }
-          window.location.hash = '/';
-          window.location.reload();
+          // Hand off to the AI-powered welcome step (snap-a-photo parish auto-fill).
+          window.location.assign('/welcome');
           return;
         }
         const res = await cloudSignIn(username.trim(), password);
         if (!res.ok) { setAuthError(res.error || 'Sign in failed.'); setIsSubmitting(false); return; }
-        // Supabase persists the session; reload → reconcileSession picks it up.
-        window.location.hash = '/';
-        window.location.reload();
+        // A diocese sign-up delayed by email confirmation finishes onboarding HERE: if the
+        // account is still an un-onboarded shell AND a stashed seed exists, create the
+        // diocese + parish now (else reconcileSession would land the admin parish-less).
+        try {
+          const seedRaw = localStorage.getItem('churchos_onboarding_seed');
+          if (seedRaw) {
+            const seed = JSON.parse(seedRaw) as { parishName?: string; diocese?: string };
+            if (seed.diocese?.trim() && seed.parishName?.trim() && (await isCurrentUserOnboarded()) === false) {
+              const ob = await onboardNewAdmin(seed.diocese.trim(), seed.parishName.trim());
+              if (!ob.ok) { setAuthError(ob.error || 'Could not set up your diocese.'); setIsSubmitting(false); return; }
+              window.location.assign('/welcome');
+              return;
+            }
+          }
+        } catch { /* fall through to a normal sign-in */ }
+        // Supabase persists the session; a full navigation re-runs reconcileSession.
+        goToAppRoot();
         return;
       }
       // Plain browser/demo build (no backend): keep the lightweight role entry.
       await new Promise((r) => setTimeout(r, 400));
       const role = roles.find((r) => r.id === selectedRole)!;
       setSession({ username: username.trim() || role.demoUsername, role: role.id, roleLabel: role.label });
-      window.location.hash = '/';
-      window.location.reload();
+      goToAppRoot();
       return;
     }
 

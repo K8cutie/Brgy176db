@@ -3,9 +3,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, Church, Clock, FileText, Users, ClipboardList,
   Upload, Image, Save, RotateCcw, Plus, Trash2, Edit, Copy,
-  X, Check, Search, Lock, Unlock, Printer,
+  X, Check, Search, Lock, Unlock, Sparkles,
   GripVertical, DollarSign, HelpCircle, Play, RotateCcw as ResetIcon,
-  Database, Download, FolderOpen, Puzzle, Globe,
+  Database, Download, FolderOpen, Puzzle, Globe, MapPin, Star, UserCheck,
 } from 'lucide-react';
 import DataTable, { type Column } from '@/components/DataTable';
 import PortalConfigSection from '@/components/PortalConfigSection';
@@ -27,20 +27,39 @@ import {
   daysOfWeek,
   massLanguages,
   massTypes,
-  defaultTemplates,
-  defaultBaptismHTML,
-  defaultTemplateCSS,
-  sampleData,
-  certificateTokens,
   defaultUsers,
   roleDescriptions,
   roleBadgeColors,
   auditLogData,
   actionBadgeColors,
 } from '@/lib/settingsData';
-import type { ParishInfo, MassTime, CertificateTemplate, User, AuditLogEntry } from '@/lib/settingsData';
+import type { ParishInfo, MassTime, User, AuditLogEntry } from '@/lib/settingsData';
+import {
+  loadCertificateTemplates,
+  saveCertificateTemplates,
+  type CertificateTemplate,
+  type CertificateSacrament,
+} from '@/lib/registryData';
+import { previewFill } from '@/lib/certificateDesign';
+import CertificateDesignEditor from '@/components/CertificateDesignEditor';
+import { toast } from 'sonner';
 import { getJSON, setJSON } from '@/lib/storageNamespaced';
 import { getCurrentUserName } from '@/lib/session';
+import {
+  getVenues,
+  addVenue,
+  updateVenue,
+  deleteVenue,
+  type Venue,
+} from '@/lib/venues';
+import {
+  getClergy,
+  addClergy,
+  updateClergy,
+  deleteClergy,
+  clergyFullName,
+  type Clergy,
+} from '@/lib/clergy';
 import {
   getModuleRegistry,
   setModuleEnabled,
@@ -50,30 +69,11 @@ import {
   getModulesSnapshot,
   type ChurchOSModule,
 } from '@/lib/moduleRegistry';
-import {
-  getAvailableTours,
-  getTourStatus,
-  resetTourProgress,
-  areAllToursDisabled,
-  setAllToursDisabled,
-  type TourConfig,
-} from '@/lib/tours';
-import type { Step } from 'react-joyride';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function cn(...classes: (string | false | undefined)[]) {
   return classes.filter(Boolean).join(' ');
-}
-
-function replaceTokens(html: string, css: string, data: Record<string, string>) {
-  let result = html;
-  Object.entries(data).forEach(([key, value]) => {
-    result = result.replace(new RegExp(`{{${key}}}`, 'g'), value);
-  });
-  // Also replace any remaining tokens with sample text
-  result = result.replace(/{{(\w+)}}/g, (_, key) => data[key] || `[${key}]`);
-  return `<style>${css}</style>${result}`;
 }
 
 function generateTempPassword() {
@@ -705,208 +705,163 @@ function FeeScheduleSection() {
 // ═════════════════════════════════════════════════════════════════
 
 function CertificateTemplatesSection() {
-  const [templates, setTemplates] = useState<CertificateTemplate[]>([...defaultTemplates]);
-  const [activeSubTab, setActiveSubTab] = useState<'manage' | 'edit'>('manage');
-  const [editingTemplate, setEditingTemplate] = useState<CertificateTemplate | null>(null);
-  const [editHtml, setEditHtml] = useState('');
-  const [editCss, setEditCss] = useState('');
-  const [codeTab, setCodeTab] = useState<'html' | 'css'>('html');
-  const [previewZoom, setPreviewZoom] = useState(75);
-  const [paperSize, setPaperSize] = useState<'A4' | 'Letter' | 'Legal'>('A4');
-  const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
-  const [editName, setEditName] = useState('');
+  // SINGLE SOURCE OF TRUTH: the exact templates the Registry uses to generate
+  // certificates (loadCertificateTemplates / saveCertificateTemplates in
+  // registryData). Editing here is the guided VISUAL editor — no HTML.
+  const [templates, setTemplates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates());
+  const [designEditor, setDesignEditor] = useState<{
+    template: CertificateTemplate | null;
+    sacrament: CertificateSacrament;
+  } | null>(null);
+  const [showCreatePicker, setShowCreatePicker] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const startEdit = (tmpl: CertificateTemplate) => {
-    setEditingTemplate(tmpl);
-    setEditHtml(tmpl.html);
-    setEditCss(tmpl.css);
-    setEditName(tmpl.name);
-    setActiveSubTab('edit');
-  };
+  const reload = () => setTemplates(loadCertificateTemplates());
 
-  const handleDuplicate = (tmpl: CertificateTemplate) => {
-    const dup: CertificateTemplate = {
-      ...tmpl,
-      id: `tmpl-${Date.now()}`,
-      name: `${tmpl.name} (Copy)`,
-      type: 'Custom',
-      isDefault: false,
-      lastModified: 'Just now',
-    };
-    setTemplates((prev) => [...prev, dup]);
+  const notify = (msg: string, type: 'success' | 'error' | 'warning' | 'info') => {
+    if (type === 'success') toast.success(msg);
+    else if (type === 'error') toast.error(msg);
+    else if (type === 'warning') toast.warning(msg);
+    else toast.info(msg);
   };
 
   const handleDelete = (id: string) => {
-    setTemplates((prev) => prev.filter((t) => t.id !== id));
+    const next = loadCertificateTemplates().filter((t) => t.id !== id);
+    const ok = saveCertificateTemplates(next);
+    if (ok) {
+      setTemplates(next);
+      toast.success('Template deleted');
+    } else {
+      toast.error('Could not delete — storage error');
+    }
     setShowDeleteConfirm(null);
   };
 
-  const handleSave = () => {
-    if (!editingTemplate) return;
-    setTemplates((prev) =>
-      prev.map((t) =>
-        t.id === editingTemplate.id
-          ? { ...t, name: editName, html: editHtml, css: editCss, lastModified: 'Just now' }
-          : t
-      )
+  const SACRAMENTS: { value: CertificateSacrament; label: string }[] = [
+    { value: 'baptism', label: 'Baptism' },
+    { value: 'marriage', label: 'Marriage' },
+    { value: 'confirmation', label: 'Confirmation' },
+    { value: 'death', label: 'Death / Funeral' },
+  ];
+  const sacramentLabel = (s: CertificateSacrament) => SACRAMENTS.find((x) => x.value === s)?.label ?? s;
+  const sacramentBadge = (s: CertificateSacrament) =>
+    cn(
+      'cos-badge text-xs',
+      s === 'baptism' && 'bg-forest-green/10 text-forest-green',
+      s === 'marriage' && 'bg-maroon/10 text-maroon',
+      s === 'confirmation' && 'bg-gold/10 text-gold',
+      s === 'death' && 'bg-warm-gray/15 text-warm-gray',
     );
-    setActiveSubTab('manage');
-    setEditingTemplate(null);
-  };
 
-  const handleSaveAs = () => {
-    const newTmpl: CertificateTemplate = {
-      id: `tmpl-${Date.now()}`,
-      name: `${editName} (Copy)`,
-      sacrament: editingTemplate?.sacrament || 'Baptism',
-      type: 'Custom',
-      isDefault: false,
-      lastModified: 'Just now',
-      html: editHtml,
-      css: editCss,
-    };
-    setTemplates((prev) => [...prev, newTmpl]);
-    setActiveSubTab('manage');
-    setEditingTemplate(null);
-  };
-
-  const insertToken = (token: string) => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const current = codeTab === 'html' ? editHtml : editCss;
-    const newValue = current.slice(0, start) + token + current.slice(end);
-    if (codeTab === 'html') setEditHtml(newValue);
-    else setEditCss(newValue);
-    setTimeout(() => {
-      ta.selectionStart = ta.selectionEnd = start + token.length;
-      ta.focus();
-    }, 0);
-  };
-
-  const previewHtml = useMemo(() => {
-    return replaceTokens(editHtml, editCss, sampleData);
-  }, [editHtml, editCss]);
-
-  const handleTestPrint = () => {
-    const w = window.open('', '_blank');
-    if (!w) return;
-    w.document.write(
-      `<!DOCTYPE html><html><head><title>${editName || 'Certificate'} — Test Print</title>` +
-      `<style>@page{size:${paperSize} ${orientation};margin:0}html,body{margin:0;padding:0}</style>` +
-      `</head><body onload="window.focus();window.print();">${previewHtml}</body></html>`
-    );
-    w.document.close();
-  };
-
-  const paperSizeMap = {
-    A4: { w: 210, h: 297 },
-    Letter: { w: 216, h: 279 },
-    Legal: { w: 216, h: 356 },
-  };
-
-  const paperDims = paperSizeMap[paperSize];
-  const previewW = orientation === 'portrait' ? paperDims.w : paperDims.h;
-  const previewH = orientation === 'portrait' ? paperDims.h : paperDims.w;
-
-  // ── Manage View ──
-  if (activeSubTab === 'manage') {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
           <h2 className="heading-lg text-charcoal dark:text-dm-text">Certificate Templates</h2>
+          <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-0.5 max-w-xl">
+            The same templates the Registry uses when generating certificates. Design them visually —
+            no HTML — and they stay in sync everywhere.
+          </p>
+        </div>
+        <div className="relative">
           <button
-            onClick={() => {
-              const newTmpl: CertificateTemplate = {
-                id: `tmpl-${Date.now()}`,
-                name: 'New Baptismal Template',
-                sacrament: 'Baptism',
-                type: 'Custom',
-                isDefault: false,
-                lastModified: 'Just now',
-                html: defaultBaptismHTML,
-                css: defaultTemplateCSS,
-              };
-              setTemplates((prev) => [...prev, newTmpl]);
-              startEdit(newTmpl);
-            }}
+            onClick={() => setShowCreatePicker((v) => !v)}
             className="cos-btn cos-btn-primary text-sm"
           >
-            <Plus className="w-4 h-4" /> Create New Template
+            <Plus className="w-4 h-4" /> Create Template
           </button>
+          <AnimatePresence>
+            {showCreatePicker && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="absolute top-full right-0 mt-2 w-52 bg-white dark:bg-dm-surface rounded-xl shadow-lg border border-parchment dark:border-dm-border z-30 py-1"
+              >
+                <p className="px-4 py-2 text-[11px] uppercase tracking-wide text-warm-gray dark:text-dm-text-muted">
+                  Choose a sacrament
+                </p>
+                {SACRAMENTS.map((s) => (
+                  <button
+                    key={s.value}
+                    onClick={() => {
+                      setShowCreatePicker(false);
+                      setDesignEditor({ template: null, sacrament: s.value });
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-sm text-charcoal hover:bg-cream-dark dark:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
+      </div>
 
+      {templates.length === 0 ? (
+        <div className="cos-card p-10 text-center text-warm-gray dark:text-dm-text-muted">
+          No templates yet. Click “Create Template” to design one.
+        </div>
+      ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {templates.map((tmpl, i) => (
             <motion.div
               key={tmpl.id}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
+              transition={{ delay: i * 0.04 }}
               className="cos-card cos-card-hover p-0 overflow-hidden"
             >
-              {/* Preview Thumbnail */}
+              {/* Preview thumbnail — sample-filled, so it looks like a real certificate */}
               <div className="h-[200px] bg-cream-dark/30 dark:bg-dm-surface-raised overflow-hidden relative border-b border-parchment/40 dark:border-dm-border">
                 <div
                   className="w-full h-full overflow-hidden"
-                  style={{ transform: 'scale(0.35)', transformOrigin: 'top left', width: '285%', height: '285%' }}
-                  dangerouslySetInnerHTML={{
-                    __html: replaceTokens(tmpl.html, tmpl.css, sampleData),
-                  }}
+                  style={{ transform: 'scale(0.32)', transformOrigin: 'top left', width: '312%', height: '312%' }}
+                  dangerouslySetInnerHTML={{ __html: previewFill(tmpl.html) }}
                 />
                 {tmpl.isDefault && (
                   <div className="absolute top-2 right-2 bg-gold text-white text-xs font-semibold px-2 py-0.5 rounded-full">
                     Default
                   </div>
                 )}
+                {tmpl.design && (
+                  <div className="absolute top-2 left-2 inline-flex items-center gap-1 bg-white/90 dark:bg-dm-surface/90 text-gold text-[10px] font-semibold px-2 py-0.5 rounded-full shadow-sm">
+                    <Sparkles className="w-3 h-3" /> Visual
+                  </div>
+                )}
               </div>
 
-              {/* Card Info */}
+              {/* Card info */}
               <div className="p-4">
                 <h3 className="heading-sm text-charcoal dark:text-dm-text mb-1">{tmpl.name}</h3>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={cn(
-                    'cos-badge text-xs',
-                    tmpl.sacrament === 'Baptism' && 'bg-forest-green/10 text-forest-green',
-                    tmpl.sacrament === 'Marriage' && 'bg-maroon/10 text-maroon',
-                    tmpl.sacrament === 'Confirmation' && 'bg-purple/10 text-purple',
-                  )}>
-                    {tmpl.sacrament}
-                  </span>
-                  <span className={cn(
-                    'cos-badge text-xs',
-                    tmpl.type === 'System' ? 'cos-badge-default' : 'cos-badge-info',
-                  )}>
-                    {tmpl.type}
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={sacramentBadge(tmpl.sacrament)}>{sacramentLabel(tmpl.sacrament)}</span>
+                  <span className={cn('cos-badge text-xs', tmpl.isSystem ? 'cos-badge-default' : 'cos-badge-info')}>
+                    {tmpl.isSystem ? 'System' : 'Custom'}
                   </span>
                 </div>
-                <p className="text-xs text-warm-gray mb-3">Modified: {tmpl.lastModified}</p>
 
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => startEdit(tmpl)}
+                    onClick={() => setDesignEditor({ template: tmpl, sacrament: tmpl.sacrament })}
                     className="flex-1 cos-btn cos-btn-primary text-xs py-1.5"
+                    title={
+                      tmpl.isSystem
+                        ? 'Opens as a starting point — saving creates an editable copy (the system template is never overwritten)'
+                        : 'Edit this template visually'
+                    }
                   >
                     <Edit className="w-3.5 h-3.5" /> Edit
                   </button>
                   <button
-                    onClick={() => handleDuplicate(tmpl)}
-                    className="cos-btn cos-btn-secondary text-xs py-1.5 px-2"
-                    title="Duplicate"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => tmpl.type === 'System' ? null : setShowDeleteConfirm(tmpl.id)}
-                    disabled={tmpl.type === 'System'}
-                    title={tmpl.type === 'System' ? 'System templates cannot be deleted' : 'Delete'}
+                    onClick={() => (tmpl.isSystem ? null : setShowDeleteConfirm(tmpl.id))}
+                    disabled={tmpl.isSystem}
+                    title={tmpl.isSystem ? 'System templates cannot be deleted' : 'Delete'}
                     className={cn(
                       'cos-btn text-xs py-1.5 px-2',
-                      tmpl.type === 'System'
+                      tmpl.isSystem
                         ? 'bg-warm-gray/10 text-warm-gray/40 cursor-not-allowed'
                         : 'bg-error/10 text-error hover:bg-error/20',
                     )}
@@ -918,186 +873,30 @@ function CertificateTemplatesSection() {
             </motion.div>
           ))}
         </div>
+      )}
 
-        <ConfirmationDialog
-          isOpen={!!showDeleteConfirm}
-          title="Delete Template"
-          message="Are you sure you want to delete this template? This action cannot be undone."
-          confirmLabel="Delete"
-          variant="danger"
-          onConfirm={() => showDeleteConfirm && handleDelete(showDeleteConfirm)}
-          onCancel={() => setShowDeleteConfirm(null)}
+      <ConfirmationDialog
+        isOpen={!!showDeleteConfirm}
+        title="Delete Template"
+        message="Delete this custom template? Certificates already issued are unaffected. This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => showDeleteConfirm && handleDelete(showDeleteConfirm)}
+        onCancel={() => setShowDeleteConfirm(null)}
+      />
+
+      {designEditor && (
+        <CertificateDesignEditor
+          template={designEditor.template}
+          sacrament={designEditor.sacrament}
+          onClose={() => setDesignEditor(null)}
+          onToast={notify}
+          onSaved={() => {
+            reload();
+            setDesignEditor(null);
+          }}
         />
-      </div>
-    );
-  }
-
-  // ── Editor View ──
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="heading-lg text-charcoal dark:text-dm-text">Template Editor</h2>
-        <button
-          onClick={() => { setActiveSubTab('manage'); setEditingTemplate(null); }}
-          className="cos-btn cos-btn-secondary text-sm"
-        >
-          <X className="w-4 h-4" /> Close Editor
-        </button>
-      </div>
-
-      {/* Split Pane Editor */}
-      <div className="cos-card p-0 overflow-hidden">
-        <div className="flex flex-col lg:flex-row" style={{ height: 'calc(100vh - 280px)', minHeight: '500px' }}>
-          {/* Left Pane: Code Editor (40%) */}
-          <div className="w-full lg:w-[40%] flex flex-col border-r border-parchment/40 dark:border-dm-border">
-            {/* Code Tabs */}
-            <div className="flex border-b border-parchment/40 dark:border-dm-border">
-              {(['html', 'css'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setCodeTab(tab)}
-                  className={cn(
-                    'px-4 py-2.5 text-sm font-medium border-b-2 transition-all',
-                    codeTab === tab
-                      ? 'border-gold text-gold'
-                      : 'border-transparent text-warm-gray hover:text-charcoal dark:hover:text-dm-text',
-                  )}
-                >
-                  {tab.toUpperCase()}
-                </button>
-              ))}
-            </div>
-
-            {/* Code Area */}
-            <div className="flex-1 overflow-auto bg-[#1E1E1E] relative">
-              <textarea
-                ref={textareaRef}
-                value={codeTab === 'html' ? editHtml : editCss}
-                onChange={(e) => codeTab === 'html' ? setEditHtml(e.target.value) : setEditCss(e.target.value)}
-                spellCheck={false}
-                className="w-full h-full p-4 font-mono text-[13px] leading-6 text-[#D4D4D4] bg-transparent resize-none focus:outline-none"
-                style={{ tabSize: 2 }}
-              />
-            </div>
-
-            {/* Token Insertion Panel */}
-            <div className="border-t border-parchment/40 dark:border-dm-border bg-cream-dark/30 dark:bg-dm-surface-raised p-3 max-h-[160px] overflow-y-auto">
-              <p className="text-xs text-warm-gray mb-2 font-medium">Insert Token</p>
-              <div className="space-y-2">
-                {Object.entries(certificateTokens).map(([category, tokens]) => (
-                  <div key={category}>
-                    <span className="text-[10px] uppercase tracking-wider text-warm-gray/70">{category}</span>
-                    <div className="flex flex-wrap gap-1 mt-0.5">
-                      {tokens.map((token) => (
-                        <button
-                          key={token}
-                          onClick={() => insertToken(token)}
-                          className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-white dark:bg-dm-surface border border-parchment dark:border-dm-border text-gold hover:bg-gold/10 transition-colors"
-                        >
-                          {token}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Right Pane: Live Preview (60%) */}
-          <div className="w-full lg:w-[60%] flex flex-col bg-cream-dark/30 dark:bg-dm-bg">
-            {/* Preview Toolbar */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-parchment/40 dark:border-dm-border bg-white dark:bg-dm-surface">
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-warm-gray font-medium">Zoom:</span>
-                {[50, 75, 100, 125, 150].map((z) => (
-                  <button
-                    key={z}
-                    onClick={() => setPreviewZoom(z)}
-                    className={cn(
-                      'text-xs px-2 py-0.5 rounded transition-colors',
-                      previewZoom === z ? 'bg-gold text-white' : 'text-warm-gray hover:bg-cream-dark dark:hover:bg-dm-surface-raised',
-                    )}
-                  >
-                    {z}%
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                {(['A4', 'Letter', 'Legal'] as const).map((size) => (
-                  <button
-                    key={size}
-                    onClick={() => setPaperSize(size)}
-                    className={cn(
-                      'text-xs px-2 py-0.5 rounded transition-colors',
-                      paperSize === size ? 'bg-gold text-white' : 'text-warm-gray hover:bg-cream-dark dark:hover:bg-dm-surface-raised',
-                    )}
-                  >
-                    {size}
-                  </button>
-                ))}
-                <div className="w-px h-4 bg-parchment dark:bg-dm-border mx-1" />
-                {(['portrait', 'landscape'] as const).map((ori) => (
-                  <button
-                    key={ori}
-                    onClick={() => setOrientation(ori)}
-                    className={cn(
-                      'text-xs px-2 py-0.5 rounded transition-colors capitalize',
-                      orientation === ori ? 'bg-gold text-white' : 'text-warm-gray hover:bg-cream-dark dark:hover:bg-dm-surface-raised',
-                    )}
-                  >
-                    {ori}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Preview Frame */}
-            <div className="flex-1 overflow-auto flex items-start justify-center p-6">
-              <div
-                className="bg-white shadow-lg border border-parchment/60 origin-top"
-                style={{
-                  width: `${previewW}mm`,
-                  height: `${previewH}mm`,
-                  transform: `scale(${previewZoom / 100})`,
-                  transformOrigin: 'top center',
-                  minWidth: `${previewW}mm`,
-                  minHeight: `${previewH}mm`,
-                }}
-              >
-                <div
-                  className="w-full h-full"
-                  dangerouslySetInnerHTML={{ __html: previewHtml }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom Bar */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-parchment/40 dark:border-dm-border bg-white dark:bg-dm-surface">
-          <input
-            type="text"
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            className="h-9 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold w-64 dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
-          />
-          <div className="flex items-center gap-2">
-            <button onClick={() => { setActiveSubTab('manage'); setEditingTemplate(null); }} className="cos-btn cos-btn-secondary text-sm">
-              Cancel
-            </button>
-            <button onClick={handleSaveAs} className="cos-btn cos-btn-secondary text-sm">
-              Save As
-            </button>
-            <button onClick={handleSave} className="cos-btn cos-btn-primary text-sm">
-              <Save className="w-4 h-4" /> Save
-            </button>
-            <button onClick={handleTestPrint} className="cos-btn text-sm bg-deep-navy text-white hover:bg-deep-navy-light">
-              <Printer className="w-4 h-4" /> Test Print
-            </button>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1747,189 +1546,6 @@ function AuditLogSection() {
 }
 
 
-// ═════════════════════════════════════════════════════════════════
-//  SECTION 7: GUIDED TOURS
-// ═════════════════════════════════════════════════════════════════
-
-function GuidedToursSection() {
-  const [toursDisabled, setToursDisabled] = useState(() => areAllToursDisabled());
-  const [resetting, setResetting] = useState(false);
-
-  // Get current user's role from parish config
-  const userRole = 'Secretary'; // Default; in a real app this comes from auth context
-  const availableTours = getAvailableTours(userRole);
-
-  const handleToggleTours = () => {
-    const newValue = !toursDisabled;
-    setAllToursDisabled(newValue);
-    setToursDisabled(newValue);
-  };
-
-  const handleResetAll = () => {
-    resetTourProgress();
-    setResetting(true);
-    setTimeout(() => setResetting(false), 2000);
-  };
-
-  const handleStartTour = (tour: TourConfig) => {
-    // Start the tour via the global handler set up in App.tsx.
-    // App.tsx defines it as (steps, id) — pass in that order.
-    const startFn = (window as unknown as Record<string, unknown>).__startChurchOSTour;
-    if (typeof startFn === 'function') {
-      (startFn as (steps: Step[], id: string) => void)(tour.steps, tour.id);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="heading-lg text-charcoal dark:text-dm-text">Guided Tours</h2>
-      </div>
-
-      {/* Description Card */}
-      <div className="cos-card bg-gold-glow/50 border border-gold/20">
-        <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-lg bg-gold/20 flex items-center justify-center shrink-0">
-            <HelpCircle className="w-5 h-5 text-gold" />
-          </div>
-          <div>
-            <h3 className="heading-sm text-charcoal dark:text-dm-text mb-1">
-              Interactive Step-by-Step Guides
-            </h3>
-            <p className="body-sm text-warm-gray dark:text-dm-text-muted leading-relaxed">
-              These friendly walkthroughs help new staff members learn the system at their own pace.
-              Think of them like having a patient colleague sitting right beside you. Perfect for
-              anyone who\u2019s feeling a bit nervous about using new technology!
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Master Toggle */}
-      <div className="cos-card">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-success/10 flex items-center justify-center">
-              <Settings className="w-4 h-4 text-success" />
-            </div>
-            <div>
-              <h3 className="font-medium text-charcoal dark:text-dm-text">Enable Guided Tours</h3>
-              <p className="body-sm text-warm-gray">
-                {toursDisabled
-                  ? 'Tours are turned off. New staff won\u2019t see walkthroughs.'
-                  : 'Tours are on. Staff will see walkthroughs for new features.'}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={handleToggleTours}
-            className={cn(
-              'relative w-14 h-7 rounded-full transition-colors duration-200',
-              toursDisabled ? 'bg-warm-gray/30' : 'bg-gold'
-            )}
-            role="switch"
-            aria-checked={!toursDisabled}
-          >
-            <span
-              className={cn(
-                'absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white shadow-sm transition-transform duration-200',
-                toursDisabled ? 'translate-x-0' : 'translate-x-7'
-              )}
-            />
-          </button>
-        </div>
-      </div>
-
-      {/* Restart All Tours */}
-      <div className="cos-card">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-info/10 flex items-center justify-center">
-              <ResetIcon className="w-4 h-4 text-info" />
-            </div>
-            <div>
-              <h3 className="font-medium text-charcoal dark:text-dm-text">Restart All Tours</h3>
-              <p className="body-sm text-warm-gray">
-                Reset all tour progress. Every tour will show again as if it\u2019s the first time.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={handleResetAll}
-            className="cos-btn cos-btn-secondary text-sm"
-          >
-            {resetting ? (
-              <>
-                <Check className="w-4 h-4" /> Reset Done
-              </>
-            ) : (
-              <>
-                <ResetIcon className="w-4 h-4" /> Reset All
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Available Tours List */}
-      <h3 className="heading-sm text-charcoal dark:text-dm-text pt-2">Available Tours</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {availableTours.map((tour) => {
-          const status = getTourStatus(tour.id);
-          const isCompleted = status.completed;
-          const isSkipped = status.skipped;
-
-          return (
-            <motion.div
-              key={tour.id}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25 }}
-              className="cos-card cos-card-hover"
-            >
-              <div className="flex items-start justify-between mb-3">
-                <h4 className="font-semibold text-charcoal dark:text-dm-text text-sm">
-                  {tour.title}
-                </h4>
-                {isCompleted && (
-                  <span className="cos-badge cos-badge-success text-[10px]">Completed</span>
-                )}
-                {isSkipped && (
-                  <span className="cos-badge cos-badge-default text-[10px]">Skipped</span>
-                )}
-                {!isCompleted && !isSkipped && (
-                  <span className="cos-badge cos-badge-info text-[10px]">New</span>
-                )}
-              </div>
-              <p className="body-sm text-warm-gray dark:text-dm-text-muted mb-4 leading-relaxed">
-                {tour.description}
-              </p>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-warm-gray/70">
-                  {tour.steps.length} steps &middot; For: {tour.targetRoles.join(', ')}
-                </span>
-                <button
-                  onClick={() => handleStartTour(tour)}
-                  disabled={toursDisabled}
-                  className={cn(
-                    'cos-btn text-sm flex items-center gap-1.5',
-                    toursDisabled
-                      ? 'bg-warm-gray/20 text-warm-gray/50 cursor-not-allowed'
-                      : 'cos-btn-primary'
-                  )}
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {isCompleted ? 'Retake Tour' : 'Take Tour'}
-                </button>
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ═════════════════════════════════════════════════════════════════
 //  SECTION 8: MODULES
@@ -2317,20 +1933,472 @@ function BackupSection() {
   );
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  SECTION: VENUES
+// ═════════════════════════════════════════════════════════════════
+
+function VenuesSection() {
+  const [venues, setVenues] = useState<Venue[]>(getVenues);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState<Venue | null>(null);
+  const [form, setForm] = useState<{ name: string; capacity: string; location: string }>({
+    name: '',
+    capacity: '',
+    location: '',
+  });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<Venue | null>(null);
+
+  const refresh = () => setVenues(getVenues());
+
+  const openAdd = () => {
+    setEditing(null);
+    setForm({ name: '', capacity: '', location: '' });
+    setShowModal(true);
+  };
+
+  const openEdit = (venue: Venue) => {
+    setEditing(venue);
+    setForm({
+      name: venue.name,
+      capacity: venue.capacity ? String(venue.capacity) : '',
+      location: venue.location,
+    });
+    setShowModal(true);
+  };
+
+  const save = () => {
+    const name = form.name.trim();
+    if (!name) return;
+    const capacity = Math.max(0, parseInt(form.capacity, 10) || 0);
+    const location = form.location.trim();
+    if (editing) {
+      updateVenue(editing.id, { name, capacity, location });
+    } else {
+      addVenue({ name, capacity, location, active: true });
+    }
+    refresh();
+    setShowModal(false);
+    setEditing(null);
+  };
+
+  const confirmDelete = () => {
+    if (showDeleteConfirm) {
+      deleteVenue(showDeleteConfirm.id);
+      refresh();
+    }
+    setShowDeleteConfirm(null);
+  };
+
+  const makeDefault = (venue: Venue) => {
+    updateVenue(venue.id, { isDefault: true });
+    refresh();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="heading-lg text-charcoal dark:text-dm-text">Venues</h2>
+          <p className="body-sm text-warm-gray mt-0.5">
+            Bookable spaces for your parish. Ceremonies scheduled in the same venue at overlapping times are flagged as conflicts.
+          </p>
+        </div>
+        <button onClick={openAdd} className="cos-btn cos-btn-primary text-sm">
+          <Plus className="w-4 h-4" /> Add Venue
+        </button>
+      </div>
+
+      <div className="cos-card p-0 overflow-hidden">
+        <div className="divide-y divide-parchment/30 dark:divide-dm-border">
+          {venues.map((venue) => (
+            <div key={venue.id} className="flex items-center justify-between px-5 py-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center flex-shrink-0">
+                  <MapPin className="w-5 h-5 text-gold" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-charcoal dark:text-dm-text truncate">{venue.name}</span>
+                    {venue.isDefault && (
+                      <span className="cos-badge cos-badge-warning text-xs flex items-center gap-1">
+                        <Star className="w-3 h-3" /> Default
+                      </span>
+                    )}
+                    {!venue.active && (
+                      <span className="cos-badge cos-badge-default text-xs">Inactive</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5 text-xs text-warm-gray">
+                    <span>Seats {venue.capacity > 0 ? venue.capacity : '—'}</span>
+                    {venue.location && <span className="truncate">{venue.location}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                {!venue.isDefault && (
+                  <button
+                    onClick={() => makeDefault(venue)}
+                    className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-gold/10 transition-all"
+                    title="Set as default venue"
+                  >
+                    <Star className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  onClick={() => openEdit(venue)}
+                  className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-gold/10 transition-all"
+                  title="Edit"
+                >
+                  <Edit className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(venue)}
+                  disabled={venues.length <= 1}
+                  title={venues.length <= 1 ? 'A parish must keep at least one venue' : 'Delete'}
+                  className={cn(
+                    'p-1.5 rounded-md transition-all',
+                    venues.length <= 1
+                      ? 'text-warm-gray/40 cursor-not-allowed'
+                      : 'text-warm-gray hover:text-error hover:bg-error/10',
+                  )}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Add/Edit Venue Modal */}
+      <AnimatePresence>
+        {showModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+            onClick={() => setShowModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+              className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[520px] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
+                <h2 className="heading-md text-charcoal dark:text-dm-text">
+                  {editing ? 'Edit Venue' : 'Add Venue'}
+                </h2>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:hover:bg-dm-surface-raised"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                <div>
+                  <label className="label text-warm-gray block mb-1.5">Venue Name *</label>
+                  <input
+                    type="text"
+                    value={form.name}
+                    onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                    className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    placeholder="e.g. Main Church, Parish Hall"
+                    autoFocus
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="label text-warm-gray block mb-1.5">Capacity (seats)</label>
+                    <input
+                      type="number"
+                      value={form.capacity}
+                      onChange={(e) => setForm((p) => ({ ...p, capacity: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                      placeholder="0 = unspecified"
+                      min={0}
+                      step={1}
+                    />
+                    <p className="text-xs text-warm-gray mt-1">Leave 0 if there is no fixed seating limit.</p>
+                  </div>
+                  <div>
+                    <label className="label text-warm-gray block mb-1.5">Location</label>
+                    <input
+                      type="text"
+                      value={form.location}
+                      onChange={(e) => setForm((p) => ({ ...p, location: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                      placeholder="e.g. 2nd floor, Ground level"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-parchment dark:border-dm-border">
+                <button onClick={() => setShowModal(false)} className="cos-btn cos-btn-secondary text-sm">
+                  Cancel
+                </button>
+                <button
+                  onClick={save}
+                  disabled={!form.name.trim()}
+                  className={cn(
+                    'cos-btn text-sm text-white flex items-center gap-2',
+                    form.name.trim() ? 'cos-btn-primary' : 'bg-warm-gray/30 cursor-not-allowed',
+                  )}
+                >
+                  <Save className="w-4 h-4" /> {editing ? 'Save Changes' : 'Add Venue'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <ConfirmationDialog
+        isOpen={!!showDeleteConfirm}
+        title="Delete Venue"
+        message={`Delete "${showDeleteConfirm?.name}"? Existing bookings keep their recorded venue, but it will no longer be selectable.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(null)}
+      />
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  SECTION: CLERGY
+// ═════════════════════════════════════════════════════════════════
+
+function ClergySection() {
+  const [clergy, setClergy] = useState<Clergy[]>(getClergy);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState<Clergy | null>(null);
+  const [form, setForm] = useState<{ title: string; name: string; active: boolean }>({
+    title: 'Fr.',
+    name: '',
+    active: true,
+  });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<Clergy | null>(null);
+
+  const refresh = () => setClergy(getClergy());
+
+  const openAdd = () => {
+    setEditing(null);
+    setForm({ title: 'Fr.', name: '', active: true });
+    setShowModal(true);
+  };
+
+  const openEdit = (person: Clergy) => {
+    setEditing(person);
+    setForm({ title: person.title, name: person.name, active: person.active });
+    setShowModal(true);
+  };
+
+  const save = () => {
+    const name = form.name.trim();
+    if (!name) return;
+    const title = form.title.trim() || 'Fr.';
+    if (editing) {
+      updateClergy(editing.id, { title, name, active: form.active });
+    } else {
+      addClergy({ title, name, active: form.active });
+    }
+    refresh();
+    setShowModal(false);
+    setEditing(null);
+  };
+
+  const confirmDelete = () => {
+    if (showDeleteConfirm) {
+      deleteClergy(showDeleteConfirm.id);
+      refresh();
+    }
+    setShowDeleteConfirm(null);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="heading-lg text-charcoal dark:text-dm-text">Clergy</h2>
+          <p className="body-sm text-warm-gray mt-0.5">
+            The parish's priests and deacons. This list feeds the officiant picker on ceremonies and the per-priest schedule export.
+          </p>
+        </div>
+        <button onClick={openAdd} className="cos-btn cos-btn-primary text-sm">
+          <Plus className="w-4 h-4" /> Add Clergy
+        </button>
+      </div>
+
+      <div className="cos-card p-0 overflow-hidden">
+        <div className="divide-y divide-parchment/30 dark:divide-dm-border">
+          {clergy.map((person) => (
+            <div key={person.id} className="flex items-center justify-between px-5 py-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center flex-shrink-0">
+                  <UserCheck className="w-5 h-5 text-gold" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-charcoal dark:text-dm-text truncate">{clergyFullName(person)}</span>
+                    {!person.active && (
+                      <span className="cos-badge cos-badge-default text-xs">Inactive</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <button
+                  onClick={() => openEdit(person)}
+                  className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-gold/10 transition-all"
+                  title="Edit"
+                >
+                  <Edit className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(person)}
+                  disabled={clergy.length <= 1}
+                  title={clergy.length <= 1 ? 'A parish must keep at least one clergy member' : 'Delete'}
+                  className={cn(
+                    'p-1.5 rounded-md transition-all',
+                    clergy.length <= 1
+                      ? 'text-warm-gray/40 cursor-not-allowed'
+                      : 'text-warm-gray hover:text-error hover:bg-error/10',
+                  )}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Add/Edit Clergy Modal */}
+      <AnimatePresence>
+        {showModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-overlay modal-overlay flex items-center justify-center p-4"
+            onClick={() => setShowModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              transition={{ duration: 0.25, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] }}
+              className="bg-white dark:bg-dm-surface rounded-xl shadow-modal w-full max-w-[520px] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
+                <h2 className="heading-md text-charcoal dark:text-dm-text">
+                  {editing ? 'Edit Clergy' : 'Add Clergy'}
+                </h2>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="p-1.5 rounded-lg text-warm-gray hover:text-charcoal hover:bg-cream-dark transition-all dark:hover:bg-dm-surface-raised"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="label text-warm-gray block mb-1.5">Title</label>
+                    <select
+                      value={form.title}
+                      onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                    >
+                      {['Fr.', 'Msgr.', 'Rev.', 'Bp.', 'Deacon'].map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="label text-warm-gray block mb-1.5">Name *</label>
+                    <input
+                      type="text"
+                      value={form.name}
+                      onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                      className="w-full h-10 px-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
+                      placeholder="e.g. Antonio Reyes"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.active}
+                    onChange={(e) => setForm((p) => ({ ...p, active: e.target.checked }))}
+                    className="accent-gold w-4 h-4"
+                  />
+                  <span className="text-sm text-charcoal dark:text-dm-text">Active</span>
+                  <span className="text-xs text-warm-gray">Only active clergy appear in the officiant picker.</span>
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-parchment dark:border-dm-border">
+                <button onClick={() => setShowModal(false)} className="cos-btn cos-btn-secondary text-sm">
+                  Cancel
+                </button>
+                <button
+                  onClick={save}
+                  disabled={!form.name.trim()}
+                  className={cn(
+                    'cos-btn text-sm text-white flex items-center gap-2',
+                    form.name.trim() ? 'cos-btn-primary' : 'bg-warm-gray/30 cursor-not-allowed',
+                  )}
+                >
+                  <Save className="w-4 h-4" /> {editing ? 'Save Changes' : 'Add Clergy'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <ConfirmationDialog
+        isOpen={!!showDeleteConfirm}
+        title="Delete Clergy"
+        message={`Remove "${showDeleteConfirm ? clergyFullName(showDeleteConfirm) : ''}" from the clergy list? Existing records keep their recorded officiant, but this person will no longer be selectable.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(null)}
+      />
+    </div>
+  );
+}
+
 const settingsNavItems = [
   { id: 'parish', label: 'Parish Info', icon: Church },
   { id: 'mass', label: 'Mass Schedule', icon: Clock },
   { id: 'fees', label: 'Fee Schedule', icon: DollarSign },
+  { id: 'venues', label: 'Venues', icon: MapPin },
+  { id: 'clergy', label: 'Clergy', icon: UserCheck },
   { id: 'templates', label: 'Certificate Templates', icon: FileText },
   { id: 'portal', label: 'Public Portal', icon: Globe },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'modules', label: 'Modules', icon: Puzzle },
   { id: 'data', label: 'Backup', icon: Database },
   { id: 'audit', label: 'Audit Log', icon: ClipboardList },
-  { id: 'tours', label: 'Guided Tours', icon: HelpCircle },
 ];
 
-type SettingsTab = 'parish' | 'mass' | 'fees' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit' | 'tours';
+type SettingsTab = 'parish' | 'mass' | 'fees' | 'venues' | 'clergy' | 'templates' | 'portal' | 'users' | 'modules' | 'data' | 'audit';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('parish');
@@ -2389,6 +2457,10 @@ export default function SettingsPage() {
         return <MassScheduleSection />;
       case 'fees':
         return <FeeScheduleSection />;
+      case 'venues':
+        return <VenuesSection />;
+      case 'clergy':
+        return <ClergySection />;
       case 'templates':
         return <CertificateTemplatesSection />;
       case 'portal':
@@ -2401,8 +2473,6 @@ export default function SettingsPage() {
         return <BackupSection />;
       case 'audit':
         return <AuditLogSection />;
-      case 'tours':
-        return <GuidedToursSection />;
       default:
         return null;
     }
@@ -2432,7 +2502,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">General</span>
             </div>
-            {settingsNavItems.slice(0, 3).map((item) => (
+            {settingsNavItems.slice(0, 5).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2455,7 +2525,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Sacraments &amp; Online</span>
             </div>
-            {settingsNavItems.slice(3, 5).map((item) => (
+            {settingsNavItems.slice(5, 7).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}
@@ -2478,7 +2548,7 @@ export default function SettingsPage() {
             <div className="px-3 py-1.5">
               <span className="label text-warm-gray/60">Administration</span>
             </div>
-            {settingsNavItems.slice(5).map((item) => (
+            {settingsNavItems.slice(7).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id as SettingsTab)}

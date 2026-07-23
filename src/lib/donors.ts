@@ -203,6 +203,13 @@ export function addPledge(input: Omit<Pledge, 'id'>): Pledge | null {
 // series regressed, bump lastNumber past the highest number already issued
 // before recording new contributions.
 export interface OrSeries {
+  /**
+   * Stable per-(prefix,year) id — one series per year, so `${prefix}-${year}`.
+   * Present so each series round-trips through the cloud storage seam, whose
+   * write-through keys every row on the item's `id` (client_id). Without it a
+   * cloud upsert would send a null client_id and the whole series write fails.
+   */
+  id: string;
   prefix: string;
   year: number;
   lastNumber: number;
@@ -210,10 +217,18 @@ export interface OrSeries {
 
 export const OR_PREFIX = 'OR';
 
+/** Deterministic series id — one series per (prefix, year). */
+function orSeriesId(prefix: string, year: number): string {
+  return `${prefix}-${year}`;
+}
+
 export function getOrSeriesList(): OrSeries[] {
   const list = getJSON<OrSeries[]>(KEYS.orSeries, []);
   return Array.isArray(list)
-    ? list.filter((s) => s && typeof s.year === 'number' && typeof s.lastNumber === 'number')
+    ? list
+        .filter((s) => s && typeof s.year === 'number' && typeof s.lastNumber === 'number')
+        // Backfill id for any legacy series persisted before it existed.
+        .map((s) => ({ ...s, id: s.id ?? orSeriesId(s.prefix ?? OR_PREFIX, s.year) }))
     : [];
 }
 
@@ -228,10 +243,10 @@ export function issueOrNumber(now: Date = new Date()): string {
   const idx = list.findIndex((s) => s.prefix === OR_PREFIX && s.year === year);
   let series: OrSeries;
   if (idx === -1) {
-    series = { prefix: OR_PREFIX, year, lastNumber: 1 };
+    series = { id: orSeriesId(OR_PREFIX, year), prefix: OR_PREFIX, year, lastNumber: 1 };
     list.push(series);
   } else {
-    series = { ...list[idx], lastNumber: list[idx].lastNumber + 1 };
+    series = { ...list[idx], id: list[idx].id ?? orSeriesId(OR_PREFIX, year), lastNumber: list[idx].lastNumber + 1 };
     list[idx] = series;
   }
   setJSON(KEYS.orSeries, list);
@@ -522,6 +537,43 @@ export function verifyFeeOverrideChain(
     prevHash = hash;
   }
   return { intact: true, brokenAt: -1 };
+}
+
+export interface ServerAuditVerdict {
+  /** true only when the server RPC actually ran and returned a result to judge. */
+  checked: boolean;
+  /** true when every row the server holds validates against its HMAC + linkage. */
+  allOk: boolean;
+  /** client_ids the server flagged as tampered / back-dated / injected (ok = false). */
+  failedClientIds: string[];
+}
+
+/**
+ * Authoritative, server-side verification of the waiver chain (cloud mode only).
+ * The in-app {@link verifyFeeOverrideChain} recomputes an UNKEYED djb2 that the
+ * client both writes and verifies — so anyone who can write the store can forge a
+ * self-consistent chain and the local check still says "intact". This instead calls
+ * the verify_audit RPC, which recomputes each row's KEYED HMAC (key never leaves the
+ * DB) and walks genesis→tip linkage server-side. Returns null off cloud mode or on
+ * any error, so callers fall back to the local advisory check.
+ */
+export async function serverVerifyFeeOverrideChain(): Promise<ServerAuditVerdict | null> {
+  try {
+    const { isCloud } = await import('./cloudStore');
+    if (!isCloud()) return null;
+    const { getSupabase } = await import('./supabaseClient');
+    const supa = await getSupabase();
+    // No argument: the RPC derives scope from the caller's own parish (auth_parish_id).
+    const { data, error } = await (supa as unknown as {
+      rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>;
+    }).rpc('verify_audit', {});
+    if (error || !Array.isArray(data)) return null;
+    const rows = data as Array<{ client_id?: unknown; ok?: unknown }>;
+    const failedClientIds = rows.filter((r) => r && r.ok === false).map((r) => String(r.client_id));
+    return { checked: true, allOk: failedClientIds.length === 0, failedClientIds };
+  } catch {
+    return null;
+  }
 }
 
 export interface FeeWaiverInput {

@@ -2,11 +2,13 @@
 // Hardcoded sample data for all four sacrament types — with structured name fields
 
 import { getJSON, setJSON } from './storageNamespaced';
+import { KEYS } from './storageKeys';
 import { getCurrentUserName } from './session';
 import { getParishName, getFullAddress, getPriestName } from './parishConfig';
 import type { AuditLogEntry } from './settingsData';
 import { validateSchedulingRules, eventTypeToRuleKey, type CalendarEvent } from './calendarData';
 import { todayISO } from './massIntentions';
+import { designToHtml, type CertificateDesign } from './certificateDesign';
 
 /* ═══════════════════════════════════════════════════════════════════
    TYPES
@@ -27,6 +29,26 @@ export interface RegistryAnnotation {
   voided?: boolean;
 }
 
+// A scanned original form (or other source document) attached to a record as
+// its provenance/evidence — the digital paper trail. The image bytes live in
+// the private per-parish `form-scans` Supabase Storage bucket; the record
+// carries only the storage PATH (never base64 — that would blow the browser
+// storage cap and trap the evidence on one device instead of making it
+// cloud-portable). Absent = no attachment, so every record written before this
+// feature keeps working unchanged.
+export type AttachmentProvenance = 'pms-sourced' | 'scan-read';
+
+export interface RecordAttachment {
+  id: string;
+  storagePath: string;        // object path in the private `form-scans` bucket
+  fileName?: string;
+  mimeType?: string;
+  provenance: AttachmentProvenance;
+  uploadedAt: string;         // ISO
+  uploadedBy: string;
+  note?: string;
+}
+
 // SHARED CONTRACT — soft delete. Absent fields = live record, so all stored
 // data written before this feature keeps working unchanged.
 export interface SoftDeletable {
@@ -34,6 +56,18 @@ export interface SoftDeletable {
   deletedAt?: string;
   deletedBy?: string;
 }
+
+/* SACRAMENT-RECORD STATUS LIFECYCLE (additive; kept SEPARATE from the canonical
+   `status` field on each record — that one tracks Active/Cancelled/Annotated/
+   Annulled/Dispensed and is untouched).
+   - scheduled  = booked, ceremony not yet performed → NOT an official sacrament.
+   - solemnized = the ceremony actually happened → THIS is the official register
+                  entry (certifiable, counted as conferred).
+   - cancelled  = didn't push through → kept for the record/audit trail, but
+                  flagged; NOT certifiable, NOT counted as conferred.
+   LEGACY records have no lifecycleStatus → they are existing official entries and
+   MUST read as 'solemnized' (never demoted) — always go through recordStatus(). */
+export type RecordLifecycleStatus = 'scheduled' | 'solemnized' | 'cancelled';
 
 export interface BaptismRecord {
   id: string;
@@ -80,7 +114,13 @@ export interface BaptismRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Cancelled' | 'Annotated';
+  // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
+  lifecycleStatus?: RecordLifecycleStatus;
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -127,7 +167,13 @@ export interface MarriageRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Annulled' | 'Dispensed';
+  // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
+  lifecycleStatus?: RecordLifecycleStatus;
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -167,7 +213,13 @@ export interface ConfirmationRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Cancelled';
+  // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
+  lifecycleStatus?: RecordLifecycleStatus;
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -202,7 +254,13 @@ export interface DeathRecord {
   pageNumber: number;
   notations: string;
   annotations?: RegistryAnnotation[];
+  // --- ATTACHED SOURCE FORMS (scanned originals / provenance; absent = none) ---
+  attachments?: RecordAttachment[];
   status: 'Active' | 'Annotated';
+  // --- LIFECYCLE (scheduled/solemnized/cancelled; absent = legacy 'solemnized', read via recordStatus) ---
+  lifecycleStatus?: RecordLifecycleStatus;
+  // --- STAFF REQUIREMENTS CHECKLIST (ids of catalog requirements the secretary has ticked off; warn-only, never blocks) ---
+  requirementsMet?: string[];
   // --- SOFT DELETE (shared contract; absent = live) ---
   isDeleted?: boolean;
   deletedAt?: string;
@@ -216,6 +274,10 @@ export interface DeathRecord {
 }
 
 export type RegistryRecord = BaptismRecord | MarriageRecord | ConfirmationRecord | DeathRecord;
+
+// The persisted-store name for each registry type (used when attaching a
+// scanned form to a specific record after a scan→match or scan→create).
+export type RegistryStore = 'baptismRecords' | 'marriageRecords' | 'confirmationRecords' | 'deathRecords';
 
 /* ═══════════════════════════════════════════════════════════════════
    CONSTANTS
@@ -535,6 +597,10 @@ export interface CertificateTemplate {
   isDefault: boolean;
   isSystem: boolean;
   html: string;
+  /** Structured design produced by the guided visual editor. Present on
+   *  templates authored/edited visually; absent on raw-HTML or uploaded ones.
+   *  When present it is the editable source of truth — `html` is its render. */
+  design?: CertificateDesign;
 }
 
 // Optional watermark block for duplicate copies. Templates include the
@@ -890,6 +956,92 @@ export function isConfirmationRecord(r: RegistryRecord): r is ConfirmationRecord
 }
 export function isDeathRecord(r: RegistryRecord): r is DeathRecord {
   return 'deceasedFirstName' in r;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SACRAMENT LIFECYCLE STATUS — pure helper (single source of truth)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** The record's lifecycle status. LEGACY records written before lifecycleStatus
+ *  existed have no field → they are existing official register entries and read
+ *  as 'solemnized' (never demoted). Read status through THIS helper everywhere
+ *  (tab counts, badges, certificate gating, conferred-sacrament counts) so legacy
+ *  records always count and certify as solemnized. */
+export function recordStatus(r: { lifecycleStatus?: RecordLifecycleStatus }): RecordLifecycleStatus {
+  return r.lifecycleStatus ?? 'solemnized';
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   OVERDUE-SCHEDULED ALERT — a 'scheduled' record whose ceremony date has
+   already passed (before the start of today) but was never marked
+   solemnized or cancelled. A pure nudge to close it out — never blocks.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** The record's ceremony/sacrament date — the baptism/marriage/confirmation
+ *  date, or the burial date for a death — falling back to the scheduled date. */
+export function ceremonyDate(r: RegistryRecord): string {
+  if (isBaptismRecord(r)) return r.dateOfBaptism || r.scheduledDate || '';
+  if (isMarriageRecord(r)) return r.dateOfMarriage || r.scheduledDate || '';
+  if (isConfirmationRecord(r)) return r.dateOfConfirmation || r.scheduledDate || '';
+  if (isDeathRecord(r)) return r.dateOfBurial || r.scheduledDate || '';
+  return '';
+}
+
+/** True when the record is still 'scheduled' AND its ceremony date parses to a
+ *  day strictly before today (app runtime `now`). Legacy/solemnized/cancelled
+ *  records are never overdue; a record with no parseable date is never overdue. */
+export function isOverdueScheduled(r: RegistryRecord, now: Date = new Date()): boolean {
+  if (recordStatus(r) !== 'scheduled') return false;
+  const dateStr = ceremonyDate(r);
+  if (!dateStr) return false;
+  const d = new Date(dateStr + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return false;
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return d.getTime() < todayStart.getTime();
+}
+
+/** Count of live (non-archived) overdue-scheduled records in one list. */
+export function countOverdueScheduled(records: RegistryRecord[], now: Date = new Date()): number {
+  return records.filter((r) => !r.isDeleted && isOverdueScheduled(r, now)).length;
+}
+
+export interface OverdueScheduledItem {
+  id: string;
+  sacrament: 'baptism' | 'marriage' | 'confirmation' | 'death';
+  /** Short display label, e.g. "Wedding — Santos & Cruz". */
+  label: string;
+  /** Ceremony date (ISO) that has passed. */
+  date: string;
+}
+
+function overduePersonLabel(r: RegistryRecord): string {
+  if (isBaptismRecord(r)) return `Baptism — ${r.childFirstName} ${r.childLastName}`.trim();
+  if (isMarriageRecord(r)) return `Wedding — ${r.groomLastName} & ${r.brideLastName}`.trim();
+  if (isConfirmationRecord(r)) return `Confirmation — ${r.confirmandFirstName} ${r.confirmandLastName}`.trim();
+  return `Funeral — ${r.deceasedFirstName} ${r.deceasedLastName}`.trim();
+}
+
+/** Reads all four registry stores and returns the live overdue-scheduled records
+ *  as display items — used by the dashboard pop-up and the registry surfaces.
+ *  Most-recently-passed ceremony first. Soft-deleted records are excluded. */
+export function getOverdueScheduledItems(now: Date = new Date()): OverdueScheduledItem[] {
+  const out: OverdueScheduledItem[] = [];
+  const push = (list: RegistryRecord[], sacrament: OverdueScheduledItem['sacrament']) => {
+    for (const r of list) {
+      if (r.isDeleted || !isOverdueScheduled(r, now)) continue;
+      out.push({ id: r.id, sacrament, label: overduePersonLabel(r), date: ceremonyDate(r) });
+    }
+  };
+  push(getJSON<BaptismRecord[]>(KEYS.baptismRecords, []), 'baptism');
+  push(getJSON<MarriageRecord[]>(KEYS.marriageRecords, []), 'marriage');
+  push(getJSON<ConfirmationRecord[]>(KEYS.confirmationRecords, []), 'confirmation');
+  push(getJSON<DeathRecord[]>(KEYS.deathRecords, []), 'death');
+  return out.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+}
+
+/** Total count of live overdue-scheduled records across all four sacraments. */
+export function countOverdueScheduledAll(now: Date = new Date()): number {
+  return getOverdueScheduledItems(now).length;
 }
 
 export interface ReplaceTokensOptions {
@@ -1308,15 +1460,81 @@ export function mergeCertificateTemplates(
     // stored entry with id='std-baptism', isSystem:true could swap the html
     // (rendered via dangerouslySetInnerHTML) while masquerading as a trusted
     // system template.
+    // The visual editor's structured `design` must survive a save→reload: an
+    // override carries its own design if it has one, else the default's stays.
     return override
-      ? { ...t, ...override, id: t.id, isSystem: t.isSystem, isDefault: t.isDefault }
+      ? { ...t, ...override, id: t.id, isSystem: t.isSystem, isDefault: t.isDefault, design: override.design ?? t.design }
       : { ...t };
   });
   const custom = saved.filter(
     (t): t is CertificateTemplate =>
       !!t.id && !defaultIds.has(t.id) && typeof t.name === 'string' && typeof t.html === 'string' && !!t.sacrament,
   );
+  // `...t` carries the custom template's `design` through verbatim.
   return [...merged, ...custom.map((t) => ({ ...t, description: t.description ?? '', isSystem: false, isDefault: false }))];
+}
+
+/** Build a custom (editable, non-system) certificate template from uploaded HTML.
+ *  The HTML is rendered via dangerouslySetInnerHTML, so we strip <script> tags and
+ *  inline on* handlers as a courtesy — the secretary is uploading her own file, but
+ *  a pasted-in tracker shouldn't run. A `tcustom-` id keeps it out of the default
+ *  slot and makes mergeCertificateTemplates preserve it across reloads. */
+export function templateFromUpload(
+  html: string,
+  name: string,
+  sacrament: CertificateSacrament,
+): CertificateTemplate {
+  const clean = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  return {
+    id: `tcustom-${Date.now()}`,
+    name: name.trim() || 'Uploaded Template',
+    description: 'Uploaded custom template',
+    sacrament,
+    isDefault: false,
+    isSystem: false,
+    html: clean,
+  };
+}
+
+/** Build a certificate template from a structured visual `design`. Stores BOTH
+ *  the rendered token `html` (used by generation/print/PDF) and the `design`
+ *  itself (so the guided editor can reopen and keep editing it). A `tcustom-`
+ *  id keeps new designs out of the default slot; pass `id` to re-save an
+ *  existing custom template in place. */
+export function templateFromDesign(
+  design: CertificateDesign,
+  name: string,
+  sacrament: CertificateSacrament,
+  id?: string,
+): CertificateTemplate {
+  return {
+    id: id ?? `tcustom-${Date.now()}`,
+    name: name.trim() || 'Custom Certificate',
+    description: 'Custom design',
+    sacrament,
+    isDefault: false,
+    isSystem: false,
+    html: designToHtml(design),
+    design,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CERTIFICATE TEMPLATE PERSISTENCE — single source of truth
+   Both the app (RegistryPage) and the guided editor load/save through these.
+   Stored under 'certificate_templates'; shipped defaults are merged in so
+   new system templates keep appearing and trust-critical fields can't be forged.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export function loadCertificateTemplates(): CertificateTemplate[] {
+  const saved = getJSON<Partial<CertificateTemplate>[]>('certificate_templates', []);
+  return mergeCertificateTemplates(certificateTemplates, saved);
+}
+
+export function saveCertificateTemplates(list: CertificateTemplate[]): boolean {
+  return setJSON('certificate_templates', list);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

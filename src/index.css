@@ -4,6 +4,21 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Cherub mascot — gentle float + breathing glow for the floating assistant */
+@keyframes cherub-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+@keyframes cherub-glow {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.75; transform: scale(1.12); }
+}
+.cherub-float { animation: cherub-float 4s ease-in-out infinite; }
+.cherub-glow { animation: cherub-glow 4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cherub-float, .cherub-glow { animation: none; }
+}
+
 @layer base {
   :root {
     /* ChurchOS Design Tokens */

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -33,10 +33,15 @@ import {
   Archive,
   Link2,
   Ban,
+  ClipboardCheck,
+  CheckCircle2,
+  Upload,
+  Image as ImageIcon,
 } from 'lucide-react';
 import DataTable from '@/components/DataTable';
 import type { Column } from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
+import CertificateDesignEditor from '@/components/CertificateDesignEditor';
 import HelpTooltip from '@/components/HelpTooltip';
 import { getLabel } from '@/lib/friendlyLabels';
 import EmptyState from '@/components/EmptyState';
@@ -49,6 +54,9 @@ import {
   type RegistryAnnotation,
   type RegistryAnnotationType,
   type SoftDeletable,
+  type RecordLifecycleStatus,
+  recordStatus,
+  isOverdueScheduled,
   baptismRecords,
   marriageRecords,
   confirmationRecords,
@@ -80,11 +88,30 @@ import {
   newlyVoidedAnnotations,
   buildRegistryCalendarEvent,
   annotateEventWithSchedulingRules,
-  mergeCertificateTemplates,
+  templateFromUpload,
+  loadCertificateTemplates,
+  saveCertificateTemplates,
   appendRegistryAudit,
+  type CertificateSacrament,
+  type RecordAttachment,
+  type RegistryStore,
 } from '@/lib/registryData';
+import { getFormScanUrl } from '@/lib/formScans';
+import { resolveAttachmentsForSave } from '@/lib/registryMatch';
 import { SAMPLE_EVENTS, type CalendarEvent } from '@/lib/calendarData';
+import { getActiveVenues, isMultiVenue, type Venue } from '@/lib/venues';
+import {
+  findConflicts,
+  suggestFreeVenues,
+  parseTimeToMinutes,
+  isLiturgicallyBlocked,
+  type BusyInterval,
+  type VenueSuggestion,
+  type CalendarEventLike,
+} from '@/lib/scheduling';
 import { getCertificateTokens, getCurrencySymbol, getParishName } from '@/lib/parishConfig';
+import { clergyNames } from '@/lib/clergy';
+import { getParishConfig } from '@/lib/parishConfig';
 import {
   BARANGAYS,
   SITIOS,
@@ -105,6 +132,7 @@ import { KEYS } from '@/lib/storageKeys';
 import * as ns from '@/lib/storageNamespaced';
 import { getCurrentUserName } from '@/lib/session';
 import { todayISO } from '@/lib/massIntentions';
+import { getSacramentInfo, buildAckSummary, type RequirementKind } from '@/lib/sacramentRequirements';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -123,6 +151,8 @@ interface TabConfig {
   label: string;
   icon: React.ElementType;
   color: string;
+  /** Lightened accent for dark mode — the raw sacrament colors (charcoal, maroon) are too dark on a dark surface. */
+  darkColor: string;
   count: number;
 }
 
@@ -164,10 +194,10 @@ interface AccountsReceivableEntry {
 /*  Tab definitions                                                    */
 /* ------------------------------------------------------------------ */
 const tabs = (b: number, m: number, c: number, d: number): TabConfig[] => [
-  { key: 'baptism', label: 'Baptism', icon: Droplets, color: '#2D6A4F', count: b },
-  { key: 'marriage', label: 'Marriage', icon: Heart, color: '#6B2737', count: m },
-  { key: 'confirmation', label: 'Confirmation', icon: Flame, color: '#C9963B', count: c },
-  { key: 'death', label: 'Death / Funeral', icon: Cross, color: '#3D3A36', count: d },
+  { key: 'baptism', label: 'Baptism', icon: Droplets, color: '#2D6A4F', darkColor: '#5FBF95', count: b },
+  { key: 'marriage', label: 'Marriage', icon: Heart, color: '#6B2737', darkColor: '#D98BA0', count: m },
+  { key: 'confirmation', label: 'Confirmation', icon: Flame, color: '#C9963B', darkColor: '#E3C06B', count: c },
+  { key: 'death', label: 'Death / Funeral', icon: Cross, color: '#3D3A36', darkColor: '#B8B2A8', count: d },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -190,8 +220,73 @@ function statusBadge(status: string) {
   return map[status] || 'cos-badge-default';
 }
 
+/* Lifecycle badge — Solemnized (green/official), Scheduled (amber/neutral),
+   Cancelled (red, de-emphasized). Reuses the cos-badge palette. Separate from
+   the canonical `status` badge above. */
+const LIFECYCLE_BADGE: Record<RecordLifecycleStatus, string> = {
+  solemnized: 'cos-badge-success',
+  scheduled: 'cos-badge-warning',
+  cancelled: 'cos-badge-error',
+};
+const LIFECYCLE_LABEL: Record<RecordLifecycleStatus, string> = {
+  solemnized: 'Solemnized',
+  scheduled: 'Scheduled',
+  cancelled: 'Cancelled',
+};
+
+/** Renders a record's lifecycle badge. An overdue scheduled record (ceremony
+ *  date passed, still not closed out) gets a distinct "Needs status" chip rather
+ *  than the plain amber Scheduled badge. */
+function LifecycleBadge({ record }: { record: RegistryRecord }) {
+  const st = recordStatus(record);
+  if (st === 'scheduled' && isOverdueScheduled(record)) {
+    return (
+      <span className="cos-badge cos-badge-error inline-flex items-center gap-1" title="Ceremony date has passed — mark solemnized or cancelled">
+        <AlertCircle className="w-3 h-3" />
+        Needs status
+      </span>
+    );
+  }
+  return (
+    <span className={`cos-badge ${LIFECYCLE_BADGE[st]} ${st === 'cancelled' ? 'opacity-70' : ''}`}>
+      {LIFECYCLE_LABEL[st]}
+    </span>
+  );
+}
+
 function genId(prefix: string) {
-  return `${prefix}-${Date.now()}`;
+  // Needs collision-free entropy: this id becomes the Supabase client_id, which is
+  // BOTH the cloud-sync diff key and the upsert conflict key. A bare `${prefix}-${Date.now()}`
+  // (millisecond precision, no randomness) collides on a double-click or rapid entry, so the
+  // second record silently overwrites the first (or the diff sees "no change" and never POSTs).
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  const rand = c?.randomUUID ? c.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${rand}`;
+}
+
+// The address option lists (BARANGAYS/CITIES/PROVINCES) are Mabalacat/Pampanga defaults.
+// Prepend the PARISH's own configured location so a parish outside that region can still
+// pick (and defaults to) its real barangay/city/province instead of being locked to Pampanga.
+function withParishLocation(list: readonly string[], parishValue: string | undefined): string[] {
+  const v = (parishValue || '').trim();
+  return v && !list.includes(v) ? [v, ...list] : [...list];
+}
+const parishBarangays = () => withParishLocation(BARANGAYS, getParishConfig().addressBarangay);
+const parishCities = () => withParishLocation(CITIES, getParishConfig().addressCity);
+const parishProvinces = () => withParishLocation(PROVINCES, getParishConfig().addressProvince);
+
+/* Officiant picker options: the active clergy full names (managed in Settings),
+   which are exactly the strings the ICS schedule export matches on. TOLERANT:
+   if a record/schedule already carries an officiant that isn't in the clergy
+   list (a legacy free-text value, or a since-deactivated priest), it is kept as
+   a selectable option so editing an old record never blanks or drops it. */
+function officiantOptions(current?: string): string[] {
+  const names = clergyNames();
+  const cur = (current || '').trim();
+  if (cur && !names.some((n) => n.toLowerCase() === cur.toLowerCase())) {
+    return [cur, ...names];
+  }
+  return names;
 }
 
 function checkAvailability(date: string, time: string, off: string, loc: string, _type: SacramentTab): AvailabilityResult {
@@ -403,25 +498,12 @@ function AnnotationTypeBadge({ type }: { type: RegistryAnnotationType }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Certificate template persistence (per parish, localStorage-backed)  */
+/*  Certificate template type                                           */
 /* ------------------------------------------------------------------ */
+// Load/save now live in registryData.ts (single source of truth, key
+// 'certificate_templates') and are imported above; the guided visual editor
+// uses the SAME exports so the Registry and the editor never drift.
 type CertificateTemplate = (typeof certificateTemplates)[number];
-
-// Namespaced storage key (resolved through storageNamespaced, like KEYS).
-const CERT_TEMPLATES_KEY = 'certificate_templates';
-
-// Load templates: any edits saved by the user override the module defaults
-// (matched by id); defaults without a saved entry are always included so
-// shipping new templates keeps working; saved templates with NON-default ids
-// (user duplicates) are preserved too. Returns a fresh array each call.
-function loadCertificateTemplates(): CertificateTemplate[] {
-  const saved = ns.getJSON<Partial<CertificateTemplate>[]>(CERT_TEMPLATES_KEY, []);
-  return mergeCertificateTemplates(certificateTemplates, saved);
-}
-
-function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
-  return ns.setJSON(CERT_TEMPLATES_KEY, templates);
-}
 
 /* ------------------------------------------------------------------ */
 /*  Auto-add to parish calendar                                        */
@@ -431,10 +513,28 @@ function saveCertificateTemplates(templates: CertificateTemplate[]): boolean {
 // reused, never duplicated; unchecking the box does not delete a previously
 // created event — staff manage the calendar itself. Returns true only when
 // an event was actually created.
+// Add minutes to an "HH:MM" 24-hour clock string (wraps at midnight).
+function addMinutes24(hhmm: string, minutes: number): string {
+  const [h = 0, m = 0] = (hhmm || '').split(':').map(Number);
+  const total = (((h * 60 + m + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+// Graceful wedding calendar title built from SURNAMES (last-name fields).
+// Fixes the old "Wedding: & " when names were blank.
+function weddingCalendarTitle(groomLast?: string, brideLast?: string): string {
+  const g = (groomLast || '').trim();
+  const b = (brideLast || '').trim();
+  if (g && b) return `Wedding — ${g} & ${b}`;
+  if (g || b) return `Wedding — ${g || b}`;
+  return 'Wedding';
+}
+
 function maybeAddToCalendar(
   record: RegistryRecord,
   autoCalendar: boolean,
   onToast: (message: string, type: ToastType) => void,
+  overrides?: { title?: string; durationMin?: number },
 ): boolean {
   if (!autoCalendar || record.calendarEventId) return false;
   // Run the same liturgical scheduling rules the CalendarPage drag path and the
@@ -442,7 +542,16 @@ function maybeAddToCalendar(
   // a wedding scheduled in Lent) can't slip in unvalidated. WARN only — a rule
   // conflict is a pastoral-dispensation matter, never a hard block; the event
   // is still created, annotated with ruleEnforced/ruleNotes for the calendar.
-  const { event: ev, errors, warnings } = annotateEventWithSchedulingRules(buildRegistryCalendarEvent(record));
+  let built = buildRegistryCalendarEvent(record);
+  // Carry the booking's real title + time window so future bookings detect this
+  // event as busy for the whole ceremony (not a flat 60 min) and so the calendar
+  // shows a graceful title. Venue is carried via `location` (a venue token the
+  // scheduling engine matches on).
+  if (overrides?.title) built = { ...built, title: overrides.title };
+  if (overrides?.durationMin && overrides.durationMin > 0) {
+    built = { ...built, endTime: addMinutes24(built.startTime, overrides.durationMin) };
+  }
+  const { event: ev, errors, warnings } = annotateEventWithSchedulingRules(built);
   const current = ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS);
   ns.setJSON(KEYS.calendarEvents, [...current, ev]);
   record.calendarEventId = ev.id;
@@ -493,6 +602,11 @@ export default function RegistryPage() {
   const [yearFilter, setYearFilter] = useState('');
   const [officiantFilter, setOfficiantFilter] = useState('');
   const [highlightId, setHighlightId] = useState('');
+  /* "Needs closing out" quick filter — when on, the list shows only overdue
+     scheduled records (nudge, never a hard filter of the underlying data). */
+  const [showOverdueOnly, setShowOverdueOnly] = useState(false);
+  /* Cancel-a-record confirmation (reuses ConfirmationDialog). */
+  const [cancelDialog, setCancelDialog] = useState<{ open: boolean; id: string }>({ open: false, id: '' });
   const { toasts, addToast, removeToast } = useToasts();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -519,8 +633,23 @@ export default function RegistryPage() {
   const cBase = useMemo(() => (showArchived ? cData.filter((r) => r.isDeleted) : cLive), [showArchived, cData, cLive]);
   const dBase = useMemo(() => (showArchived ? dData.filter((r) => r.isDeleted) : dLive), [showArchived, dData, dLive]);
 
-  const tabConfigs = useMemo(() => tabs(bLive.length, mLive.length, cLive.length, dLive.length), [bLive.length, mLive.length, cLive.length, dLive.length]);
+  /* Per-tab COUNT = live records that are NOT cancelled (scheduled + solemnized).
+     Cancelled records still show in the list (flagged) but must not inflate the
+     count. Distinct from the archived/soft-delete filter. */
+  const bCount = useMemo(() => bLive.filter((r) => recordStatus(r) !== 'cancelled').length, [bLive]);
+  const mCount = useMemo(() => mLive.filter((r) => recordStatus(r) !== 'cancelled').length, [mLive]);
+  const cCount = useMemo(() => cLive.filter((r) => recordStatus(r) !== 'cancelled').length, [cLive]);
+  const dCount = useMemo(() => dLive.filter((r) => recordStatus(r) !== 'cancelled').length, [dLive]);
+
+  const tabConfigs = useMemo(() => tabs(bCount, mCount, cCount, dCount), [bCount, mCount, cCount, dCount]);
   const activeConfig = tabConfigs.find((t) => t.key === activeTab)!;
+
+  /* Overdue-scheduled (ceremony date passed, still not closed out) — live rows
+     only. Drives the top banner + the "needs closing out" filter. */
+  const activeOverdueCount = useMemo(() => {
+    const live = activeTab === 'baptism' ? bLive : activeTab === 'marriage' ? mLive : activeTab === 'confirmation' ? cLive : dLive;
+    return (live as RegistryRecord[]).filter((r) => isOverdueScheduled(r)).length;
+  }, [activeTab, bLive, mLive, cLive, dLive]);
 
   const archivedCount =
     activeTab === 'baptism' ? bData.length - bLive.length
@@ -536,12 +665,28 @@ export default function RegistryPage() {
     if (paramsHandled.current) return;
     const action = searchParams.get('action');
     const id = searchParams.get('id');
-    if (!action && !id) return;
+    const view = searchParams.get('view');
+    if (!action && !id && !view) return;
     paramsHandled.current = true;
 
     if (action === 'add') {
       setEditingRecord(null);
       setRecordModal('add');
+    }
+
+    // ?view=overdue (dashboard "Review") — turn on the "needs closing out"
+    // filter and land on the first tab that actually has overdue records.
+    if (view === 'overdue') {
+      const overdueTab: SacramentTab | null =
+        bLive.some((r) => isOverdueScheduled(r)) ? 'baptism'
+        : mLive.some((r) => isOverdueScheduled(r)) ? 'marriage'
+        : cLive.some((r) => isOverdueScheduled(r)) ? 'confirmation'
+        : dLive.some((r) => isOverdueScheduled(r)) ? 'death'
+        : null;
+      setShowArchived(false);
+      setSearchQuery('');
+      setShowOverdueOnly(true);
+      if (overdueTab) setActiveTab(overdueTab);
     }
 
     if (id) {
@@ -572,6 +717,7 @@ export default function RegistryPage() {
     const next = new URLSearchParams(searchParams);
     next.delete('action');
     next.delete('id');
+    next.delete('view');
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, bData, mData, cData, dData]);
@@ -595,6 +741,7 @@ export default function RegistryPage() {
      actually change (DataTable resets to page 1 on a new data identity). */
   const baptismFiltered = useMemo(() => bBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfBaptism)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -605,10 +752,11 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [bBase, matchesFilters, searchQuery]);
+  }), [bBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   const marriageFiltered = useMemo(() => mBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfMarriage)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -618,10 +766,11 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [mBase, matchesFilters, searchQuery]);
+  }), [mBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   const confirmationFiltered = useMemo(() => cBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfConfirmation)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -630,10 +779,11 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [cBase, matchesFilters, searchQuery]);
+  }), [cBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   const deathFiltered = useMemo(() => dBase.filter((r) => {
     if (!matchesFilters(r, r.dateOfDeath)) return false;
+    if (showOverdueOnly && !isOverdueScheduled(r)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -642,7 +792,7 @@ export default function RegistryPage() {
       `${r.bookNumber}/${r.pageNumber}`.includes(q) ||
       r.registryNumber.toLowerCase().includes(q)
     );
-  }), [dBase, matchesFilters, searchQuery]);
+  }), [dBase, matchesFilters, searchQuery, showOverdueOnly]);
 
   /* actions */
   const handleEdit = useCallback(
@@ -718,8 +868,50 @@ export default function RegistryPage() {
   };
 
   const handleGenerateCert = (record: RegistryRecord) => {
+    // A certificate attests a CONFERRED sacrament. Scheduled (not yet performed)
+    // and cancelled (didn't push through) records are never certifiable — this
+    // guard makes it impossible even if a caller bypasses the disabled button.
+    const st = recordStatus(record);
+    if (st !== 'solemnized') {
+      addToast(
+        st === 'cancelled'
+          ? 'This record is cancelled — a certificate cannot be issued.'
+          : 'Not yet solemnized — mark the ceremony solemnized before issuing a certificate.',
+        'warning',
+      );
+      return;
+    }
     setCertRecord(record);
     setCertModal(true);
+  };
+
+  /* ── LIFECYCLE STATUS CHANGES (persist via the record store; audited) ──
+     On cancel we deliberately DO NOT touch the calendar event or scheduling —
+     the parish keeps the slot; staff free it manually from the Calendar. */
+  const applyLifecycle = (id: string, next: RecordLifecycleStatus) => {
+    const target = activeData().find((r) => r.id === id);
+    if (activeTab === 'baptism') setBData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    if (activeTab === 'marriage') setMData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    if (activeTab === 'confirmation') setCData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    if (activeTab === 'death') setDData((prev) => prev.map((r) => (r.id === id ? { ...r, lifecycleStatus: next } : r)));
+    const verb = next === 'solemnized' ? 'Marked solemnized' : next === 'cancelled' ? 'Cancelled' : 'Reset to scheduled';
+    appendRegistryAudit(
+      'Status changed',
+      id,
+      `${verb} ${activeConfig.label.toLowerCase()} record${target ? ` for ${getPersonName(target, activeTab)}` : ''}`,
+    );
+    addToast(
+      next === 'solemnized' ? 'Marked as solemnized — now an official record'
+      : next === 'cancelled' ? 'Record cancelled — kept for the audit trail, not counted as conferred'
+      : 'Reset to scheduled',
+      next === 'cancelled' ? 'warning' : 'success',
+    );
+  };
+
+  const handleCancelRecord = (id: string) => setCancelDialog({ open: true, id });
+  const confirmCancelRecord = () => {
+    if (cancelDialog.id) applyLifecycle(cancelDialog.id, 'cancelled');
+    setCancelDialog({ open: false, id: '' });
   };
 
   /* Canon 535 behavior: a NEW confirmation/marriage annotates the margin of
@@ -925,6 +1117,14 @@ export default function RegistryPage() {
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
     },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
+    },
   ];
 
   const marriageColumns: Column<MarriageRecord>[] = [
@@ -951,6 +1151,14 @@ export default function RegistryPage() {
       width: '90px',
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
+    },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
     },
   ];
 
@@ -979,6 +1187,14 @@ export default function RegistryPage() {
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
     },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
+    },
   ];
 
   const deathColumns: Column<DeathRecord>[] = [
@@ -1006,6 +1222,14 @@ export default function RegistryPage() {
       width: '90px',
       sortable: true,
       render: (r) => <span className={`cos-badge ${statusBadge(r.status)}`}>{r.status}</span>,
+    },
+    {
+      key: 'lifecycle',
+      header: 'Lifecycle',
+      width: '110px',
+      sortable: false,
+      searchValue: (r) => LIFECYCLE_LABEL[recordStatus(r)],
+      render: (r) => <LifecycleBadge record={r} />,
     },
   ];
 
@@ -1144,32 +1368,52 @@ export default function RegistryPage() {
         <div className="mt-3 h-[3px] w-24 bg-gold rounded-full" />
       </div>
 
-      {/* ── Tab Bar ─────────────────────────────────── */}
-      <div className="flex gap-1 border-b-2 border-parchment dark:border-dm-border pb-0 overflow-x-auto" data-tour="registry-tabs">
+      {/* ── Sacrament Cards ─────────────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3" data-tour="registry-tabs">
         {tabConfigs.map((t) => {
           const Icon = t.icon;
           const isActive = activeTab === t.key;
+          const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+          const accent = isDark ? t.darkColor : t.color;
+          const iconOnAccent = isDark ? '#26221E' : '#FFFFFF';
           return (
             <button
               key={t.key}
+              aria-pressed={isActive}
               onClick={() => { setActiveTab(t.key); setSearchQuery(''); setStatusFilter(''); setYearFilter(''); setOfficiantFilter(''); setShowArchived(false); }}
-              className="relative flex items-center gap-2 px-5 py-3 text-sm font-medium transition-all whitespace-nowrap"
-              style={{
-                color: isActive ? t.color : '#8C8374',
-                borderBottom: isActive ? `3px solid ${t.color}` : '3px solid transparent',
-                marginBottom: '-2px',
-              }}
+              className={`group relative flex items-center gap-3 overflow-hidden rounded-xl border p-4 text-left transition-all ${
+                isActive
+                  ? 'shadow-md -translate-y-0.5'
+                  : 'border-parchment bg-white hover:-translate-y-0.5 hover:shadow-sm dark:border-dm-border dark:bg-dm-surface'
+              }`}
+              style={
+                isActive
+                  ? { borderColor: accent, backgroundColor: `${accent}14`, boxShadow: `0 6px 16px ${accent}22` }
+                  : undefined
+              }
             >
-              <Icon className="w-4 h-4" style={{ color: isActive ? t.color : '#8C8374' }} />
-              <span>{t.label}</span>
+              {isActive && (
+                <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: accent }} />
+              )}
               <span
-                className="ml-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                style={{
-                  backgroundColor: isActive ? `${t.color}18` : '#F2EFE8',
-                  color: isActive ? t.color : '#8C8374',
-                }}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg"
+                style={{ backgroundColor: accent }}
               >
-                {t.count}
+                <Icon className="w-6 h-6" style={{ color: iconOnAccent }} />
+              </span>
+              <span className="flex min-w-0 flex-col">
+                <span
+                  className="text-2xl font-bold leading-none"
+                  style={{ color: accent }}
+                >
+                  {t.count}
+                </span>
+                <span
+                  className="mt-1 truncate text-sm font-medium text-warm-gray dark:text-dm-text-muted"
+                  style={isActive ? { color: accent } : undefined}
+                >
+                  {t.label}
+                </span>
               </span>
             </button>
           );
@@ -1330,6 +1574,33 @@ export default function RegistryPage() {
         </div>
       </motion.div>
 
+      {/* ── Overdue-scheduled alert banner (nudge — never blocks) ── */}
+      {!showArchived && (activeOverdueCount > 0 || showOverdueOnly) && (
+        <div className="mb-4 flex items-start gap-3 rounded-lg border border-error/40 bg-error/[0.08] px-4 py-3">
+          <AlertCircle className="w-5 h-5 text-error shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            {activeOverdueCount > 0 ? (
+              <>
+                <p className="body-md font-semibold text-charcoal dark:text-dm-text">
+                  {activeOverdueCount} {activeConfig.label.toLowerCase()} {activeOverdueCount === 1 ? 'ceremony has' : 'ceremonies have'} passed but {activeOverdueCount === 1 ? "isn't" : "aren't"} closed out
+                </p>
+                <p className="body-sm text-warm-gray dark:text-dm-text-muted mt-0.5">
+                  Mark {activeOverdueCount === 1 ? 'it' : 'them'} solemnized or cancelled to keep the register accurate.
+                </p>
+              </>
+            ) : (
+              <p className="body-md text-charcoal dark:text-dm-text">No overdue {activeConfig.label.toLowerCase()} records in this tab.</p>
+            )}
+          </div>
+          <button
+            onClick={() => setShowOverdueOnly((v) => !v)}
+            className="cos-btn cos-btn-secondary h-8 px-3 text-xs shrink-0"
+          >
+            {showOverdueOnly ? 'Show all' : 'Show only these'}
+          </button>
+        </div>
+      )}
+
       {/* ── Data Table / Empty State ──────────────── */}
       <AnimatePresence>
         <motion.div
@@ -1348,8 +1619,8 @@ export default function RegistryPage() {
             ) : (
             <EmptyState
               icon={BookOpen}
-              title={getLabel('registry.empty.title', 'No baptism records yet')}
-              description={getLabel('registry.empty.description', "When you start recording baptisms, they'll appear here. Click 'Add New Record' to begin!")}
+              title={getLabel('registry.empty.title', `No ${activeConfig.label.toLowerCase()} records yet`)}
+              description={getLabel('registry.empty.description', `When you start recording ${activeConfig.label.toLowerCase()} records, they'll appear here. Click 'Add New Record' to begin!`)}
               tip={getLabel('registry.empty.tip', 'You can also search existing records by name or date.')}
               actionLabel={getLabel('registry.add', 'Add Record')}
               actionIcon={Plus}
@@ -1378,30 +1649,67 @@ export default function RegistryPage() {
                       <RotateCcw className="w-4 h-4" />
                     </button>
                   ) : (
-                    <>
-                      <button
-                        onClick={() => handleEdit(row as unknown as BaptismRecord & MarriageRecord & ConfirmationRecord & DeathRecord)}
-                        className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
-                        title="Edit"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleGenerateCert(row as unknown as RegistryRecord)}
-                        className="p-1.5 rounded-md text-warm-gray hover:text-gold hover:bg-cream-dark transition-colors"
-                        title="Generate Certificate"
-                        data-tour="registry-certificate"
-                      >
-                        <Printer className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete((row as unknown as { id: string }).id)}
-                        className="p-1.5 rounded-md text-warm-gray hover:text-error hover:bg-error/10 transition-colors"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </>
+                    (() => {
+                      const rec = row as unknown as RegistryRecord;
+                      const st = recordStatus(rec);
+                      const canCert = st === 'solemnized';
+                      return (
+                        <>
+                          <button
+                            onClick={() => handleEdit(row as unknown as BaptismRecord & MarriageRecord & ConfirmationRecord & DeathRecord)}
+                            className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
+                            title="Edit"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          {/* ── Lifecycle status changes ── */}
+                          {st !== 'solemnized' && (
+                            <button
+                              onClick={() => applyLifecycle(rec.id, 'solemnized')}
+                              className="p-1.5 rounded-md text-warm-gray hover:text-success hover:bg-success/10 transition-colors"
+                              title="Mark as solemnized"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {st !== 'scheduled' && (
+                            <button
+                              onClick={() => applyLifecycle(rec.id, 'scheduled')}
+                              className="p-1.5 rounded-md text-warm-gray hover:text-charcoal hover:bg-cream-dark dark:text-dm-text-muted dark:hover:text-dm-text dark:hover:bg-dm-surface-raised transition-colors"
+                              title="Reset to scheduled"
+                            >
+                              <Clock className="w-4 h-4" />
+                            </button>
+                          )}
+                          {st !== 'cancelled' && (
+                            <button
+                              onClick={() => handleCancelRecord(rec.id)}
+                              className="p-1.5 rounded-md text-warm-gray hover:text-error hover:bg-error/10 transition-colors"
+                              title="Cancel record"
+                            >
+                              <Ban className="w-4 h-4" />
+                            </button>
+                          )}
+                          {/* ── Certificate — SOLEMNIZED only ── */}
+                          <button
+                            onClick={() => handleGenerateCert(rec)}
+                            disabled={!canCert}
+                            className={`p-1.5 rounded-md transition-colors ${canCert ? 'text-warm-gray hover:text-gold hover:bg-cream-dark' : 'text-warm-gray/40 cursor-not-allowed'}`}
+                            title={canCert ? 'Generate Certificate' : st === 'cancelled' ? 'This record is cancelled — no certificate' : 'Not yet solemnized — no certificate'}
+                            data-tour="registry-certificate"
+                          >
+                            <Printer className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete((row as unknown as { id: string }).id)}
+                            className="p-1.5 rounded-md text-warm-gray hover:text-error hover:bg-error/10 transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      );
+                    })()
                   )}
                 </div>
               )}
@@ -1429,7 +1737,7 @@ export default function RegistryPage() {
       {/* ── Certificate Modal ──────────────────────── */}
       <AnimatePresence>
         {certModal && certRecord && (
-          <CertificateModal record={certRecord} sacrament={activeTab} onClose={() => setCertModal(false)} />
+          <CertificateModal record={certRecord} sacrament={activeTab} onClose={() => setCertModal(false)} onToast={addToast} />
         )}
       </AnimatePresence>
 
@@ -1447,6 +1755,18 @@ export default function RegistryPage() {
         variant="danger"
         onConfirm={confirmDelete}
         onCancel={() => setDeleteDialog({ open: false, id: '' })}
+      />
+
+      {/* ── Cancel-record Confirmation ─────────────── */}
+      <ConfirmationDialog
+        isOpen={cancelDialog.open}
+        title={`Cancel ${activeConfig.label} Record`}
+        message={`Mark this ${activeConfig.label.toLowerCase()} record as cancelled? It stays on file for the audit trail (flagged, de-emphasized) but is NOT certifiable and is NOT counted as a conferred sacrament. The calendar slot is kept — free it manually from the Calendar if needed.`}
+        confirmLabel="Cancel record"
+        cancelLabel="Keep as is"
+        variant="warning"
+        onConfirm={confirmCancelRecord}
+        onCancel={() => setCancelDialog({ open: false, id: '' })}
       />
 
       {/* ── Toasts ─────────────────────────────────── */}
@@ -1491,7 +1811,7 @@ function ParishionerLookupAutocomplete({
   onChange,
   onSelect,
   error,
-  placeholder = 'Start typing to search...',
+  placeholder = 'Type a name...',
   required = false,
 }: {
   label: string;
@@ -1539,7 +1859,6 @@ function ParishionerLookupAutocomplete({
   };
 
   const handleSelect = (p: ParishionerLookup) => {
-    setQuery(p.firstName);
     onSelect(p);
     setOpen(false);
   };
@@ -1604,6 +1923,115 @@ function SectionHeader({ icon: Icon, title, color }: { icon: React.ElementType; 
     <div className="flex items-center gap-2 mb-1">
       <Icon className="w-4 h-4" style={{ color }} />
       <h3 className="heading-sm text-deep-navy dark:text-dm-text uppercase label tracking-wider">{title}</h3>
+    </div>
+  );
+}
+
+/* =====================================================================
+   SacramentRequirementsChecklist — STAFF-side "did the family bring the
+   papers / do the prep" checklist, reusing the shared sacramentRequirements
+   catalog (same source of truth the parishioner portal uses). WARN-ONLY:
+   nothing here blocks a save — it just tracks what's submitted and surfaces
+   what's still pending. Requirements are grouped by kind with small headers,
+   each detail surfaced through the existing HelpTooltip.
+   ===================================================================== */
+const REQ_KIND_META: Record<RequirementKind, { label: string; bg: string; fg: string }> = {
+  document: { label: 'Documents', bg: '#EEF3F8', fg: '#3D6285' },
+  preparation: { label: 'Preparation', bg: '#EFF6F1', fg: '#2D6A4F' },
+  sponsor: { label: 'Sponsors', bg: '#F6EFF6', fg: '#7A4E7E' },
+  eligibility: { label: 'Eligibility', bg: '#FAF3E4', fg: '#96690F' },
+};
+const REQ_KIND_ORDER: RequirementKind[] = ['document', 'preparation', 'sponsor', 'eligibility'];
+
+function SacramentRequirementsChecklist({
+  sacramentKey,
+  checkedIds,
+  onToggle,
+}: {
+  sacramentKey: string;
+  checkedIds: string[];
+  onToggle: (id: string, checked: boolean) => void;
+}) {
+  const info = getSacramentInfo(sacramentKey);
+  if (!info) return null;
+
+  const checked = new Set(checkedIds);
+  const total = info.requirements.length;
+  const done = info.requirements.filter((r) => checked.has(r.id)).length;
+  const complete = done === total && total > 0;
+  const ack = buildAckSummary(info, checkedIds); // reuse the shared summary builder
+
+  return (
+    <div className="border-t border-parchment dark:border-dm-border pt-5">
+      <SectionHeader icon={ClipboardCheck} title="Requirements Checklist" color="#3D6285" />
+      <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1">
+        Tick off what the family has submitted or completed. This never blocks saving — it only flags what is still pending.
+      </p>
+
+      {/* Completion status — green when complete, amber (persistent) when pending */}
+      <div
+        className={`mt-3 p-3 rounded-lg border flex items-start gap-2 ${
+          complete ? 'bg-success/10 border-success/30' : 'bg-warning/10 border-warning/30'
+        }`}
+      >
+        {complete ? (
+          <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0 mt-0.5" />
+        ) : (
+          <AlertCircle className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+        )}
+        <div className="min-w-0">
+          {complete ? (
+            <p className="body-sm text-success font-semibold">{done} of {total} submitted — all requirements complete</p>
+          ) : (
+            <>
+              <p className="body-sm text-amber-700 dark:text-amber-400 font-semibold">
+                {done} of {total} submitted — {total - done} still pending
+              </p>
+              <p className="body-xs text-amber-600 dark:text-amber-300 mt-0.5">
+                Still pending: {ack.missing}
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Requirements grouped by kind */}
+      <div className="mt-3 space-y-4">
+        {REQ_KIND_ORDER.map((kind) => {
+          const items = info.requirements.filter((r) => r.kind === kind);
+          if (items.length === 0) return null;
+          const meta = REQ_KIND_META[kind];
+          return (
+            <div key={kind}>
+              <span
+                className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+                style={{ backgroundColor: meta.bg, color: meta.fg }}
+              >
+                {meta.label}
+              </span>
+              <div className="mt-2 space-y-1">
+                {items.map((r) => (
+                  <label
+                    key={r.id}
+                    className="flex items-start gap-2.5 cursor-pointer p-1.5 rounded-lg hover:bg-cream-dark/30 dark:hover:bg-dm-surface-raised/30 transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked.has(r.id)}
+                      onChange={(e) => onToggle(r.id, e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded border-parchment text-gold focus:ring-2 focus:ring-gold/30 flex-shrink-0"
+                    />
+                    <span className="inline-flex items-start gap-0.5 body-sm text-charcoal dark:text-dm-text leading-snug">
+                      {r.label}
+                      {r.detail && <HelpTooltip text={r.detail} position="right" />}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1758,7 +2186,7 @@ function ScheduleSection({
       <div className="grid grid-cols-2 gap-4 mt-3">
         <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} error={errors?.officiant} required>
           <option value="">Select officiant...</option>
-          {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+          {officiantOptions(officiant).map((o) => <option key={o} value={o}>{o}</option>)}
         </Field>
         <Field label="Location *" as="select" value={location} onChange={onChangeLocation} required>
           <option value="">Select location...</option>
@@ -1803,6 +2231,301 @@ function ScheduleSection({
           <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-success/10 text-success text-sm">
             <Check className="w-4 h-4" />
             Saturday — preferred day for weddings
+          </div>
+        )}
+      </div>
+
+      {/* Auto-add to calendar */}
+      <div className="mt-4 flex items-start gap-3 p-3 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoCalendar}
+            onChange={(e) => onChangeAutoCalendar(e.target.checked)}
+            className="w-4 h-4 rounded border-parchment text-gold focus:ring-gold"
+          />
+          <span className="body-sm text-charcoal dark:text-dm-text font-medium">Auto-add to parish calendar</span>
+        </label>
+      </div>
+      {autoCalendar && (
+        <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1 ml-6">
+          Event: &ldquo;{eventTitle}&rdquo;
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   MARRIAGE BOOKING PANEL — venue + live conflict detection
+   =====================================================================
+   Replaces the generic ScheduleSection for weddings. A booking holds a
+   TIME WINDOW (start + editable duration) in a VENUE with an OFFICIANT.
+   Availability is computed LIVE off KEYS.calendarEvents via the pure
+   scheduling engine — no manual "check" button — and a real conflict
+   HARD-BLOCKS Save (the parent reads schedule.blocked). One-venue parishes
+   hide the venue picker entirely; multi-venue parishes get a picker plus
+   capacity-aware free-venue suggestions when the chosen venue is busy.
+*/
+interface MarriageScheduleInfo {
+  startMin: number | null;
+  canCheck: boolean;
+  venue: Venue | undefined;
+  conflicts: BusyInterval[];
+  freeVenues: VenueSuggestion[];
+  lit: { blocked: boolean; note: string };
+  blocked: boolean;
+}
+
+/** Pure: resolve the wedding's live availability from the current calendar. */
+function computeMarriageSchedule(p: {
+  date: string;
+  time: string;
+  officiant: string;
+  duration: number;
+  venueId: string;
+  guests: number | '';
+  excludeId?: string;
+  venues: Venue[];
+  events: CalendarEventLike[];
+}): MarriageScheduleInfo {
+  const startMin = parseTimeToMinutes(p.time);
+  const canCheck = !!p.date && startMin != null;
+  const venue =
+    p.venues.find((v) => v.id === p.venueId) ??
+    p.venues.find((v) => v.isDefault) ??
+    p.venues[0];
+
+  let conflicts: BusyInterval[] = [];
+  if (canCheck) {
+    const base = {
+      date: p.date,
+      startMin: startMin as number,
+      durationMin: p.duration,
+      officiant: p.officiant,
+      excludeId: p.excludeId,
+    };
+    // Test each of the chosen venue's identifying tokens (id/name/location) so
+    // both id-based bookings and legacy location-named sample events conflict;
+    // findConflicts also folds in same-officiant conflicts regardless of venue.
+    const tokens = venue
+      ? [venue.id, venue.name, venue.location].filter((t): t is string => !!t && t.trim() !== '')
+      : [''];
+    const map = new Map<string, BusyInterval>();
+    for (const tk of tokens.length ? tokens : ['']) {
+      for (const c of findConflicts({ ...base, venueId: tk }, p.events)) map.set(c.id, c);
+    }
+    conflicts = [...map.values()].sort((a, b) => a.start - b.start);
+  }
+
+  const lit = p.date ? isLiturgicallyBlocked(p.date, 'wedding') : { blocked: false, note: '' };
+  const guests = p.guests === '' ? null : Number(p.guests);
+  const freeVenues = canCheck
+    ? suggestFreeVenues(
+        {
+          date: p.date,
+          startMin: startMin as number,
+          durationMin: p.duration,
+          officiant: p.officiant,
+          excludeId: p.excludeId,
+        },
+        p.venues,
+        p.events,
+        guests,
+      )
+    : [];
+
+  return { startMin, canCheck, venue, conflicts, freeVenues, lit, blocked: conflicts.length > 0 || lit.blocked };
+}
+
+/** Minutes-from-midnight → "2:30 PM". */
+function minsToLabel(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const ampm = h < 12 ? 'AM' : 'PM';
+  const h12 = ((h + 11) % 12) + 1;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function MarriageScheduleSection({
+  date,
+  time,
+  officiant,
+  duration,
+  expectedGuests,
+  venueId,
+  autoCalendar,
+  multiVenue,
+  venues,
+  schedule,
+  eventTitle,
+  errors,
+  onChangeDate,
+  onChangeTime,
+  onChangeOfficiant,
+  onChangeDuration,
+  onChangeGuests,
+  onChangeVenue,
+  onChangeAutoCalendar,
+}: {
+  date: string;
+  time: string;
+  officiant: string;
+  duration: number;
+  expectedGuests: number | '';
+  venueId: string;
+  autoCalendar: boolean;
+  multiVenue: boolean;
+  venues: Venue[];
+  schedule: MarriageScheduleInfo;
+  eventTitle: string;
+  errors?: { date?: string; time?: string; officiant?: string };
+  onChangeDate: (v: string) => void;
+  onChangeTime: (v: string) => void;
+  onChangeOfficiant: (v: string) => void;
+  onChangeDuration: (v: number) => void;
+  onChangeGuests: (v: number | '') => void;
+  onChangeVenue: (id: string) => void;
+  onChangeAutoCalendar: (v: boolean) => void;
+}) {
+  const { canCheck, venue, conflicts, freeVenues, lit, blocked } = schedule;
+  const day = date ? new Date(date + 'T00:00:00').getDay() : -1;
+  const venueName = venue?.name || 'the venue';
+  const officiantLabel = officiant || 'the officiant';
+
+  // Free venues to OFFER: shown only when the chosen venue is busy and switching
+  // could actually help (an officiant double-booking frees none, so this stays
+  // empty and we don't mislead the user into thinking a venue swap fixes it).
+  const offerVenues =
+    multiVenue && conflicts.length > 0 ? freeVenues.filter((s) => s.venue.id !== venue?.id) : [];
+
+  return (
+    <div className="border-t border-parchment dark:border-dm-border pt-5">
+      <SectionHeader icon={Calendar} title="Schedule Marriage Ceremony" color="#3B6BC9" />
+      <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1">
+        Saturday is the preferred day for weddings. Weddings are prohibited during Lent.
+      </p>
+
+      <div className="grid grid-cols-2 gap-4 mt-3">
+        <Field label="Ceremony Date *" type="date" value={date} onChange={onChangeDate} error={errors?.date} required />
+        <Field label="Time *" as="select" value={time} onChange={onChangeTime} error={errors?.time} required>
+          <option value="">Select time...</option>
+          {marriageTimes.map((t) => <option key={t} value={t}>{t}</option>)}
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mt-3">
+        <Field
+          label="Duration (minutes) *"
+          type="number"
+          value={String(duration || '')}
+          onChange={(v) => onChangeDuration(Math.max(0, parseInt(v) || 0))}
+          placeholder="90"
+          required
+        />
+        <Field
+          label="Expected Guests"
+          type="number"
+          value={expectedGuests === '' ? '' : String(expectedGuests)}
+          onChange={(v) => onChangeGuests(v === '' ? '' : Math.max(0, parseInt(v) || 0))}
+          placeholder="e.g. 120"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mt-3">
+        <Field label="Officiant *" as="select" value={officiant} onChange={onChangeOfficiant} error={errors?.officiant} required>
+          <option value="">Select officiant...</option>
+          {officiantOptions(officiant).map((o) => <option key={o} value={o}>{o}</option>)}
+        </Field>
+        {/* One-venue parish → no venue picker (stays simple, uses the single venue). */}
+        {multiVenue && (
+          <Field label="Venue *" as="select" value={venueId} onChange={onChangeVenue} required>
+            {venues.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}{v.capacity ? ` (${v.capacity} seats)` : ''}
+              </option>
+            ))}
+          </Field>
+        )}
+      </div>
+
+      {/* LIVE availability — computed automatically, no manual check button. */}
+      <div className="mt-3">
+        {!canCheck ? (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50 text-warm-gray dark:text-dm-text-muted text-sm">
+            <Clock className="w-4 h-4 flex-shrink-0" />
+            Enter a date and time to check availability.
+          </div>
+        ) : conflicts.length > 0 ? (
+          <div className="space-y-1.5">
+            {conflicts.map((c) => {
+              const where = c.location || c.venueId || (c.officiant ? c.officiant : venueName);
+              return (
+                <div key={c.id} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-error/10 text-error text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Conflict: <strong>{c.title || 'An event'}</strong> is already booked{' '}
+                    {minsToLabel(c.start)}–{minsToLabel(c.end)} at {where}
+                    {c.officiant && officiant && c.officiant.trim().toLowerCase() === officiant.trim().toLowerCase()
+                      ? ` (${c.officiant} is unavailable)` : ''}.
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-success/10 text-success text-sm">
+            <Check className="w-4 h-4 flex-shrink-0" />
+            No conflict — {venueName} and {officiantLabel} are free at this time.
+          </div>
+        )}
+
+        {/* Liturgical advisory / block (e.g. weddings in Lent). */}
+        {lit.note && (
+          <div className={`flex items-start gap-2 mt-2 px-3 py-2 rounded-lg text-sm ${
+            lit.blocked ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'
+          }`}>
+            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            {lit.note}
+          </div>
+        )}
+
+        {/* Multi-venue: offer the venues that ARE free, capacity-aware. */}
+        {offerVenues.length > 0 && (
+          <div className="mt-2 px-3 py-2 rounded-lg bg-cream-dark/50 dark:bg-dm-surface-raised/50">
+            <p className="body-xs font-medium text-charcoal dark:text-dm-text mb-1.5">
+              These venues are free for this slot — switch to one:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {offerVenues.map((s) => (
+                <button
+                  key={s.venue.id}
+                  type="button"
+                  onClick={() => onChangeVenue(s.venue.id)}
+                  className={`cos-btn cos-btn-secondary h-8 px-3 text-xs ${s.fits ? '' : 'opacity-70'}`}
+                  title={s.fits ? '' : `May be too small for ${expectedGuests} guests`}
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  {s.venue.name}
+                  {s.venue.capacity ? ` · ${s.venue.capacity}` : ''}
+                  {!s.fits ? ' · too small' : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {blocked && (
+          <p className="body-xs text-error mt-2">
+            This record cannot be saved into a scheduling conflict. Adjust the date, time, duration
+            {multiVenue ? ', venue' : ''} or officiant.
+          </p>
+        )}
+
+        {day === 6 && !blocked && (
+          <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-success/10 text-success text-sm">
+            <Check className="w-4 h-4" />
+            Saturday — preferred day for weddings.
           </div>
         )}
       </div>
@@ -1922,6 +2645,15 @@ function PaymentSection({
                       className="h-9 w-full pl-8 pr-3 rounded-md border border-parchment bg-white text-sm text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
                     />
                   </div>
+                  {ceremonyFee > 0 && paymentInfo.amount !== ceremonyFee && (
+                    <p className="body-xs text-amber-600 dark:text-amber-300 mt-1 flex items-start gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                      <span>
+                        Entered amount ({currency}{(paymentInfo.amount || 0).toLocaleString()}) differs from the
+                        standard {sacramentLabel} fee of {currency}{ceremonyFee.toLocaleString()}.
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="label block text-warm-gray mb-1">Method</label>
@@ -2200,20 +2932,29 @@ function RecordModal({
     setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, voided: true } : a)));
   };
 
+  /* ── ATTACHED ORIGINAL FORMS (scanned provenance; added via the Scan page,
+        removable here). Preserved through Save so an edit never drops them. ── */
+  const [attachments, setAttachments] = useState<RecordAttachment[]>(() => (record?.attachments ? [...record.attachments] : []));
+  const handleRemoveAttachment = (id: string) => setAttachments((prev) => prev.filter((a) => a.id !== id));
+  // Attachment ids present when the editor OPENED — lets Save distinguish a
+  // removal made here from an addition made elsewhere (merge-on-save).
+  const [seededAttachmentIds] = useState<string[]>(() => (record?.attachments ?? []).map((a) => a.id));
+
   /* ── BAPTISM FORM STATE ── */
   const [bForm, setBForm] = useState<Partial<BaptismRecord>>(() => {
     const r = record as BaptismRecord | null;
     return {
       registryNumber: r?.registryNumber || '',
       childLastName: r?.childLastName || '', childFirstName: r?.childFirstName || '', childMiddleName: r?.childMiddleName || '',
-      dateOfBirth: r?.dateOfBirth || '', placeOfBirthCity: r?.placeOfBirthCity || 'Mabalacat', placeOfBirthProvince: r?.placeOfBirthProvince || 'Pampanga', gender: r?.gender || 'Male',
+      dateOfBirth: r?.dateOfBirth || '', placeOfBirthCity: r?.placeOfBirthCity || parishCities()[0], placeOfBirthProvince: r?.placeOfBirthProvince || parishProvinces()[0], gender: r?.gender || 'Male',
       fatherLastName: r?.fatherLastName || '', fatherFirstName: r?.fatherFirstName || '', fatherMiddleName: r?.fatherMiddleName || '', fatherParishionerId: r?.fatherParishionerId || '',
       motherLastName: r?.motherLastName || '', motherFirstName: r?.motherFirstName || '', motherMiddleName: r?.motherMiddleName || '', motherMaidenName: r?.motherMaidenName || '', motherParishionerId: r?.motherParishionerId || '',
       godfatherLastName: r?.godfatherLastName || '', godfatherFirstName: r?.godfatherFirstName || '', godfatherParishionerId: r?.godfatherParishionerId || '',
       godmotherLastName: r?.godmotherLastName || '', godmotherFirstName: r?.godmotherFirstName || '', godmotherParishionerId: r?.godmotherParishionerId || '',
       childParishionerId: r?.childParishionerId || '',
-      addressStreet: r?.addressStreet || '', addressBarangay: r?.addressBarangay || BARANGAYS[0], addressSitio: r?.addressSitio || '', addressCity: r?.addressCity || CITIES[0], addressProvince: r?.addressProvince || PROVINCES[0],
+      addressStreet: r?.addressStreet || '', addressBarangay: r?.addressBarangay || parishBarangays()[0], addressSitio: r?.addressSitio || '', addressCity: r?.addressCity || parishCities()[0], addressProvince: r?.addressProvince || parishProvinces()[0],
       dateOfBaptism: r?.dateOfBaptism || '', timeOfBaptism: r?.timeOfBaptism || '9:00 AM', officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || baptismLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2229,11 +2970,59 @@ function RecordModal({
       brideLastName: r?.brideLastName || '', brideFirstName: r?.brideFirstName || '', brideMiddleName: r?.brideMiddleName || '', brideAge: r?.brideAge || 25, brideStatus: r?.brideStatus || 'Single', brideFather: r?.brideFather || '', brideMother: r?.brideMother || '', brideParishionerId: r?.brideParishionerId || '',
       witness1Name: r?.witness1Name || '', witness1ParishionerId: r?.witness1ParishionerId || '', witness2Name: r?.witness2Name || '', witness2ParishionerId: r?.witness2ParishionerId || '',
       dateOfMarriage: r?.dateOfMarriage || '', timeOfMarriage: r?.timeOfMarriage || '10:00 AM', officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '10:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || marriageLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
   const [mAutoCalendar, setMAutoCalendar] = useState(true);
   const [mErrors, setMErrors] = useState<Record<string, string>>({});
+
+  /* ── MARRIAGE BOOKING (venue + live conflict) ── */
+  // Venues + the current calendar are read once per modal open (they don't
+  // change while the form is up); availability recomputes on every field edit.
+  const mVenues = useMemo(() => getActiveVenues(), []);
+  const mMultiVenue = useMemo(() => isMultiVenue(), []);
+  const mCalendarEvents = useMemo(
+    () => ns.getJSON<CalendarEvent[]>(KEYS.calendarEvents, SAMPLE_EVENTS) as unknown as CalendarEventLike[],
+    [],
+  );
+  const [mDuration, setMDuration] = useState<number>(90);
+  const [mExpectedGuests, setMExpectedGuests] = useState<number | ''>('');
+  const [mVenueId, setMVenueId] = useState<string>(() => {
+    const r = record as MarriageRecord | null;
+    if (r?.scheduledLocation) {
+      const match = mVenues.find(
+        (v) => v.name === r.scheduledLocation || v.location === r.scheduledLocation,
+      );
+      if (match) return match.id;
+    }
+    return (mVenues.find((v) => v.isDefault) ?? mVenues[0])?.id ?? '';
+  });
+  const mSchedule = useMemo(
+    () =>
+      computeMarriageSchedule({
+        date: mForm.scheduledDate || '',
+        time: mForm.scheduledTime || '',
+        officiant: mForm.scheduledOfficiant || '',
+        duration: mDuration,
+        venueId: mVenueId,
+        guests: mExpectedGuests,
+        excludeId: (record as MarriageRecord | null)?.calendarEventId || undefined,
+        venues: mVenues,
+        events: mCalendarEvents,
+      }),
+    [
+      mForm.scheduledDate,
+      mForm.scheduledTime,
+      mForm.scheduledOfficiant,
+      mDuration,
+      mVenueId,
+      mExpectedGuests,
+      mVenues,
+      mCalendarEvents,
+      record,
+    ],
+  );
 
   /* ── CONFIRMATION FORM STATE ── */
   const [cForm, setCForm] = useState<Partial<ConfirmationRecord>>(() => {
@@ -2246,6 +3035,7 @@ function RecordModal({
       officiant: r?.officiant || '', bishop: r?.bishop || 'Bishop Florentino Lavarias',
       sponsorLastName: r?.sponsorLastName || '', sponsorFirstName: r?.sponsorFirstName || '', sponsorParishionerId: r?.sponsorParishionerId || '',
       dateOfConfirmation: r?.dateOfConfirmation || '', timeOfConfirmation: r?.timeOfConfirmation || '9:00 AM', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || confirmationLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2261,6 +3051,7 @@ function RecordModal({
       age: r?.age || 0, gender: r?.gender || 'Male',
       dateOfDeath: r?.dateOfDeath || '', dateOfBurial: r?.dateOfBurial || '', timeOfBurial: r?.timeOfBurial || '9:00 AM', causeOfDeath: r?.causeOfDeath || '', cemetery: r?.cemetery || 'San Lorenzo Cemetery',
       officiant: r?.officiant || '', bookNumber: r?.bookNumber || 1, pageNumber: r?.pageNumber || 1, notations: r?.notations || '', status: r?.status || 'Active',
+      requirementsMet: r?.requirementsMet ? [...r.requirementsMet] : [],
       scheduledDate: r?.scheduledDate || '', scheduledTime: r?.scheduledTime || '9:00 AM', scheduledOfficiant: r?.scheduledOfficiant || '', scheduledLocation: r?.scheduledLocation || burialLocations[0], calendarEventId: r?.calendarEventId || '',
     };
   });
@@ -2285,19 +3076,19 @@ function RecordModal({
   };
 
   /* ── Update helpers ── */
-  const bUpdate = (field: string, value: string | number) => {
+  const bUpdate = (field: string, value: string | number | string[]) => {
     setBForm((prev) => ({ ...prev, [field]: value }));
     if (bErrors[field]) setBErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
-  const mUpdate = (field: string, value: string | number) => {
+  const mUpdate = (field: string, value: string | number | string[]) => {
     setMForm((prev) => ({ ...prev, [field]: value }));
     if (mErrors[field]) setMErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
-  const cUpdate = (field: string, value: string | number) => {
+  const cUpdate = (field: string, value: string | number | string[]) => {
     setCForm((prev) => ({ ...prev, [field]: value }));
     if (cErrors[field]) setCErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
-  const dUpdate = (field: string, value: string | number) => {
+  const dUpdate = (field: string, value: string | number | string[]) => {
     setDForm((prev) => ({ ...prev, [field]: value }));
     if (dErrors[field]) setDErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
   };
@@ -2523,10 +3314,30 @@ function RecordModal({
     }
   }, [paymentInfo, sacrament, onToast]);
 
+  /* ── Requirements: warn-only ──
+     Fired AFTER a successful save. Requirements never block saving (unlike the
+     marriage scheduling hard-block); an incomplete checklist just raises a
+     prominent warning toast naming what is still pending. */
+  const warnRequirementsPending = (sacramentKey: string, checkedIds: string[]) => {
+    const info = getSacramentInfo(sacramentKey);
+    if (!info) return;
+    const checkedSet = new Set(checkedIds);
+    const missingLabels = info.requirements.filter((r) => !checkedSet.has(r.id)).map((r) => r.label);
+    if (missingLabels.length === 0) return;
+    onToast(`Saved — ${missingLabels.length} requirement(s) still pending: ${missingLabels.join(', ')}`, 'warning');
+  };
+
   /* ── Save handler ── */
   const handleSave = () => {
     // Fee override validation: non-default payment options require a reason
     if (!validatePaymentOverride()) return;
+
+    // Merge attachments with the CURRENT store so a scan attached out-of-band
+    // (from the Scan page, in another session) since this editor opened is not
+    // clobbered by our stale snapshot; removals made here are still honored.
+    const mergedAttachments = record
+      ? resolveAttachmentsForSave(`${sacrament}Records` as RegistryStore, record.id, seededAttachmentIds, attachments)
+      : (attachments.length ? attachments : undefined);
 
     if (sacrament === 'baptism') {
       if (!validateBaptism()) return;
@@ -2534,27 +3345,44 @@ function RecordModal({
         id: (record as BaptismRecord | null)?.id || genId('b'),
         registryNumber: bForm.registryNumber || `2024-${String(Math.floor(Math.random() * 9000) + 1000)}`,
         childLastName: bForm.childLastName!, childFirstName: bForm.childFirstName!, childMiddleName: bForm.childMiddleName || '',
-        dateOfBirth: bForm.dateOfBirth || '', placeOfBirthCity: bForm.placeOfBirthCity || 'Mabalacat', placeOfBirthProvince: bForm.placeOfBirthProvince || 'Pampanga', gender: bForm.gender || 'Male',
+        dateOfBirth: bForm.dateOfBirth || '', placeOfBirthCity: bForm.placeOfBirthCity || parishCities()[0], placeOfBirthProvince: bForm.placeOfBirthProvince || parishProvinces()[0], gender: bForm.gender || 'Male',
         fatherLastName: bForm.fatherLastName!, fatherFirstName: bForm.fatherFirstName!, fatherMiddleName: bForm.fatherMiddleName || '', fatherParishionerId: bForm.fatherParishionerId || undefined,
         motherLastName: bForm.motherLastName!, motherFirstName: bForm.motherFirstName!, motherMiddleName: bForm.motherMiddleName || '', motherMaidenName: bForm.motherMaidenName || '', motherParishionerId: bForm.motherParishionerId || undefined,
         godfatherLastName: bForm.godfatherLastName || '', godfatherFirstName: bForm.godfatherFirstName || '', godfatherParishionerId: bForm.godfatherParishionerId || undefined,
         godmotherLastName: bForm.godmotherLastName || '', godmotherFirstName: bForm.godmotherFirstName || '', godmotherParishionerId: bForm.godmotherParishionerId || undefined,
         childParishionerId: bForm.childParishionerId || undefined,
-        addressStreet: bForm.addressStreet || '', addressBarangay: bForm.addressBarangay || BARANGAYS[0], addressSitio: bForm.addressSitio || '', addressCity: bForm.addressCity || CITIES[0], addressProvince: bForm.addressProvince || PROVINCES[0],
+        addressStreet: bForm.addressStreet || '', addressBarangay: bForm.addressBarangay || parishBarangays()[0], addressSitio: bForm.addressSitio || '', addressCity: bForm.addressCity || parishCities()[0], addressProvince: bForm.addressProvince || parishProvinces()[0],
         dateOfBaptism: bForm.dateOfBaptism!, timeOfBaptism: bForm.timeOfBaptism || '9:00 AM', officiant: bForm.officiant!, bookNumber: Number(bForm.bookNumber) || 1, pageNumber: Number(bForm.pageNumber) || 1,
         notations: bForm.notations || '', status: (bForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: bForm.scheduledDate || bForm.dateOfBaptism!, scheduledTime: bForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: bForm.scheduledOfficiant || bForm.officiant!, scheduledLocation: bForm.scheduledLocation || baptismLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: mergedAttachments,
+        requirementsMet: bForm.requirementsMet && bForm.requirementsMet.length ? bForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       const calCreated = maybeAddToCalendar(newRecord, bAutoCalendar, onToast);
       onSave(newRecord);
+      warnRequirementsPending('baptism', bForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Baptism', bAutoCalendar, calCreated));
     } else if (sacrament === 'marriage') {
       if (!validateMarriage()) return;
+      // HARD-BLOCK: a real venue/officiant/time conflict (or a liturgical block)
+      // can never be saved into. Availability is shown live in the panel; this is
+      // the enforcing gate for the save action itself.
+      if (mSchedule.blocked) {
+        const reason = mSchedule.conflicts.length > 0
+          ? `${mSchedule.conflicts[0].title || 'Another event'} is already booked at that time.`
+          : mSchedule.lit.note;
+        onToast(`Cannot save — scheduling conflict. ${reason}`, 'error');
+        return;
+      }
+      // The chosen venue's name is the record's scheduledLocation (the scheduling
+      // engine matches events by this venue token).
+      const mVenueName = mSchedule.venue?.name || mForm.scheduledLocation || marriageLocations[0];
       const newRecord: MarriageRecord = {
         id: (record as MarriageRecord | null)?.id || genId('m'),
         registryNumber: mForm.registryNumber || `2024-${String(Math.floor(Math.random() * 9000) + 1000)}`,
@@ -2567,14 +3395,23 @@ function RecordModal({
         dateOfMarriage: mForm.dateOfMarriage!, timeOfMarriage: mForm.timeOfMarriage || '10:00 AM',
         officiant: mForm.officiant!, bookNumber: Number(mForm.bookNumber) || 1, pageNumber: Number(mForm.pageNumber) || 1,
         notations: mForm.notations || '', status: (mForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: mForm.scheduledDate || mForm.dateOfMarriage!, scheduledTime: mForm.scheduledTime || '10:00 AM',
-        scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mForm.scheduledLocation || marriageLocations[0],
+        scheduledOfficiant: mForm.scheduledOfficiant || mForm.officiant!, scheduledLocation: mVenueName,
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: mergedAttachments,
+        requirementsMet: mForm.requirementsMet && mForm.requirementsMet.length ? mForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
-      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar, onToast);
+      // Carry a graceful surname-based title + the real time window so the created
+      // calendar event is detected as busy for the whole ceremony by future bookings.
+      const calCreated = maybeAddToCalendar(newRecord, mAutoCalendar, onToast, {
+        title: weddingCalendarTitle(newRecord.groomLastName, newRecord.brideLastName),
+        durationMin: mDuration,
+      });
       onSave(newRecord);
+      warnRequirementsPending('wedding', mForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Marriage', mAutoCalendar, calCreated));
     } else if (sacrament === 'confirmation') {
@@ -2590,14 +3427,18 @@ function RecordModal({
         dateOfConfirmation: cForm.dateOfConfirmation!, timeOfConfirmation: cForm.timeOfConfirmation || '9:00 AM',
         bookNumber: Number(cForm.bookNumber) || 1, pageNumber: Number(cForm.pageNumber) || 1,
         notations: cForm.notations || '', status: (cForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: cForm.scheduledDate || cForm.dateOfConfirmation!, scheduledTime: cForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: cForm.scheduledOfficiant || cForm.officiant!, scheduledLocation: cForm.scheduledLocation || confirmationLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: mergedAttachments,
+        requirementsMet: cForm.requirementsMet && cForm.requirementsMet.length ? cForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       const calCreated = maybeAddToCalendar(newRecord, cAutoCalendar, onToast);
       onSave(newRecord);
+      warnRequirementsPending('confirmation', cForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Confirmation', cAutoCalendar, calCreated));
     } else if (sacrament === 'death') {
@@ -2611,14 +3452,18 @@ function RecordModal({
         causeOfDeath: dForm.causeOfDeath || '', cemetery: dForm.cemetery || 'San Lorenzo Cemetery',
         officiant: dForm.officiant!, bookNumber: Number(dForm.bookNumber) || 1, pageNumber: Number(dForm.pageNumber) || 1,
         notations: dForm.notations || '', status: (dForm.status as 'Active') || 'Active',
+        lifecycleStatus: record ? recordStatus(record) : 'scheduled',
         scheduledDate: dForm.scheduledDate || dForm.dateOfBurial!, scheduledTime: dForm.scheduledTime || '9:00 AM',
         scheduledOfficiant: dForm.scheduledOfficiant || dForm.officiant!, scheduledLocation: dForm.scheduledLocation || burialLocations[0],
         calendarEventId: record?.calendarEventId || undefined,
         annotations: annotations.length ? annotations : undefined,
+        attachments: mergedAttachments,
+        requirementsMet: dForm.requirementsMet && dForm.requirementsMet.length ? dForm.requirementsMet : undefined,
         isDeleted: record?.isDeleted, deletedAt: record?.deletedAt, deletedBy: record?.deletedBy,
       };
       const calCreated = maybeAddToCalendar(newRecord, dAutoCalendar, onToast);
       onSave(newRecord);
+      warnRequirementsPending('funeral', dForm.requirementsMet || []);
       processPayment(newRecord);
       onToast(...calendarSaveToast('Burial', dAutoCalendar, calCreated));
     }
@@ -2694,7 +3539,7 @@ function RecordModal({
                     <div className="flex items-center">
                       <Field label="Officiant *" as="select" value={bForm.officiant || ''} onChange={(v) => bUpdate('officiant', v)} error={bErrors.officiant} required>
                         <option value="">Select officiant...</option>
-                        {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                        {officiantOptions(bForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                       </Field>
                       <HelpTooltip text={getLabel('field.officiant.help')} position="top" />
                     </div>
@@ -2706,17 +3551,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={Droplets} title="Child Information" color="#2D6A4F" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={bForm.childLastName || ''} onChange={(v) => bUpdate('childLastName', v)} error={bErrors.childLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={bForm.childFirstName || ''}
-                    onChange={(v) => { bUpdate('childFirstName', v); bUpdate('childParishionerId', ''); }}
+                    value={bForm.childLastName || ''}
+                    onChange={(v) => { bUpdate('childLastName', v); bUpdate('childParishionerId', ''); }}
                     onSelect={handleChildSelect}
-                    error={bErrors.childFirstName}
+                    error={bErrors.childLastName}
                     required
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={bForm.childFirstName || ''} onChange={(v) => bUpdate('childFirstName', v)} error={bErrors.childFirstName} required />
                   <Field label="Middle Name" value={bForm.childMiddleName || ''} onChange={(v) => bUpdate('childMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -2729,11 +3574,11 @@ function RecordModal({
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="Place of Birth (City) *" as="select" value={bForm.placeOfBirthCity || ''} onChange={(v) => bUpdate('placeOfBirthCity', v)} error={bErrors.placeOfBirthCity} required>
                     <option value="">Select city...</option>
-                    {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {parishCities().map((c) => <option key={c} value={c}>{c}</option>)}
                   </Field>
                   <Field label="Place of Birth (Province) *" as="select" value={bForm.placeOfBirthProvince || ''} onChange={(v) => bUpdate('placeOfBirthProvince', v)} error={bErrors.placeOfBirthProvince} required>
                     <option value="">Select province...</option>
-                    {PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {parishProvinces().map((p) => <option key={p} value={p}>{p}</option>)}
                   </Field>
                 </div>
               </div>
@@ -2743,43 +3588,43 @@ function RecordModal({
                 <div className="flex items-center justify-between mb-2">
                   <SectionHeader icon={Users} title="Parental Information" color="#6B2737" />
                   <span className="body-xs text-warm-gray dark:text-dm-text-muted flex items-center gap-1">
-                    <Search className="w-3 h-3" /> Type to search directory
+                    <Search className="w-3 h-3" /> Directory matches appear as you type
                   </span>
                 </div>
                 {/* Father */}
                 <div className="grid grid-cols-3 gap-4 mt-2">
                   <div className="flex items-center">
-                    <Field label="Father Last Name *" value={bForm.fatherLastName || ''} onChange={(v) => bUpdate('fatherLastName', v)} error={bErrors.fatherLastName} required />
+                    <ParishionerLookupAutocomplete
+                      label="Father Last Name *"
+                      options={parishioners}
+                      value={bForm.fatherLastName || ''}
+                      onChange={(v) => { bUpdate('fatherLastName', v); bUpdate('fatherParishionerId', ''); }}
+                      onSelect={handleFatherSelect}
+                      error={bErrors.fatherLastName}
+                      required
+                      placeholder="Type a surname..."
+                    />
                     <HelpTooltip text={getLabel('field.fatherName.help')} canonLaw={getLabel('field.godparents.canon')} position="top" />
                   </div>
-                  <ParishionerLookupAutocomplete
-                    label="Father First Name *"
-                    options={parishioners}
-                    value={bForm.fatherFirstName || ''}
-                    onChange={(v) => { bUpdate('fatherFirstName', v); bUpdate('fatherParishionerId', ''); }}
-                    onSelect={handleFatherSelect}
-                    error={bErrors.fatherFirstName}
-                    required
-                    placeholder="Type to search parishioners..."
-                  />
+                  <Field label="Father First Name *" value={bForm.fatherFirstName || ''} onChange={(v) => bUpdate('fatherFirstName', v)} error={bErrors.fatherFirstName} required />
                   <Field label="Father Middle Name" value={bForm.fatherMiddleName || ''} onChange={(v) => bUpdate('fatherMiddleName', v)} />
                 </div>
                 {/* Mother */}
                 <div className="grid grid-cols-4 gap-4 mt-3">
                   <div className="flex items-center">
-                    <Field label="Mother Maiden Last *" value={bForm.motherLastName || ''} onChange={(v) => bUpdate('motherLastName', v)} error={bErrors.motherLastName} required />
+                    <ParishionerLookupAutocomplete
+                      label="Mother Maiden Last *"
+                      options={parishioners}
+                      value={bForm.motherLastName || ''}
+                      onChange={(v) => { bUpdate('motherLastName', v); bUpdate('motherParishionerId', ''); }}
+                      onSelect={handleMotherSelect}
+                      error={bErrors.motherLastName}
+                      required
+                      placeholder="Type a surname..."
+                    />
                     <HelpTooltip text={getLabel('field.motherName.help')} position="top" />
                   </div>
-                  <ParishionerLookupAutocomplete
-                    label="Mother First Name *"
-                    options={parishioners}
-                    value={bForm.motherFirstName || ''}
-                    onChange={(v) => { bUpdate('motherFirstName', v); bUpdate('motherParishionerId', ''); }}
-                    onSelect={handleMotherSelect}
-                    error={bErrors.motherFirstName}
-                    required
-                    placeholder="Type to search parishioners..."
-                  />
+                  <Field label="Mother First Name *" value={bForm.motherFirstName || ''} onChange={(v) => bUpdate('motherFirstName', v)} error={bErrors.motherFirstName} required />
                   <Field label="Mother Middle Name" value={bForm.motherMiddleName || ''} onChange={(v) => bUpdate('motherMiddleName', v)} />
                   <div className="flex items-center">
                     <Field label="Mother Maiden Name" value={bForm.motherMaidenName || ''} onChange={(v) => bUpdate('motherMaidenName', v)} placeholder="e.g., Reyes" />
@@ -2795,26 +3640,26 @@ function RecordModal({
                   <HelpTooltip text={getLabel('field.godfather.help')} canonLaw={getLabel('field.godparents.canon')} position="right" />
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
-                  <Field label="Godfather Last Name" value={bForm.godfatherLastName || ''} onChange={(v) => bUpdate('godfatherLastName', v)} />
                   <ParishionerLookupAutocomplete
-                    label="Godfather First Name"
+                    label="Godfather Last Name"
                     options={parishioners}
-                    value={bForm.godfatherFirstName || ''}
-                    onChange={(v) => { bUpdate('godfatherFirstName', v); bUpdate('godfatherParishionerId', ''); }}
+                    value={bForm.godfatherLastName || ''}
+                    onChange={(v) => { bUpdate('godfatherLastName', v); bUpdate('godfatherParishionerId', ''); }}
                     onSelect={handleGodfatherSelect}
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="Godfather First Name" value={bForm.godfatherFirstName || ''} onChange={(v) => bUpdate('godfatherFirstName', v)} />
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
-                  <Field label="Godmother Last Name" value={bForm.godmotherLastName || ''} onChange={(v) => bUpdate('godmotherLastName', v)} />
                   <ParishionerLookupAutocomplete
-                    label="Godmother First Name"
+                    label="Godmother Last Name"
                     options={parishioners}
-                    value={bForm.godmotherFirstName || ''}
-                    onChange={(v) => { bUpdate('godmotherFirstName', v); bUpdate('godmotherParishionerId', ''); }}
+                    value={bForm.godmotherLastName || ''}
+                    onChange={(v) => { bUpdate('godmotherLastName', v); bUpdate('godmotherParishionerId', ''); }}
                     onSelect={handleGodmotherSelect}
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="Godmother First Name" value={bForm.godmotherFirstName || ''} onChange={(v) => bUpdate('godmotherFirstName', v)} />
                 </div>
               </div>
 
@@ -2826,7 +3671,7 @@ function RecordModal({
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="Barangay *" as="select" value={bForm.addressBarangay || ''} onChange={(v) => { bUpdate('addressBarangay', v); bUpdate('addressSitio', ''); }} required>
-                    {BARANGAYS.map((b) => <option key={b} value={b}>{b}</option>)}
+                    {parishBarangays().map((b) => <option key={b} value={b}>{b}</option>)}
                   </Field>
                   <Field label="Sitio" as="select" value={bForm.addressSitio || ''} onChange={(v) => bUpdate('addressSitio', v)}>
                     <option value="">Select sitio...</option>
@@ -2835,10 +3680,10 @@ function RecordModal({
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="City *" as="select" value={bForm.addressCity || ''} onChange={(v) => bUpdate('addressCity', v)} required>
-                    {CITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {parishCities().map((c) => <option key={c} value={c}>{c}</option>)}
                   </Field>
                   <Field label="Province *" as="select" value={bForm.addressProvince || ''} onChange={(v) => bUpdate('addressProvince', v)} required>
-                    {PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {parishProvinces().map((p) => <option key={p} value={p}>{p}</option>)}
                   </Field>
                 </div>
               </div>
@@ -2871,6 +3716,16 @@ function RecordModal({
                 errors={{ date: bErrors.scheduledDate, time: bErrors.scheduledTime, officiant: bErrors.scheduledOfficiant }}
               />
 
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="baptism"
+                checkedIds={bForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = bForm.requirementsMet || [];
+                  bUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
+              />
+
               {/* ═══ PAYMENT ═══ */}
               <PaymentSection sacrament="baptism" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
@@ -2893,7 +3748,7 @@ function RecordModal({
                   <Field label="Page # *" type="number" value={String(mForm.pageNumber || '')} onChange={(v) => mUpdate('pageNumber', parseInt(v) || 1)} error={mErrors.pageNumber} required />
                   <Field label="Officiant *" as="select" value={mForm.officiant || ''} onChange={(v) => mUpdate('officiant', v)} error={mErrors.officiant} required>
                     <option value="">Select officiant...</option>
-                    {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                    {officiantOptions(mForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                   </Field>
                 </div>
               </div>
@@ -2902,17 +3757,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={User} title="Groom Information" color="#2D6A4F" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={mForm.groomLastName || ''} onChange={(v) => mUpdate('groomLastName', v)} error={mErrors.groomLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={mForm.groomFirstName || ''}
-                    onChange={(v) => { mUpdate('groomFirstName', v); mUpdate('groomParishionerId', ''); }}
+                    value={mForm.groomLastName || ''}
+                    onChange={(v) => { mUpdate('groomLastName', v); mUpdate('groomParishionerId', ''); }}
                     onSelect={handleGroomSelect}
-                    error={mErrors.groomFirstName}
+                    error={mErrors.groomLastName}
                     required
-                    placeholder="Type to search..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={mForm.groomFirstName || ''} onChange={(v) => mUpdate('groomFirstName', v)} error={mErrors.groomFirstName} required />
                   <Field label="Middle Name" value={mForm.groomMiddleName || ''} onChange={(v) => mUpdate('groomMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -2932,17 +3787,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={User} title="Bride Information" color="#6B2737" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={mForm.brideLastName || ''} onChange={(v) => mUpdate('brideLastName', v)} error={mErrors.brideLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={mForm.brideFirstName || ''}
-                    onChange={(v) => { mUpdate('brideFirstName', v); mUpdate('brideParishionerId', ''); }}
+                    value={mForm.brideLastName || ''}
+                    onChange={(v) => { mUpdate('brideLastName', v); mUpdate('brideParishionerId', ''); }}
                     onSelect={handleBrideSelect}
-                    error={mErrors.brideFirstName}
+                    error={mErrors.brideLastName}
                     required
-                    placeholder="Type to search..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={mForm.brideFirstName || ''} onChange={(v) => mUpdate('brideFirstName', v)} error={mErrors.brideFirstName} required />
                   <Field label="Middle Name" value={mForm.brideMiddleName || ''} onChange={(v) => mUpdate('brideMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -2970,7 +3825,7 @@ function RecordModal({
                     onSelect={handleWitness1Select}
                     error={mErrors.witness1Name}
                     required
-                    placeholder="Type a name or search the directory..."
+                    placeholder="Type a name..."
                   />
                   <ParishionerLookupAutocomplete
                     label="Witness 2 *"
@@ -2980,7 +3835,7 @@ function RecordModal({
                     onSelect={handleWitness2Select}
                     error={mErrors.witness2Name}
                     required
-                    placeholder="Type a name or search the directory..."
+                    placeholder="Type a name..."
                   />
                 </div>
               </div>
@@ -2993,21 +3848,37 @@ function RecordModal({
                 </div>
               </div>
 
-              {/* ═══ SCHEDULE ═══ */}
-              <ScheduleSection
-                sacrament="marriage"
+              {/* ═══ SCHEDULE (venue + live conflict detection) ═══ */}
+              <MarriageScheduleSection
                 date={mForm.scheduledDate || ''}
                 time={mForm.scheduledTime || '10:00 AM'}
                 officiant={mForm.scheduledOfficiant || ''}
-                location={mForm.scheduledLocation || marriageLocations[0]}
+                duration={mDuration}
+                expectedGuests={mExpectedGuests}
+                venueId={mVenueId}
                 autoCalendar={mAutoCalendar}
+                multiVenue={mMultiVenue}
+                venues={mVenues}
+                schedule={mSchedule}
                 onChangeDate={(v) => mUpdate('scheduledDate', v)}
                 onChangeTime={(v) => mUpdate('scheduledTime', v)}
                 onChangeOfficiant={(v) => mUpdate('scheduledOfficiant', v)}
-                onChangeLocation={(v) => mUpdate('scheduledLocation', v)}
+                onChangeDuration={setMDuration}
+                onChangeGuests={setMExpectedGuests}
+                onChangeVenue={setMVenueId}
                 onChangeAutoCalendar={setMAutoCalendar}
-                eventTitle={`Wedding: ${mForm.groomFirstName || ''} ${mForm.groomLastName || ''} & ${mForm.brideFirstName || ''} ${mForm.brideLastName || ''}`}
+                eventTitle={weddingCalendarTitle(mForm.groomLastName, mForm.brideLastName)}
                 errors={{ date: mErrors.scheduledDate, time: mErrors.scheduledTime, officiant: mErrors.scheduledOfficiant }}
+              />
+
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only; independent of the scheduling hard-block above) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="wedding"
+                checkedIds={mForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = mForm.requirementsMet || [];
+                  mUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
               />
 
               {/* ═══ PAYMENT ═══ */}
@@ -3032,7 +3903,7 @@ function RecordModal({
                   <Field label="Page # *" type="number" value={String(cForm.pageNumber || '')} onChange={(v) => cUpdate('pageNumber', parseInt(v) || 1)} error={cErrors.pageNumber} required />
                   <Field label="Officiant *" as="select" value={cForm.officiant || ''} onChange={(v) => cUpdate('officiant', v)} error={cErrors.officiant} required>
                     <option value="">Select officiant...</option>
-                    {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                    {officiantOptions(cForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                   </Field>
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
@@ -3075,15 +3946,15 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={User} title="Sponsor" color="#5B3A73" />
                 <div className="grid grid-cols-2 gap-4 mt-3">
-                  <Field label="Sponsor Last Name" value={cForm.sponsorLastName || ''} onChange={(v) => cUpdate('sponsorLastName', v)} />
                   <ParishionerLookupAutocomplete
-                    label="Sponsor First Name"
+                    label="Sponsor Last Name"
                     options={parishioners}
-                    value={cForm.sponsorFirstName || ''}
-                    onChange={(v) => { cUpdate('sponsorFirstName', v); cUpdate('sponsorParishionerId', ''); }}
+                    value={cForm.sponsorLastName || ''}
+                    onChange={(v) => { cUpdate('sponsorLastName', v); cUpdate('sponsorParishionerId', ''); }}
                     onSelect={handleSponsorSelect}
-                    placeholder="Type to search parishioners..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="Sponsor First Name" value={cForm.sponsorFirstName || ''} onChange={(v) => cUpdate('sponsorFirstName', v)} />
                 </div>
               </div>
 
@@ -3112,6 +3983,16 @@ function RecordModal({
                 errors={{ date: cErrors.scheduledDate, time: cErrors.scheduledTime, officiant: cErrors.scheduledOfficiant }}
               />
 
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="confirmation"
+                checkedIds={cForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = cForm.requirementsMet || [];
+                  cUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
+              />
+
               {/* ═══ PAYMENT ═══ */}
               <PaymentSection sacrament="confirmation" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
@@ -3137,7 +4018,7 @@ function RecordModal({
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <Field label="Officiant *" as="select" value={dForm.officiant || ''} onChange={(v) => dUpdate('officiant', v)} error={dErrors.officiant} required>
                     <option value="">Select officiant...</option>
-                    {officiants.map((o) => <option key={o} value={o}>{o}</option>)}
+                    {officiantOptions(dForm.officiant).map((o) => <option key={o} value={o}>{o}</option>)}
                   </Field>
                   <Field label="Cemetery" value={dForm.cemetery || ''} onChange={(v) => dUpdate('cemetery', v)} />
                 </div>
@@ -3147,17 +4028,17 @@ function RecordModal({
               <div className="border-t border-parchment dark:border-dm-border pt-5">
                 <SectionHeader icon={Cross} title="Deceased Information" color="#3D3A36" />
                 <div className="grid grid-cols-3 gap-4 mt-3">
-                  <Field label="Last Name *" value={dForm.deceasedLastName || ''} onChange={(v) => dUpdate('deceasedLastName', v)} error={dErrors.deceasedLastName} required />
                   <ParishionerLookupAutocomplete
-                    label="First Name *"
+                    label="Last Name *"
                     options={parishioners}
-                    value={dForm.deceasedFirstName || ''}
-                    onChange={(v) => { dUpdate('deceasedFirstName', v); dUpdate('deceasedParishionerId', ''); }}
+                    value={dForm.deceasedLastName || ''}
+                    onChange={(v) => { dUpdate('deceasedLastName', v); dUpdate('deceasedParishionerId', ''); }}
                     onSelect={handleDeceasedSelect}
-                    error={dErrors.deceasedFirstName}
+                    error={dErrors.deceasedLastName}
                     required
-                    placeholder="Type to search..."
+                    placeholder="Type a surname..."
                   />
+                  <Field label="First Name *" value={dForm.deceasedFirstName || ''} onChange={(v) => dUpdate('deceasedFirstName', v)} error={dErrors.deceasedFirstName} required />
                   <Field label="Middle Name" value={dForm.deceasedMiddleName || ''} onChange={(v) => dUpdate('deceasedMiddleName', v)} />
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-3">
@@ -3195,6 +4076,16 @@ function RecordModal({
                 errors={{ date: dErrors.scheduledDate, time: dErrors.scheduledTime, officiant: dErrors.scheduledOfficiant }}
               />
 
+              {/* ═══ REQUIREMENTS CHECKLIST (warn-only) ═══ */}
+              <SacramentRequirementsChecklist
+                sacramentKey="funeral"
+                checkedIds={dForm.requirementsMet || []}
+                onToggle={(id, on) => {
+                  const cur = dForm.requirementsMet || [];
+                  dUpdate('requirementsMet', on ? Array.from(new Set([...cur, id])) : cur.filter((x) => x !== id));
+                }}
+              />
+
               {/* ═══ PAYMENT ═══ */}
               <PaymentSection sacrament="death" paymentInfo={paymentInfo} onChange={handlePaymentChange} error={paymentError} />
             </>
@@ -3202,6 +4093,9 @@ function RecordModal({
 
           {/* ═══ MARGINAL ANNOTATIONS (all sacraments, existing records) ═══ */}
           {isEdit && <AnnotationsSection annotations={annotations} onAdd={handleAddAnnotation} onVoid={handleVoidAnnotation} />}
+
+          {/* ═══ ATTACHED ORIGINAL FORMS (scanned provenance / paper trail) ═══ */}
+          {isEdit && <AttachedFormsSection attachments={attachments} onRemove={handleRemoveAttachment} />}
         </div>
 
         {/* Footer */}
@@ -3214,6 +4108,79 @@ function RecordModal({
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+/* =====================================================================
+   AttachedFormsSection — scanned original forms filed against a record.
+   The digital paper trail: data + image unified. Added on the Scan page
+   when a form is matched to (or created as) this record; viewable +
+   removable here. Images live private in the form-scans bucket; we mint a
+   short-lived signed URL per attachment to preview them.
+   ===================================================================== */
+function AttachedFormsSection({
+  attachments,
+  onRemove,
+}: {
+  attachments: RecordAttachment[];
+  onRemove: (id: string) => void;
+}) {
+  const [urls, setUrls] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    let alive = true;
+    void Promise.all(
+      attachments.map(async (a) => [a.id, await getFormScanUrl(a.storagePath)] as const),
+    ).then((entries) => { if (alive) setUrls(Object.fromEntries(entries)); });
+    return () => { alive = false; };
+  }, [attachments]);
+
+  return (
+    <div className="mt-6 pt-4 border-t border-parchment dark:border-dm-border">
+      <div className="flex items-center gap-2 mb-2">
+        <Link2 className="w-4 h-4 text-gold" />
+        <h4 className="heading-xs text-charcoal dark:text-dm-text">
+          Original form{attachments.length === 1 ? '' : 's'} on file{attachments.length ? ` (${attachments.length})` : ''}
+        </h4>
+      </div>
+      {attachments.length === 0 ? (
+        <p className="body-xs text-warm-gray dark:text-dm-text-muted">
+          No original form attached yet. Scan the paper form on the Scan page — Cherub matches it to this record and files the image here.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {attachments.map((a) => {
+            const url = urls[a.id];
+            const badge = a.provenance === 'pms-sourced' ? 'From PMS' : 'Scanned original';
+            return (
+              <div key={a.id} className="rounded-lg border border-parchment dark:border-dm-border overflow-hidden bg-cream-dark dark:bg-dm-surface-raised">
+                <div className="h-28 flex items-center justify-center bg-white/60 dark:bg-black/20">
+                  {url === undefined ? (
+                    <span className="body-xs text-warm-gray">Loading…</span>
+                  ) : url ? (
+                    <a href={url} target="_blank" rel="noreferrer" title="Open the original form">
+                      <img src={url} alt={a.fileName || 'Scanned form'} className="max-h-28 w-auto object-contain" />
+                    </a>
+                  ) : (
+                    <span className="body-xs text-warm-gray text-center px-2">Image unavailable</span>
+                  )}
+                </div>
+                <div className="p-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="cos-badge bg-gold/15 text-gold text-[10px]">{badge}</span>
+                    <button type="button" onClick={() => onRemove(a.id)} className="p-1 rounded text-warm-gray hover:text-error hover:bg-error/10" title="Remove attachment">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <p className="body-xs text-warm-gray dark:text-dm-text-muted mt-1 truncate" title={a.fileName}>
+                    {formatDate(a.uploadedAt)} · {a.uploadedBy}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3406,14 +4373,39 @@ function AnnotationsSection({
 /* =====================================================================
    CertificateModal — Generate certificate with template selector
    ===================================================================== */
-function CertificateModal({ record, sacrament, onClose }: { record: RegistryRecord; sacrament: SacramentTab; onClose: () => void }) {
+function CertificateModal({ record, sacrament, onClose, onToast }: { record: RegistryRecord; sacrament: SacramentTab; onClose: () => void; onToast: (msg: string, type: ToastType) => void }) {
   const feeLabel = sacrament === 'baptism' ? 'Baptism' : sacrament === 'marriage' ? 'Marriage' : sacrament === 'confirmation' ? 'Confirmation' : 'Death';
   const personName = getPersonName(record, sacrament);
 
   // Use persisted (user-edited) templates so Template Editor changes apply
   // here; only this sacrament's templates are offered.
-  const [templates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
+  const [templates, setTemplates] = useState<CertificateTemplate[]>(() => loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
   const [selectedTemplateId, setSelectedTemplateId] = useState(() => (templates.find((t) => t.isDefault) ?? templates[0]).id);
+  const templateFileRef = useRef<HTMLInputElement>(null);
+  // Guided visual editor — opened from this modal to design a new template or
+  // edit a design-backed one. On save it refreshes this list and selects it.
+  const [designEditor, setDesignEditor] = useState<{ template: CertificateTemplate | null } | null>(null);
+
+  // Upload a custom .html certificate template. It persists to the shared store,
+  // so it also shows up in the Template Editor for further tweaking.
+  const handleUploadTemplate = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the same file be re-picked later
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (!text.trim()) { onToast('That file is empty', 'error'); return; }
+      const name = file.name.replace(/\.[^.]+$/, '') || 'Uploaded Template';
+      const tmpl = templateFromUpload(text, name, sacrament);
+      const ok = saveCertificateTemplates([...loadCertificateTemplates(), tmpl]);
+      if (!ok) { onToast('Could not save — storage is full', 'error'); return; }
+      setTemplates(loadCertificateTemplates().filter((t) => t.sacrament === sacrament));
+      setSelectedTemplateId(tmpl.id);
+      onToast(`Uploaded "${tmpl.name}". Tip: use tokens like {{child_name}} so it fills in data.`, 'success');
+    } catch {
+      onToast('Could not read that file', 'error');
+    }
+  };
   const [zoom, setZoom] = useState(100);
   const [isCopy, setIsCopy] = useState(false);
   const [certFeeStatus, setCertFeeStatus] = useState<'original' | 'reprint'>('original');
@@ -3497,6 +4489,7 @@ function CertificateModal({ record, sacrament, onClose }: { record: RegistryReco
   };
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -3547,6 +4540,35 @@ function CertificateModal({ record, sacrament, onClose }: { record: RegistryReco
                 </button>
               ))}
             </div>
+            {/* Design a brand-new template in the guided visual editor. */}
+            <button
+              onClick={() => setDesignEditor({ template: null })}
+              className="w-full cos-btn cos-btn-primary text-xs py-2"
+              title="Design a new certificate visually — no HTML"
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Design new template
+            </button>
+            {/* When the selected template was built visually, offer to reopen it. */}
+            {selectedTemplate?.design && (
+              <button
+                onClick={() => setDesignEditor({ template: selectedTemplate })}
+                className="w-full cos-btn cos-btn-secondary text-xs py-2"
+                title="Reopen this template in the guided visual editor"
+              >
+                <Pencil className="w-3.5 h-3.5" /> Edit visually
+              </button>
+            )}
+            <input ref={templateFileRef} type="file" accept=".html,.htm,text/html" onChange={handleUploadTemplate} className="hidden" />
+            <button
+              onClick={() => templateFileRef.current?.click()}
+              className="w-full cos-btn cos-btn-secondary text-xs py-2"
+              title="Upload a custom .html certificate template that uses {{tokens}}"
+            >
+              <Upload className="w-3.5 h-3.5" /> Upload template
+            </button>
+            <p className="text-[11px] text-warm-gray dark:text-dm-text-muted leading-snug">
+              Design visually, or upload an .html file using tokens like <span className="font-mono">{'{{child_name}}'}</span>. Fine-tune raw HTML later in the Template Editor.
+            </p>
           </div>
 
           {/* Center — Live Preview */}
@@ -3766,6 +4788,20 @@ function CertificateModal({ record, sacrament, onClose }: { record: RegistryReco
         </div>
       </motion.div>
     </motion.div>
+    {designEditor && (
+      <CertificateDesignEditor
+        template={designEditor.template}
+        sacrament={sacrament}
+        onClose={() => setDesignEditor(null)}
+        onToast={onToast}
+        onSaved={(t) => {
+          setTemplates(loadCertificateTemplates().filter((x) => x.sacrament === sacrament));
+          setSelectedTemplateId(t.id);
+          setDesignEditor(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -3778,6 +4814,58 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
   const [activeTmplId, setActiveTmplId] = useState(templates[0].id);
   const [html, setHtml] = useState(templates[0].html);
   const activeTmpl = templates.find((t) => t.id === activeTmplId)!;
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const imageRef = useRef<HTMLInputElement>(null);
+  // Guided visual editor — the recommended path. Raw HTML below is the
+  // "Advanced" escape hatch. Opened for a design-backed template (Edit
+  // visually) or to author a fresh one (Design new).
+  const [designEditor, setDesignEditor] = useState<{
+    template: CertificateTemplate | null;
+    sacrament: CertificateSacrament;
+  } | null>(null);
+
+  // Upload a custom .html file as a new editable template (persisted immediately).
+  const handleUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (!text.trim()) { onToast('That file is empty', 'error'); return; }
+      const name = file.name.replace(/\.[^.]+$/, '') || 'Uploaded Template';
+      const tmpl = templateFromUpload(text, name, activeTmpl.sacrament);
+      const next = [...templates, tmpl];
+      if (!saveCertificateTemplates(next)) { onToast('Could not save — storage is full', 'error'); return; }
+      setTemplates(next);
+      setActiveTmplId(tmpl.id);
+      setHtml(tmpl.html);
+      onToast(`Uploaded "${tmpl.name}" — now editable`, 'success');
+    } catch {
+      onToast('Could not read that file', 'error');
+    }
+  };
+
+  // Embed a parish seal/logo as a base64 <img> at the end of the template HTML.
+  // Kept small (<1 MB) so the template still fits storage and prints quickly.
+  const handleInsertImage = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { onToast('Please choose an image file', 'error'); return; }
+    if (file.size > 1_000_000) { onToast('That image is over 1 MB — please use a smaller seal/logo so certificates save and print smoothly', 'warning'); return; }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(file);
+      });
+      setHtml((prev) => `${prev}\n<img src="${dataUrl}" alt="seal" style="max-width:120px; height:auto;" />\n`);
+      onToast('Image embedded — reposition it in the HTML, then Save (Duplicate first if this is a system template)', 'success');
+    } catch {
+      onToast('Could not read that image', 'error');
+    }
+  };
 
   const handleSave = () => {
     if (activeTmpl.isSystem) {
@@ -3822,6 +4910,7 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
   };
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -3839,9 +4928,25 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
         <div className="flex items-center justify-between px-6 py-4 border-b border-parchment dark:border-dm-border">
           <div className="flex items-center gap-3">
             <Code className="w-5 h-5 text-gold" />
-            <h2 className="heading-lg text-charcoal dark:text-dm-text">Template Editor</h2>
+            <div>
+              <h2 className="heading-lg text-charcoal dark:text-dm-text">Certificate Templates</h2>
+              <p className="body-xs text-warm-gray dark:text-dm-text-muted">Design visually, or edit raw HTML under Advanced.</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setDesignEditor({ template: null, sacrament: activeTmpl.sacrament })}
+              className="cos-btn cos-btn-primary h-8 px-3 text-xs"
+              title="Design a new certificate visually — no HTML"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Design new
+            </button>
+            <input ref={uploadRef} type="file" accept=".html,.htm,text/html" onChange={handleUpload} className="hidden" />
+            <button onClick={() => uploadRef.current?.click()} className="cos-btn cos-btn-secondary h-8 px-3 text-xs" title="Upload a custom .html template that uses {{tokens}}">
+              <Upload className="w-3.5 h-3.5" />
+              Upload
+            </button>
             <button onClick={handleDuplicate} className="cos-btn cos-btn-secondary h-8 px-3 text-xs" title="Copy this template to a new editable one">
               <Copy className="w-3.5 h-3.5" />
               Duplicate
@@ -3865,26 +4970,61 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
           <div className="w-full lg:w-48 border-r border-parchment dark:border-dm-border p-4 space-y-2">
             <h3 className="heading-sm text-charcoal dark:text-dm-text text-xs uppercase mb-2">Templates</h3>
             {templates.map((t) => (
-              <button
+              <div
                 key={t.id}
-                onClick={() => { setActiveTmplId(t.id); setHtml(t.html); }}
-                className={`w-full text-left p-2.5 rounded-lg text-sm transition-all ${
+                className={`rounded-lg transition-all ${
                   activeTmplId === t.id
-                    ? 'bg-gold-glow border border-gold text-charcoal dark:text-dm-text'
-                    : 'text-warm-gray hover:bg-cream-dark dark:text-dm-text-muted dark:hover:bg-dm-surface-raised'
+                    ? 'bg-gold-glow border border-gold'
+                    : 'hover:bg-cream-dark dark:hover:bg-dm-surface-raised'
                 }`}
               >
-                {t.name}
-                {t.isSystem && <span className="ml-1.5 text-[10px] opacity-50">(system)</span>}
-              </button>
+                <button
+                  onClick={() => { setActiveTmplId(t.id); setHtml(t.html); }}
+                  className={`w-full text-left p-2.5 rounded-lg text-sm ${
+                    activeTmplId === t.id ? 'text-charcoal dark:text-dm-text' : 'text-warm-gray dark:text-dm-text-muted'
+                  }`}
+                >
+                  {t.name}
+                  {t.isSystem && <span className="ml-1.5 text-[10px] opacity-50">(system)</span>}
+                  {t.design && (
+                    <span className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] text-gold">
+                      <Sparkles className="w-2.5 h-2.5" /> visual
+                    </span>
+                  )}
+                </button>
+                {t.design && (
+                  <button
+                    onClick={() => setDesignEditor({ template: t, sacrament: t.sacrament })}
+                    className="w-full text-left px-2.5 pb-2 -mt-1 text-[11px] text-gold hover:underline inline-flex items-center gap-1"
+                    title="Edit this template in the guided visual editor"
+                  >
+                    <Pencil className="w-3 h-3" /> Edit visually
+                  </button>
+                )}
+              </div>
             ))}
           </div>
 
           {/* Code Editor */}
           <div className="flex-1 border-r border-parchment dark:border-dm-border flex flex-col min-w-0">
             <div className="px-4 py-2 border-b border-parchment dark:border-dm-border bg-cream-dark dark:bg-dm-surface-raised flex items-center justify-between">
-              <span className="label text-warm-gray">HTML/CSS Editor</span>
-              <span className="text-[10px] text-warm-gray font-mono">{activeTmpl.isSystem ? 'Read-only' : 'Editable'}</span>
+              <span className="label text-warm-gray">Advanced (HTML)</span>
+              <div className="flex items-center gap-2">
+                {activeTmpl.design && (
+                  <button
+                    onClick={() => setDesignEditor({ template: activeTmpl, sacrament: activeTmpl.sacrament })}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-gold/30 bg-gold-glow text-[10px] text-charcoal dark:text-dm-text hover:bg-gold/20 transition-colors"
+                    title="This template was built visually — reopen the guided editor"
+                  >
+                    <Sparkles className="w-3 h-3" /> Edit visually
+                  </button>
+                )}
+                <input ref={imageRef} type="file" accept="image/*" onChange={handleInsertImage} className="hidden" />
+                <button onClick={() => imageRef.current?.click()} className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-gold/30 bg-gold-glow text-[10px] text-charcoal dark:text-dm-text hover:bg-gold/20 transition-colors" title="Embed a parish seal or logo image">
+                  <ImageIcon className="w-3 h-3" /> Insert image
+                </button>
+                <span className="text-[10px] text-warm-gray font-mono">{activeTmpl.isSystem ? 'Read-only' : 'Editable'}</span>
+              </div>
             </div>
             <textarea
               value={html}
@@ -3927,6 +5067,22 @@ function TemplateEditorModal({ onClose, onToast }: { onClose: () => void; onToas
         </div>
       </motion.div>
     </motion.div>
+    {designEditor && (
+      <CertificateDesignEditor
+        template={designEditor.template}
+        sacrament={designEditor.sacrament}
+        onClose={() => setDesignEditor(null)}
+        onToast={onToast}
+        onSaved={(t) => {
+          const next = loadCertificateTemplates();
+          setTemplates(next);
+          setActiveTmplId(t.id);
+          setHtml(t.html);
+          setDesignEditor(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 

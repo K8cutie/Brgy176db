@@ -124,6 +124,13 @@ file_size_limit = "50MiB"
 # allowed_mime_types = ["image/png", "image/jpeg"]
 # objects_path = "./images"
 
+# Private per-parish bucket for scanned original forms (the digital paper trail
+# attached to sacramental records). RLS lives in churchos-saas-form-scans.sql.
+[storage.buckets.form-scans]
+public = false
+file_size_limit = "10MiB"
+allowed_mime_types = ["image/png", "image/jpeg", "application/pdf"]
+
 # Allow connections via S3 compatible clients
 [storage.s3_protocol]
 enabled = true
@@ -412,3 +419,15 @@ enabled = true
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+[functions.ai]
+verify_jwt = true
+
+[functions.scan-extract]
+verify_jwt = true
+
+# notify SENDS paid SMS/email, so the gateway must require a valid JWT (the handler
+# also authenticates in-band + verifies the recipient is on file for the caller's
+# parish, as defense-in-depth against an arbitrary-recipient smishing relay).
+[functions.notify]
+verify_jwt = true

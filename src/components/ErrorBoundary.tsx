@@ -8,15 +8,21 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  isChunkError: boolean;
 }
+
+// A lazily-loaded route chunk that 404s after a new deploy surfaces here as a
+// render error. Browsers phrase it differently, so match them all.
+const CHUNK_ERROR_RE =
+  /dynamically imported module|module script failed|ChunkLoadError|Loading chunk|error loading dynamically/i;
 
 // Catches render-time exceptions anywhere below it so a single bad
 // page doesn't white-screen the whole app for a non-technical user.
 export default class ErrorBoundary extends Component<Props, State> {
-  state: State = { hasError: false, error: null };
+  state: State = { hasError: false, error: null, isChunkError: false };
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+    return { hasError: true, error, isChunkError: CHUNK_ERROR_RE.test(error?.message || '') };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
@@ -26,6 +32,17 @@ export default class ErrorBoundary extends Component<Props, State> {
     // Route through monitoring (no-op unless VITE_SENTRY_DSN is set). We pass only
     // the React component stack — no parish data or user identity.
     captureError(error, { componentStack: info.componentStack });
+    // A stale-chunk 404 after a deploy is fixed by pulling the fresh shell.
+    // Auto-reload once (10s-guarded so a genuinely-missing chunk can't loop);
+    // if we already tried, fall through to the manual button below.
+    if (CHUNK_ERROR_RE.test(error?.message || '')) {
+      const KEY = 'churchos_chunk_reload_at';
+      const last = Number(sessionStorage.getItem(KEY) || 0);
+      if (Date.now() - last > 10_000) {
+        sessionStorage.setItem(KEY, String(Date.now()));
+        window.location.reload();
+      }
+    }
   }
 
   handleReload = () => {
@@ -48,11 +65,12 @@ export default class ErrorBoundary extends Component<Props, State> {
         >
           <div style={{ maxWidth: 440, textAlign: 'center' }}>
             <h1 style={{ fontSize: 22, fontWeight: 600, color: '#3D3A36', marginBottom: 8 }}>
-              Something went wrong
+              {this.state.isChunkError ? 'A new version is ready' : 'Something went wrong'}
             </h1>
             <p style={{ fontSize: 14, color: '#8C8374', marginBottom: 20, lineHeight: 1.6 }}>
-              The page hit an unexpected error. Your parish data is safe — it is
-              stored on this computer and was not lost. Reloading usually fixes it.
+              {this.state.isChunkError
+                ? 'ChurchOS was just updated. Reload to load the latest version — your parish data is safe.'
+                : 'The page hit an unexpected error. Your parish data is safe — it is stored on this computer and was not lost. Reloading usually fixes it.'}
             </p>
             <button
               onClick={this.handleReload}

@@ -19,7 +19,7 @@ import {
   Baby,
 } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
-import { MINISTRIES, getAccentColor } from '@/lib/ministryData';
+import { getMinistries, getAccentColor } from '@/lib/ministryData';
 import type { Ministry, MinistryMember, ScheduleAssignment, AttendanceRecord } from '@/lib/ministryData';
 import DataTable from '@/components/DataTable';
 import ConfirmationDialog from '@/components/ConfirmationDialog';
@@ -40,7 +40,10 @@ const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MASS_TIMES = ['6:00 AM', '8:00 AM', '10:00 AM', '6:00 PM'];
 
 export default function MinistriesPage() {
-  const [ministries, setMinistries] = usePersistedState<Ministry[]>(KEYS.ministries, MINISTRIES);
+  // getMinistries() seeds the 5 default shells on first read for a parish with none — the
+  // usePersistedState default (MINISTRIES) is dead in cloud mode (hydrate returns "[]", not null).
+  const [ministrySeed] = useState(() => getMinistries());
+  const [ministries, setMinistries] = usePersistedState<Ministry[]>(KEYS.ministries, ministrySeed);
   const [selectedMinistryId, setSelectedMinistryId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>('roster');
   const [memberModalOpen, setMemberModalOpen] = useState(false);

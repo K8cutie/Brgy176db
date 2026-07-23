@@ -1,0 +1,5 @@
+# ChurchOS security contact (RFC 9116)
+Contact: mailto:archgarcia@gmail.com
+Expires: 2027-07-15T00:00:00.000Z
+Preferred-Languages: en, tl
+Canonical: https://churchos-fawn.vercel.app/.well-known/security.txt

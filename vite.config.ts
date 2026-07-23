@@ -14,7 +14,11 @@ const isWebBuild =
 // https://vite.dev/config/
 export default defineConfig({
   base: isWebBuild ? '/' : './',
-  plugins: [inspectAttr(), react()],
+  // inspectAttr() rewrites every JSX element with a code-path="src/…:line:col" attribute
+  // for the in-app dev inspector. It has no internal env gate, so without apply:'serve'
+  // it also runs during `vite build` and ships thousands of source paths into the prod
+  // bundle/DOM. Gate it to the dev server only.
+  plugins: [{ ...inspectAttr(), apply: 'serve' }, react()],
   server: {
     port: 3000,
   },

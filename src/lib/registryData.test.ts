@@ -19,6 +19,7 @@ import {
   buildRegistryCalendarEvent,
   annotateEventWithSchedulingRules,
   mergeCertificateTemplates,
+  templateFromUpload,
   liveOnly,
   softDelete,
   findBaptismCandidates,
@@ -432,6 +433,38 @@ describe("mergeCertificateTemplates", () => {
     expect(merged.id).toBe(shipped.id)
     // Editable content still applies (this is a legitimate edit path).
     expect(merged.html).toBe("<img src=x onerror=alert(1)>")
+  })
+})
+
+describe("templateFromUpload", () => {
+  it("builds an editable, non-system custom template with a tcustom- id", () => {
+    const t = templateFromUpload("<div>{{child_name}}</div>", "My Parish Cert", "baptism")
+    expect(t.id).toMatch(/^tcustom-/)
+    expect(t.isSystem).toBe(false)
+    expect(t.isDefault).toBe(false)
+    expect(t.sacrament).toBe("baptism")
+    expect(t.name).toBe("My Parish Cert")
+    expect(t.html).toContain("{{child_name}}")
+  })
+
+  it("strips <script> tags and inline event handlers from uploaded HTML", () => {
+    const dirty = `<div onclick="steal()">hi<script>fetch('/evil')</script></div>`
+    const t = templateFromUpload(dirty, "x", "marriage")
+    expect(t.html).not.toMatch(/<script/i)
+    expect(t.html).not.toMatch(/onclick/i)
+    expect(t.html).toContain("hi")
+  })
+
+  it("falls back to a default name when the given name is blank", () => {
+    expect(templateFromUpload("<div/>", "   ", "death").name).toBe("Uploaded Template")
+  })
+
+  it("round-trips through mergeCertificateTemplates as a preserved custom template", () => {
+    const t = templateFromUpload("<div>{{child_name}}</div>", "Round Trip", "confirmation")
+    const kept = mergeCertificateTemplates(certificateTemplates, [t]).find((x) => x.id === t.id)!
+    expect(kept).toBeTruthy()
+    expect(kept.isSystem).toBe(false)
+    expect(kept.name).toBe("Round Trip")
   })
 })
 

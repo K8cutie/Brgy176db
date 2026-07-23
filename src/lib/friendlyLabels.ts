@@ -20,8 +20,10 @@ export const friendlyLabels: Record<string, string> = {
   'registry.add': 'Add New Record',
   'registry.search': 'Search by name, date, or registry number...',
   'registry.certificate': 'Print Certificate',
-  'registry.empty.title': 'No baptism records yet',
-  'registry.empty.description': "When you start recording baptisms, they'll appear here. Click 'Add New Record' to begin!",
+  // registry.empty.title / .description are intentionally NOT defined here. The empty
+  // state is per-tab (baptism / marriage / confirmation / death), so RegistryPage passes
+  // a tab-specific dynamic fallback to getLabel. A single hardcoded value here would
+  // shadow that fallback and wrongly show "baptism" on every tab.
   'registry.empty.tip': 'You can also search existing records by name or date.',
 
   /* ── Form Fields: Registry ── */

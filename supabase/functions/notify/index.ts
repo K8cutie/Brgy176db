@@ -15,10 +15,15 @@
 // Note: this runs on Deno, not the app's Vite build — it is not type-checked by
 // `npm run build`. It is a deploy artifact.
 
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createLogger } from '../_shared/log.ts';
 
+// Lock to the app origin in production (set NOTIFY_ALLOWED_ORIGIN) so arbitrary
+// websites' JS cannot fire these (billed) sends. Defaults to '*' to preserve
+// current behavior when unset — matches the AI function's ALLOWED_ORIGIN seam.
+const ALLOWED_ORIGIN = Deno.env.get('NOTIFY_ALLOWED_ORIGIN') || '*';
 const CORS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
   'Access-Control-Allow-Headers': 'authorization, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
@@ -27,6 +32,28 @@ const MAX_MESSAGE_LEN = 2000;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'content-type': 'application/json' } });
+}
+
+// Normalizers for on-file recipient matching. Phone: digits only, compared on the
+// last 10 (tolerates +63 / 0 / spacing variants). Email: trimmed + lowercased.
+const digits = (s: string) => s.replace(/\D+/g, '');
+const phoneKey = (s: string) => { const d = digits(s); return d.length >= 10 ? d.slice(-10) : d; };
+const emailKey = (s: string) => s.trim().toLowerCase();
+
+// Is `to` a contact ALREADY on file for the caller's own parish? Runs under the
+// caller's RLS (service_requests is parish-scoped), so this both authorizes the
+// recipient and can never see another parish's contacts. Returns false when the
+// recipient is unknown → the function refuses to send (kills the arbitrary-recipient
+// smishing / denial-of-wallet relay). Returns false (fail-closed) on any query error.
+// deno-lint-ignore no-explicit-any
+async function recipientOnFile(supa: any, channel: 'sms' | 'email', to: string): Promise<boolean> {
+  const col = channel === 'sms' ? 'requester_phone' : 'requester_email';
+  const { data, error } = await supa.from('service_requests').select(col).not(col, 'is', null).limit(5000);
+  if (error || !Array.isArray(data)) return false;
+  const want = channel === 'sms' ? phoneKey(to) : emailKey(to);
+  if (!want) return false;
+  const norm = channel === 'sms' ? phoneKey : emailKey;
+  return data.some((r: Record<string, string>) => norm(String(r[col] ?? '')) === want);
 }
 
 async function sendSms(key: string, to: string, message: string) {
@@ -67,6 +94,42 @@ Deno.serve(async (req: Request) => {
     }
     if (message.length > MAX_MESSAGE_LEN) {
       return json({ ok: false, error: 'message_too_long', message: `Message must be ${MAX_MESSAGE_LEN} characters or fewer.` }, 400);
+    }
+
+    // AUTHENTICATE THE CALLER BEFORE SENDING ANYTHING. Without this, any valid JWT
+    // (any parish) — or, if the gateway is ever misconfigured, an anon caller — could
+    // POST an arbitrary `to` + free-text message and turn the parish's paid SMS/email
+    // credits into a smishing / denial-of-wallet relay. Mirrors the AI function's
+    // in-band getUser() defense-in-depth; a bare anon key resolves to no user here.
+    const authHeader = req.headers.get('Authorization') || '';
+    const jwt = authHeader.replace(/^Bearer\s+/i, '').trim();
+    if (!jwt) return json({ ok: false, error: 'unauthorized' }, 401);
+    const supa = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_ANON_KEY')!,
+      { global: { headers: { Authorization: authHeader } } },
+    );
+    const { data: userData, error: authErr } = await supa.auth.getUser();
+    const uid = userData?.user?.id;
+    if (authErr || !uid) return json({ ok: false, error: 'unauthorized' }, 401);
+
+    // Per-user burst throttle (caps spam volume / denial-of-wallet). rate_allow
+    // RETURNS a boolean; only an explicit false blocks (a missing grant surfaces as
+    // an error, not a silent no-op). Same pattern as the AI function.
+    {
+      const { data: allowed, error: rlErr } = await supa.rpc('rate_allow', { p_key: 'notify:' + uid, p_limit: 30, p_window: '1 minute' });
+      if (!rlErr && allowed === false) return json({ ok: false, error: 'rate_limited' }, 429);
+    }
+
+    // The recipient MUST already be a contact on file for the caller's own parish
+    // (checked under the caller's RLS). This is what stops the relay from reaching
+    // arbitrary external numbers — you can only message people already in your
+    // parish's request records, never a harvested/attacker-supplied list.
+    if (!(await recipientOnFile(supa, channel, to))) {
+      return json({
+        ok: false, error: 'recipient_not_on_file',
+        message: 'You can only notify contacts already on file for your parish (from their submitted requests).',
+      }, 403);
     }
 
     if (channel === 'sms') {

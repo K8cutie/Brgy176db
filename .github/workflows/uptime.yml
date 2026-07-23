@@ -1,0 +1,36 @@
+# ChurchOS — External Uptime Prober (DETECTION ONLY)
+#
+# This workflow is the external uptime prober that the SLO doc promised but was
+# never wired: it curls the production SPA shell on a schedule so that an outage
+# (non-2xx response or timeout) FAILS this job. GitHub's built-in Actions
+# failure notification (the email/notification sent to the repo's watchers when a
+# scheduled workflow fails) is the alert route for this minimal setup.
+#
+# SCOPE / LIMITS — this covers DETECTION only. Full alerting is NOT covered here:
+#   - Sentry alert rules (front-end error spikes)
+#   - Supabase log-based alerts (edge function / DB failures)
+#   - A real on-call channel (email / SMS / Slack / PagerDuty)
+# Those still require dashboard configuration in the respective services and
+# cannot be provisioned from this repo. This file only tells you WHEN the public
+# site stops answering — it does not page anyone beyond GitHub's default notice.
+#
+# No external service accounts and no secrets are required to run this workflow.
+
+name: Uptime Probe
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # every 10 minutes
+  workflow_dispatch: # allow manual runs from the GitHub UI
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe production SPA shell
+        run: |
+          curl --fail --show-error --max-time 20 --retry 2 \
+            https://churchos-fawn.vercel.app/

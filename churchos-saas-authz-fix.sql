@@ -292,7 +292,7 @@ begin
     if not exists (select 1 from public.parishes where id = new.parish_id and (public_config->>'intake_enabled') = 'true') then
       raise exception 'this parish is not accepting online requests';
     end if;
-    ip := coalesce(split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1), 'unknown');
+    ip := public.client_ip();   -- BUG-XFF: trusted-proxy hop, not the client-forged leftmost token
     perform public.rate_check('intake:' || ip || ':' || new.parish_id::text, 10, '1 minute');
     if length(coalesce(new.details, '{}'::jsonb)::text) > 8000 then raise exception 'request details too large'; end if;
     new.status := 'submitted'; new.payment_status := 'unpaid'; new.payment_ref := null;
@@ -339,15 +339,29 @@ create or replace function public.reserve_slot(p_slot uuid, p_name text, p_email
 returns uuid language plpgsql security definer set search_path = public as $$
 declare v_pid uuid; v_type text; v_at timestamptz; v_token uuid := gen_random_uuid(); v_req uuid; v_fee numeric; ip text;
 begin
-  ip := coalesce(split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1), 'unknown');
+  ip := public.client_ip();   -- BUG-XFF: trusted-proxy hop, not the client-forged leftmost token
   perform public.rate_check('reserve:ip:' || ip, 10, '1 minute');
   if length(coalesce(p_details::text, '{}')) > 8000 then raise exception 'details too large'; end if;
-  if coalesce(btrim(p_email), '') <> '' then
-    perform public.rate_check('reserve:email:' || lower(btrim(p_email)), 5, '1 hour');
-    if (select count(*) from public.availability_slots s join public.service_requests r on r.id = s.request_id
-        where s.status = 'held' and lower(r.requester_email) = lower(btrim(p_email))) >= 3 then
-      raise exception 'you already have pending bookings — please wait for the parish to confirm';
-    end if;
+  -- BUG-HOLD-DOS: a real email is REQUIRED so the per-email anti-griefing caps below
+  -- ALWAYS apply. Previously a blank (or rotating) email skipped both caps, letting
+  -- anon flip every bookable slot of a parish to 'held'.
+  if coalesce(btrim(p_email), '') = '' then
+    raise exception 'an email address is required to reserve a time';
+  end if;
+  perform public.rate_check('reserve:email:' || lower(btrim(p_email)), 5, '1 hour');
+  if (select count(*) from public.availability_slots s join public.service_requests r on r.id = s.request_id
+      where s.status = 'held' and lower(r.requester_email) = lower(btrim(p_email))) >= 3 then
+    raise exception 'you already have pending bookings — please wait for the parish to confirm';
+  end if;
+  -- Per-parish ceiling on concurrent ACTIVE holds, INDEPENDENT of email — so an
+  -- attacker rotating email addresses still cannot blanket a parish's published
+  -- window in 'held'. Derived from the target slot's parish before the flip.
+  select parish_id into v_pid from public.availability_slots where id = p_slot;
+  if v_pid is not null and (
+       select count(*) from public.availability_slots s
+       where s.parish_id = v_pid and s.status = 'held' and coalesce(s.held_until, now()) > now()
+     ) >= 20 then
+    raise exception 'too many pending reservations for this parish right now — please try again shortly';
   end if;
 
   update public.availability_slots
@@ -374,7 +388,212 @@ begin
   return v_token;
 end $$;
 
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-XFF — trustworthy client IP for rate limiting.
+-- The rate-limit key derived the client IP as the LEFTMOST X-Forwarded-For token
+-- (split_part(...,',',1)). In XFF the leftmost value is the one the CLIENT asserts;
+-- the trusted gateway APPENDS the real client address to the RIGHT. So the leftmost
+-- token is attacker-controlled — rotating it per request made every request a
+-- distinct key and the per-IP caps never accumulated. Take the LAST (trusted-proxy-
+-- appended) hop instead. Used by normalize_request (anon intake) and reserve_slot.
+-- ════════════════════════════════════════════════════════════════════════
+create or replace function public.client_ip()
+  returns text language plpgsql stable set search_path = public as $$
+declare xff text; parts text[];
+begin
+  xff := nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for';
+  if xff is null or btrim(xff) = '' then return 'unknown'; end if;
+  parts := string_to_array(xff, ',');
+  return coalesce(nullif(btrim(parts[array_length(parts, 1)]), ''), 'unknown');
+exception when others then
+  return 'unknown';
+end $$;
+
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-RL — rate_limits table is unprotected. Every domain table uses
+-- enable+force RLS or an explicit revoke (see app_secrets); rate_limits got
+-- NEITHER, so with the default Supabase grants an anon/authenticated caller can
+-- SELECT/DELETE/UPDATE the whole throttle store via PostgREST (wipe counters so no
+-- throttle ever trips, or lock a specific user out). rate_check() is SECURITY
+-- DEFINER (runs as owner, bypasses this revoke), so throttling keeps working. Do
+-- NOT force RLS here or the definer loses access — a plain revoke is the clean fix.
+-- ════════════════════════════════════════════════════════════════════════
+revoke all on public.rate_limits from public, anon, authenticated;
+
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-VERIFY-AUDIT — verify_audit(uuid) was SECURITY DEFINER (bypasses RLS)
+-- and granted to every authenticated user with NO tenant check: any signed-in user
+-- could pass another parish's uuid (freely enumerable via parish_public(slug)) and
+-- read that parish's audit client_ids + integrity flags, across diocese boundaries.
+-- Two fixes here:
+--   (1) tenant guard — parish-scoped roles may only verify their OWN parish;
+--       diocese_admin/bishop only parishes within their OWN diocese.
+--   (2) real chain verification — the old body recomputed each row's HMAC in
+--       ISOLATION, so a back-dated/misattributed/injected row with a random
+--       prev_hash still returned ok=true and an out-of-chain insert was invisible.
+--       Now walk the chain from the genesis root by prev_hash→hash linkage: a row
+--       is ok ONLY if its own HMAC validates AND it is reachable from a UNIQUE
+--       genesis via unbroken linkage. Forked/gapped/injected rows report ok=false.
+-- ════════════════════════════════════════════════════════════════════════
+create or replace function public.verify_audit(p_parish uuid default null)
+returns table(client_id text, ok boolean)
+language plpgsql security definer set search_path = public, extensions as $$
+declare k text; v_role text; v_genesis_count int;
+begin
+  -- Derive scope from the caller when no parish is given (the app-facing use). A
+  -- parish-scoped user thus need not know — or send — any parish uuid.
+  if p_parish is null then p_parish := public.auth_parish_id(); end if;
+  if p_parish is null then return; end if;   -- no scope (e.g. diocese role, no arg) → nothing
+  v_role := public.auth_role();
+  if v_role in ('diocese_admin','bishop') then
+    if not exists (select 1 from public.parishes
+                   where id = p_parish and diocese_id = public.auth_diocese_id()) then
+      raise exception 'not authorized';
+    end if;
+  elsif p_parish is distinct from public.auth_parish_id() then
+    raise exception 'not authorized';
+  end if;
+
+  select value into k from public.app_secrets where key = 'audit_hmac_key';
+
+  -- A well-formed chain has exactly ONE genesis root. If there are 0 or >1, the
+  -- chain is structurally broken/forked at the root → nothing can be certified ok.
+  select count(*) into v_genesis_count
+  from public.fee_override_audit a
+  where a.parish_id = p_parish and (a.prev_hash is null or a.prev_hash = 'GENESIS');
+
+  return query
+  with recursive chain as (
+    select a.id, a.hash,
+           (a.hash = encode(hmac(public.audit_payload(a), k, 'sha256'), 'hex')) as hmac_ok
+    from public.fee_override_audit a
+    where a.parish_id = p_parish
+      and (a.prev_hash is null or a.prev_hash = 'GENESIS')
+      and v_genesis_count = 1
+    union all
+    select n.id, n.hash,
+           (n.hash = encode(hmac(public.audit_payload(n), k, 'sha256'), 'hex'))
+    from public.fee_override_audit n
+    join chain c on n.prev_hash = c.hash
+    where n.parish_id = p_parish
+  )
+  select a.client_id,
+         -- ok ⇔ this row is reachable from the unique genesis via unbroken
+         -- prev_hash→hash linkage AND its own server HMAC validates. A tampered,
+         -- back-dated, misattributed, forked or injected (random prev_hash) row is
+         -- either unreachable (c.id is null) or fails its HMAC → ok = false.
+         (c.id is not null and coalesce(c.hmac_ok, false)) as ok
+  from public.fee_override_audit a
+  left join chain c on c.id = a.id
+  where a.parish_id = p_parish;
+end $$;
+revoke all on function public.verify_audit(uuid) from public, anon;
+grant execute on function public.verify_audit(uuid) to authenticated;
+
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-AUDIT-ATTR — the server HMAC certified CLIENT-SUPPLIED ts and recorded_by
+-- (derive_audit copied ts:=data->>'timestamp', recorded_by:=data->>'recordedBy'),
+-- so an insider could back-date a waiver and attribute it to another priest and the
+-- HMAC/verify_audit would still say ok=true. Set the trust-critical fields
+-- SERVER-SIDE for untrusted client writes: ts:=now(), recorded_by:=the real
+-- authenticated caller. Re-derives the flat columns exactly as the original then
+-- overrides the two trust fields; audit_hmac() (fires AFTER, name sorts later) signs
+-- these server-set values. service_role/seed writes (is_untrusted_client_write()=false)
+-- keep their supplied values so historical back-fills remain importable.
+-- ════════════════════════════════════════════════════════════════════════
+create or replace function public.derive_audit()
+returns trigger language plpgsql security definer set search_path = public, auth as $$
+declare v_actor text;
+begin
+  if jsonb_typeof(new.data) is distinct from 'object' then raise exception 'audit.data must be a JSON object'; end if;
+  new.ts           := nullif(new.data->>'timestamp','')::timestamptz;
+  new.sacrament    := new.data->>'sacrament';
+  new.registry_id  := new.data->>'registryId';
+  new.person_name  := new.data->>'personName';
+  new.override_type:= new.data->>'overrideType';
+  new.amount       := coalesce((new.data->>'amount')::numeric, 0);
+  new.reason       := new.data->>'reason';
+  new.recorded_by  := new.data->>'recordedBy';
+  new.prev_hash    := new.data->>'prevHash';
+  new.hash         := new.data->>'hash';
+  if not (new.amount >= 0 and new.amount <= 100000000) then raise exception 'waiver amount must be finite, >= 0, and within range'; end if;
+  -- Trust-critical override: for a direct public-API write, WHO and WHEN are set by
+  -- the server, not the client — this is what the HMAC then attests. (auth is only
+  -- reliable via auth.uid()/auth.role(); current_user is 'postgres' in a definer.)
+  if public.is_untrusted_client_write() then
+    new.ts := now();
+    select coalesce(nullif(btrim(p.full_name), ''), auth.uid()::text)
+      into v_actor from public.profiles p where p.id = auth.uid();
+    new.recorded_by := coalesce(v_actor, auth.uid()::text);
+  end if;
+  return new;
+end $$;
+
+-- ════════════════════════════════════════════════════════════════════════
+-- FIX BUG-APPROVAL — the ≥₱100k extraordinary-administration approval routing was
+-- purely client-side/advisory. derive_journal copied status verbatim and only
+-- checked that lines balance, so the Import wizard (always status:'Posted') and any
+-- raw PostgREST insert could land a multi-million entry as Posted, bypassing the
+-- Council/Bishop review a manual entry triggers. Enforce it SERVER-SIDE: an
+-- untrusted client write whose largest side ≥ ₱100k and whose status is a posting
+-- status is FORCED into the Pending approval queue (data.status kept in sync so the
+-- app reads Pending too). service_role/seed writes are unaffected. Mirrors
+-- getAmountApprovalLevel's first tier (financeData.ts).
+-- ════════════════════════════════════════════════════════════════════════
+create or replace function public.derive_journal()
+returns trigger language plpgsql security definer set search_path = public, auth as $$
+begin
+  if jsonb_typeof(new.data) is distinct from 'object' then raise exception 'journal.data must be a JSON object'; end if;
+  if new.data ? 'lines' and jsonb_typeof(new.data->'lines') is distinct from 'array' then raise exception 'journal lines must be an array'; end if;
+  new.lines    := coalesce(new.data->'lines', '[]'::jsonb);
+  new.total_dr := coalesce((new.data->>'totalDr')::numeric, 0);
+  new.total_cr := coalesce((new.data->>'totalCr')::numeric, 0);
+  new.date     := nullif(new.data->>'date','')::date;
+  new.reference:= new.data->>'reference';
+  new.description := new.data->>'description';
+  new.status   := new.data->>'status';
+  new.posted_by:= new.data->>'postedBy';
+  if new.total_dr <> new.total_cr then raise exception 'journal entry is not balanced (dr % <> cr %)', new.total_dr, new.total_cr; end if;
+  if public.is_untrusted_client_write()
+     and greatest(coalesce(new.total_dr,0), coalesce(new.total_cr,0)) >= 100000
+     and coalesce(new.status,'') not in ('Pending','Rejected','Draft') then
+    new.status := 'Pending';
+    new.data   := jsonb_set(new.data, '{status}', to_jsonb('Pending'::text));
+  end if;
+  return new;
+end $$;
+
 -- ── Verify (manual):
 --   select public.is_untrusted_client_write();                 -- false as owner
 --   -- a self-elevation UPDATE by an authenticated session must leave role unchanged
 --   -- a fresh overlapping calendar_events insert must RAISE 23P01
+--   -- verify_audit('<other-parish-uuid>') as a parish user must RAISE 'not authorized'
+--   -- select on public.rate_limits with the anon key must return 0 rows / be denied
+--   -- an anon reserve_slot with p_email='' must RAISE 'an email address is required'
+--   -- a ≥100k journal insert via the anon/authenticated key must land status='Pending'
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- FIX BUG-1h — derive_report()'s parish_id auto-set was dead code (gated on
+-- current_user, always the owner inside SECURITY DEFINER). Re-gate on
+-- is_untrusted_client_write() like force_parish_id (BUG-1b). Placed here (end of
+-- authz-fix) so a from-scratch golive/ALL regeneration defines is_untrusted_client_write
+-- AND runs the diocese_reports seed BEFORE this override — the seed uses the old
+-- (owner-trusted) function, then this replaces it for live client writes.
+-- ══════════════════════════════════════════════════════════════════════════
+create or replace function public.derive_report()
+returns trigger language plpgsql security definer set search_path = public, auth as $$
+begin
+  if public.is_untrusted_client_write() then
+    new.parish_id := auth_parish_id();
+  end if;
+  new.diocese_id := (select diocese_id from public.parishes where id = new.parish_id);
+  new.collections_total := coalesce(new.collections_total, 0);
+  new.expense_total := coalesce(new.expense_total, 0);
+  if not (new.collections_total >= 0 and new.expense_total >= 0
+          and new.collections_total <= 1000000000 and new.expense_total <= 1000000000) then
+    raise exception 'report amounts must be finite, >= 0, and within range';
+  end if;
+  new.net := new.collections_total - new.expense_total;
+  if new.period !~ '^\d{4}-\d{2}$' then raise exception 'period must be YYYY-MM'; end if;
+  return new;
+end $$;

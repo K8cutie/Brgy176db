@@ -18,6 +18,7 @@ import {
   Inbox,
   Landmark,
   ScrollText,
+  ScanLine,
 } from 'lucide-react';
 import { canSeeDiocese } from '@/lib/dioceseAccess';
 import { getModuleRegistry, subscribeModules, getModulesSnapshot } from '@/lib/moduleRegistry';
@@ -64,6 +65,7 @@ const SECTION_LAYOUT: Array<{ title: string; moduleIds: string[]; staticItems?: 
     title: 'SYSTEM',
     moduleIds: ['reports'],
     staticItems: [
+      { label: 'Scan documents', icon: ScanLine, path: '/scan' },
       { label: 'Import Data', icon: Upload, path: '/import' },
       { label: 'Settings', icon: Settings, path: '/settings' },
     ],

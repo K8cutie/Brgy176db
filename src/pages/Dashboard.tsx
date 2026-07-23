@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -27,11 +28,16 @@ import {
   Plus,
   BarChart3,
   Settings,
-  Sparkles
+  Sparkles,
+  X
 } from 'lucide-react';
 import * as ns from '@/lib/storageNamespaced';
 import { KEYS } from '@/lib/storageKeys';
+import { getOverdueScheduledItems, type OverdueScheduledItem } from '@/lib/registryData';
 import { format, parseISO, isToday, isTomorrow, isThisWeek, getDay, addDays } from 'date-fns';
+
+// Show the overdue pop-up at most once per browser session.
+const OVERDUE_DISMISS_KEY = 'churchos_overdue_dismissed';
 
 // --- Types ---
 interface CalendarEvent {
@@ -136,6 +142,12 @@ function formatEventDate(dateStr: string): string {
   if (isTomorrow(d)) return 'Tomorrow';
   if (isThisWeek(d)) return format(d, 'EEEE');
   return format(d, 'MMM d');
+}
+
+// Short date label for the overdue list ("Aug 17"); tolerant of a bad string.
+function overdueDateLabel(dateStr: string): string {
+  if (!dateStr) return '';
+  try { return format(parseISO(dateStr), 'MMM d'); } catch { return dateStr; }
 }
 
 const MINISTRY_ICONS: Record<string, React.ReactNode> = {
@@ -308,6 +320,10 @@ export default function Dashboard() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [ministries, setMinistries] = useState<Ministry[]>([]);
   const [hasRealEvents, setHasRealEvents] = useState(false);
+  /* Overdue-scheduled ceremonies (passed but not marked solemnized/cancelled).
+     Surfaced as a once-per-session pop-up + a small dashboard indicator. */
+  const [overdue, setOverdue] = useState<OverdueScheduledItem[]>([]);
+  const [showOverdueModal, setShowOverdueModal] = useState(false);
 
   const today = new Date();
   const todayDayName = DAY_NAMES[getDay(today)];
@@ -335,7 +351,25 @@ export default function Dashboard() {
     }
 
     setMinistries(persistedMinistries);
+
+    // Overdue-scheduled ceremonies across all four registers. Pop the modal once
+    // per session (sessionStorage flag) so it doesn't nag on every navigation;
+    // if left unresolved it returns next session.
+    const overdueItems = getOverdueScheduledItems();
+    setOverdue(overdueItems);
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem(OVERDUE_DISMISS_KEY) === '1'; } catch { /* private mode */ }
+    if (overdueItems.length > 0 && !dismissed) setShowOverdueModal(true);
   }, []);
+
+  const dismissOverdueModal = () => {
+    try { sessionStorage.setItem(OVERDUE_DISMISS_KEY, '1'); } catch { /* ignore */ }
+    setShowOverdueModal(false);
+  };
+  const reviewOverdue = () => {
+    dismissOverdueModal();
+    navigate('/registry?view=overdue');
+  };
 
   const eventDates = new Set(events.map(e => e.date));
 
@@ -393,6 +427,27 @@ export default function Dashboard() {
           <QuickActionCard key={idx} {...action} />
         ))}
       </div>
+
+      {/* Overdue-scheduled indicator (the pop-up modal is the primary surface) */}
+      {overdue.length > 0 && (
+        <button
+          onClick={() => navigate('/registry?view=overdue')}
+          className="w-full flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-left hover:bg-red-100 transition-colors"
+        >
+          <AlertCircle className="h-5 w-5 text-red-600 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-red-900">
+              {overdue.length} {overdue.length === 1 ? 'ceremony needs' : 'ceremonies need'} closing out
+            </p>
+            <p className="text-sm text-red-700/80">
+              Scheduled ceremonies that have passed but aren&apos;t marked solemnized or cancelled.
+            </p>
+          </div>
+          <span className="text-sm font-medium text-red-700 flex items-center shrink-0">
+            Review <ChevronRight className="ml-1 h-4 w-4" />
+          </span>
+        </button>
+      )}
 
       {/* MAIN GRID: Events + Calendar + Ministry Schedules */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -662,6 +717,69 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ── Overdue-scheduled pop-up — primary surface, once per session ── */}
+      <AnimatePresence>
+        {showOverdueModal && overdue.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
+            onClick={dismissOverdueModal}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              transition={{ duration: 0.2 }}
+              className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between px-6 py-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                    <AlertCircle className="w-5 h-5 text-red-600" />
+                  </div>
+                  <h2 className="text-lg font-semibold text-slate-900">Ceremonies need closing out</h2>
+                </div>
+                <button
+                  onClick={dismissOverdueModal}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  aria-label="Dismiss"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="px-6 py-5">
+                <p className="text-sm text-slate-600">
+                  {overdue.length} scheduled {overdue.length === 1 ? 'ceremony has' : 'ceremonies have'} passed but {overdue.length === 1 ? "hasn't" : "haven't"} been marked solemnized or cancelled:
+                </p>
+                <ul className="mt-3 space-y-2">
+                  {overdue.slice(0, 5).map((o) => (
+                    <li key={o.id} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="font-medium text-slate-800 truncate">{o.label}</span>
+                      <span className="text-slate-500 shrink-0">{overdueDateLabel(o.date)}</span>
+                    </li>
+                  ))}
+                </ul>
+                {overdue.length > 5 && (
+                  <p className="mt-2 text-sm text-slate-500">+{overdue.length - 5} more</p>
+                )}
+              </div>
+              <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100">
+                <Button variant="ghost" onClick={dismissOverdueModal} className="text-slate-600 hover:text-slate-900">
+                  Later
+                </Button>
+                <Button onClick={reviewOverdue} className="bg-amber-600 hover:bg-amber-700 text-white">
+                  Review
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

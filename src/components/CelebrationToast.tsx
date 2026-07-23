@@ -65,7 +65,7 @@ export default function CelebrationToast({ achievement, onClose }: CelebrationTo
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -30, scale: 0.95 }}
           transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-[100] w-full max-w-md"
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-[100] w-full max-w-md pointer-events-none"
         >
           <div className={`bg-white dark:bg-dm-surface rounded-xl shadow-xl border-2 ${colors.border} p-4 flex items-start gap-3 mx-4`}>
             {/* Icon */}
@@ -101,7 +101,7 @@ export default function CelebrationToast({ achievement, onClose }: CelebrationTo
                 setVisible(false);
                 setTimeout(onClose, 300);
               }}
-              className="text-warm-gray/50 hover:text-charcoal dark:hover:text-dm-text transition-colors mt-0.5"
+              className="pointer-events-auto text-warm-gray/50 hover:text-charcoal dark:hover:text-dm-text transition-colors mt-0.5"
             >
               <X className="w-4 h-4" />
             </button>

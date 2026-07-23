@@ -916,26 +916,29 @@ export function buildImportedRecord(
     ? { accountCode: '1000', accountName: 'Cash on Hand', debit: 0, credit: amount }
     : { accountCode: '1000', accountName: 'Cash on Hand', debit: amount, credit: 0 };
 
+  // A large legacy row must NOT be booked straight to 'Posted' — that bypasses the
+  // ≥₱100k extraordinary-administration approval routing a manual entry triggers
+  // (and the server now FORCES such an entry to Pending in derive_journal, so a
+  // client 'Posted' would just desync the UI from the ledger). Route it to the
+  // Pending approval queue instead; small rows stay 'Posted' as before.
+  const approval = getAmountApprovalLevel(amount);
+  const needsApproval = approval.label !== 'Direct Post';
   const record: JournalEntry = {
     id: `JE-IMP-${uid}`,
     date: isoOrRaw(mapped.date),
     reference: (mapped.reference ?? '').trim() || 'Legacy import',
     description: (mapped.description ?? '').trim() || 'Imported legacy transaction',
     lines: side === 'debit' ? [accountLine, cashLine] : [cashLine, accountLine],
-    status: 'Posted',
+    status: needsApproval ? 'Pending' : 'Posted',
     postedBy: (mapped.postedBy ?? '').trim() || importedBy,
     totalDr: amount,
     totalCr: amount,
+    ...(needsApproval ? { requiredApproval: approval.label } : {}),
   };
 
-  // Imported historical rows stay 'Posted' — they are already-happened facts and
-  // making them Pending would break the imported books. But a large legacy row is
-  // flagged in the audit log for the finance council, using the same ≥₱100k
-  // threshold that routes a manual journal entry to Council Review (identical to
-  // donors.recordDonorContribution / massIntentions' direct-post receipt paths).
-  if (getAmountApprovalLevel(amount).label !== 'Direct Post') {
+  if (needsApproval) {
     appendFinanceAudit('Flagged', record.id,
-      `Large historical entry imported — ${formatPeso(amount)} (${record.reference}) recorded to ledger; review recommended`);
+      `Large historical entry imported — ${formatPeso(amount)} (${record.reference}) routed to ${approval.label}`);
   }
   return { store: 'journalEntries', record };
 }
@@ -951,14 +954,14 @@ export interface DuplicateInfo {
   reason: string;
 }
 
-const normText = (v: unknown) => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+export const normText = (v: unknown) => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 // Token-sorted so an unsplit PIMS full name ("MARIA CLARA SANTOS") still
 // matches a hand-entered record split into first "Maria Clara" + last "Santos".
-const normName = (...parts: unknown[]) =>
+export const normName = (...parts: unknown[]) =>
   parts.map(normText).join(' ').split(' ').filter(Boolean).sort().join(' ');
 
-const normDateKey = (v: unknown) => {
+export const normDateKey = (v: unknown) => {
   const s = String(v ?? '').trim();
   return convertDate(s) ?? s;
 };
@@ -970,7 +973,7 @@ const normAmount = (v: unknown) => {
 
 export type RegistryRecordType = 'baptism' | 'marriage' | 'confirmation' | 'death';
 
-const REGISTRY_KEY_FIELDS: Record<RegistryRecordType, { last: string; first: string; date: string }> = {
+export const REGISTRY_KEY_FIELDS: Record<RegistryRecordType, { last: string; first: string; date: string }> = {
   baptism: { last: 'childLastName', first: 'childFirstName', date: 'dateOfBaptism' },
   marriage: { last: 'groomLastName', first: 'groomFirstName', date: 'dateOfMarriage' },
   confirmation: { last: 'confirmandLastName', first: 'confirmandFirstName', date: 'dateOfConfirmation' },
@@ -995,7 +998,7 @@ function financeAmountOf(rec: Record<string, any>): string {
 
 // A record only gets a key when every key component is present — an
 // incomplete key must not flag half the file as duplicates.
-function dedupKey(rec: Record<string, any>, module: ImportTarget): string | null {
+export function dedupKey(rec: Record<string, any>, module: ImportTarget): string | null {
   if (module === 'registry') {
     const type = registryTypeOf(rec);
     if (!type) return null;

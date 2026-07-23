@@ -40,7 +40,7 @@ import interactionPlugin from '@fullcalendar/interaction';
 import type { EventDropArg, DateSelectArg, EventClickArg } from '@fullcalendar/core';
 import { Toaster, toast } from 'sonner';
 import {
-  SAMPLE_EVENTS, EVENT_COLORS, LOCATIONS, PRIESTS, findConflicts,
+  SAMPLE_EVENTS, EVENT_COLORS, LOCATIONS, findConflicts,
   getPublicTitle, checkEventConflicts, validateSchedulingRules, getRegistryLabel,
   eventTypeToRuleKey, isSacramentEventType, getNextAvailableDay, SCHEDULING_RULES,
 } from '@/lib/calendarData';
@@ -55,6 +55,7 @@ import EmptyState from '@/components/EmptyState';
 import HelpTooltip from '@/components/HelpTooltip';
 import { getLabel } from '@/lib/friendlyLabels';
 import PriestScheduleExport from '@/components/PriestScheduleExport';
+import { clergyNames } from '@/lib/clergy';
 
 type CalendarView = 'month' | 'week' | 'day' | 'list';
 
@@ -72,6 +73,20 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function cn(...classes: (string | false | undefined)[]) {
   return classes.filter(Boolean).join(' ');
+}
+
+/* Officiant picker options: the active clergy full names (managed in Settings),
+   which are exactly the strings the ICS schedule export matches on. TOLERANT:
+   an event that already carries an officiant not in the clergy list (a legacy
+   value, or a since-deactivated priest) keeps it as a selectable option so
+   editing an old event never blanks or drops its officiant. */
+function officiantOptions(current?: string): string[] {
+  const names = clergyNames();
+  const cur = (current || '').trim();
+  if (cur && !names.some((n) => n.toLowerCase() === cur.toLowerCase())) {
+    return [cur, ...names];
+  }
+  return names;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1910,8 +1925,8 @@ function EventModal({ onClose, onSave, onDelete, event, defaultDate, allEvents }
                 className="w-full h-10 px-3 rounded-lg border border-parchment bg-white text-charcoal focus:outline-none focus:border-gold dark:bg-dm-surface-raised dark:border-dm-border dark:text-dm-text"
               >
                 <option value="">None</option>
-                {PRIESTS.map(p => (
-                  <option key={p.name} value={p.name}>{p.name}</option>
+                {officiantOptions(officiant).map(name => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </select>
             </div>

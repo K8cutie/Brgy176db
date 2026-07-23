@@ -68,9 +68,14 @@ begin
     if not exists (select 1 from public.parishes where id = new.parish_id and (public_config->>'intake_enabled') = 'true') then
       raise exception 'this parish is not accepting online requests';
     end if;
-    -- (#1) rate-limit anon submissions per IP per parish
+    -- (#1) rate-limit anon submissions per IP per parish. NOTE: x-forwarded-for is
+    -- client-spoofable (rotate the header → a fresh bucket each request), so this is
+    -- best-effort ONLY — the unspoofable per-parish ceiling below is the real bound.
     ip := coalesce(split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1), 'unknown');
     perform public.rate_check('intake:' || ip || ':' || new.parish_id::text, 10, '1 minute');
+    -- (#5, Overseer L004) unspoofable per-PARISH ceiling — parish_id is server-derived from the
+    -- row, so forging IPs can't escape it. Bounds total anon intake per parish per minute.
+    perform public.rate_check('intake:parish:' || new.parish_id::text, 60, '1 minute');
     -- (#12) cap the details payload size
     if length(coalesce(new.details, '{}'::jsonb)::text) > 8000 then raise exception 'request details too large'; end if;
 
