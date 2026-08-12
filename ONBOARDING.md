@@ -23,8 +23,10 @@ desktop install, see `BETA-RUNBOOK.md`.
 ---
 
 ## Phase 0 — Platform prerequisites (once per deployment, not per parish)
-- [ ] SaaS is live and verified — `SAAS-GOLIVE.md` complete (schema run in order,
-      **`churchos-saas-authz-fix.sql` applied**, tenant-isolation probe passes).
+- [ ] SaaS is live and verified — schema applied via the migration chain
+      (**`supabase db push`**, see `MIGRATIONS.md`; the authz guards are
+      migrations 0007+), tenant-isolation probe passes
+      (`archive/sql/churchos-saas-rls-probe.sql`, run manually).
 - [ ] **`ANTHROPIC_API_KEY` set** in Supabase → Edge Functions → Secrets (wakes the
       scan reader + Cherub). Verify: an authenticated `scan-extract` call returns
       `bad_request`, not `no_key`. **Set the console spend limit + keep credit topped.**
@@ -38,9 +40,10 @@ The sale + the account. Mom's relationship carries this.
 - [ ] **Pitch the diocese:** "standardize every parish so mandated priest rotations
       stop breaking things," anchored on the **November budget-hearing audit**
       (months → days) and clean 6-year endorsements. Mom = the credibility.
-- [ ] **Provision the diocese** via `churchos-saas-onboarding.sql` (self-service
-      diocese onboarding + parish invites). This creates the `diocese_admin`, the
-      diocese, and the first parish shell.
+- [ ] **Provision the diocese** via the self-service onboarding RPCs
+      (`onboard_new_admin` + parish invites — schema in migration 0001, guards
+      re-gated in 0007). This creates the `diocese_admin`, the diocese, and the
+      first parish shell.
 - [ ] Confirm billing terms (per-parish subscription; mom's service fee separate).
 
 ---

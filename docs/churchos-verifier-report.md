@@ -3,7 +3,9 @@
 **Environment:** LOCAL THROWAWAY Supabase (Docker, `127.0.0.1`). DB `postgres@127.0.0.1:54322`,
 API `127.0.0.1:54321`. PostgreSQL 17.6. No hosted/cloud credentials were used.
 **Schema:** the 8 `churchos-saas-*.sql` files applied unmodified, in order
-(setup → onboarding → security-prep → portal → scheduling → billing → reports → seed).
+(setup → onboarding → security-prep → portal → scheduling → billing → reports → seed)
+— those hand-applied scripts are since frozen in `archive/sql/`; the canonical
+schema today is the `supabase/migrations/` chain (see `MIGRATIONS.md`).
 **Focal parish:** **St. Mary Magdalene Parish** (`a1111111-…`, Archdiocese of Manila, secretary *Aida*).
 **Simulated span:** 8 weeks, **2026-05-04 → 2026-06-28** (collections land 2026-05-10 → 2026-06-28).
 **Simulator:** `scripts/sim/churchos-sim.mjs` (Node + `@supabase/supabase-js` 2.108.2; reproducible).
@@ -150,8 +152,8 @@ on hosted Supabase. Recorded for reproducibility:
 ```bash
 cd /c/app
 npx supabase start
-# apply the 8 churchos-saas-*.sql in order (setup→onboarding→security-prep→portal→
-#   scheduling→billing→reports→seed) via: docker exec -i supabase_db_app psql -U postgres -d postgres < <file>
-# (+ the two portability fixes in the Appendix)
+npx supabase db reset    # applies the canonical supabase/migrations/ chain + seed
+# (historical run used the 8 root churchos-saas-*.sql scripts, now archive/sql/,
+#  + the two portability fixes in the Appendix)
 node scripts/sim/churchos-sim.mjs        # runs the 8-week sim + 25 assertions
 ```

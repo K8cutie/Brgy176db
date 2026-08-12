@@ -8,8 +8,9 @@ is a Vite SPA — perfect for Vercel. The **desktop app is separate** (Electron,
 - the **diocese cockpit + online parish login** at `your-domain/` (bishop/admin)
 
 ## Prerequisites
-- The cloud DB is live: run the SQL in `SAAS-GOLIVE.md` order **including
-  `churchos-saas-authz-fix.sql` last** (without it the auth guards are dead).
+- The cloud DB is live: apply the migration chain in `supabase/migrations/`
+  (`supabase db push` — see `MIGRATIONS.md`). The authz guards ship inside the
+  chain (0001 + 0007 and later); there is no separate script to run last.
 - You have the Supabase **Project URL** and **anon key** (Settings → API). The
   anon key is browser-safe — RLS is the boundary.
 

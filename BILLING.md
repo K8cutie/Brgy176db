@@ -7,7 +7,9 @@ offline-first product. This documents the model + the Xendit wiring to switch on
 when you're ready. Nothing here is live yet.
 
 ## The model
-- **One subscription per parish** (`subscriptions` table, `churchos-saas-billing.sql`).
+- **One subscription per parish** (`subscriptions` table — schema ships in the
+  migration chain, `supabase/migrations/20260712120001_baseline_golive.sql`;
+  retired source: `archive/sql/churchos-saas-billing.sql`).
 - **States:** `trial` (30 days, auto-started when a parish is provisioned) → `active`
   (paying) → `past_due` (a charge retried) → `suspended` (charges failed) →
   `cancelled`. The state mirrors to `parishes.billing_status`.

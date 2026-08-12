@@ -1,70 +1,107 @@
 # ChurchOS — Database migrations
 
-> Owner: Platform &nbsp;|&nbsp; Last reviewed: 2026-07-15
+> Owner: Platform &nbsp;|&nbsp; Last reviewed: 2026-08-13
 
-The backend schema now lives as an ordered migration chain in
-**`supabase/migrations/`**, so a fresh Supabase project can be rebuilt with a
-single **`supabase db push`** — instead of applying the loose `churchos-saas-*.sql`
-scripts by hand in the right order.
+**`supabase/migrations/` is the SINGLE canonical source of the ChurchOS
+schema.** A fresh Supabase project is rebuilt with one `supabase db push`;
+every schema change is a NEW `supabase/migrations/<ts>_*.sql` file, nothing is
+ever applied by hand out-of-band.
 
-## The chain (what maps to what)
+The old contract — root `churchos-saas-*.sql` scripts as "human-editable
+sources" that each migration had to mirror byte-for-byte — is **retired**
+(structural audit 2026-08-13 §1: the mirror silently broke; the authz file
+reached three divergent versions at once). The root scripts are frozen in
+**`archive/sql/`** for provenance only (see `archive/sql/README.md`, which
+records that history). Do not edit them; do not apply them.
 
-| # | Migration | Source script | What it is |
-|---|---|---|---|
-| 1 | `…120001_baseline_golive.sql` | `churchos-saas-golive.sql` | **Consolidated baseline** — org+tenancy, domain tables, RLS, guard triggers, onboarding/reports/portal/scheduling/security-prep/billing RPCs, and the authz-fix re-gating, all in one. |
-| 2 | `…120002_feature_tables.sql` | `churchos-saas-feature-tables.sql` | donors / pledges / contributions / OR series, etc. |
-| 3 | `…120003_portal_config.sql` | `churchos-saas-portal-config.sql` | parishioner-portal configuration. |
-| 4 | `…120004_ai_cost_guardrails.sql` | `churchos-saas-ai-cost-guardrails.sql` | `rate_allow` + `ai_budget`/`ai_usage` + `ai_budget_allow` (per-tenant AI cost gate). |
-| 5 | `…120005_hardening.sql` | `churchos-saas-hardening.sql` | post-audit hardening. |
-| 6 | `…120006_form_scans.sql` | `churchos-saas-form-scans.sql` | private per-parish `form-scans` Storage bucket + RLS. |
+## The chain
 
-**Seed** (`churchos-saas-seed.sql`) → **`supabase/seed.sql`** — demo dioceses/parishes/logins.
-It is DATA, not schema: Supabase applies it on `supabase db reset` (local) but does
-**not** run it on a prod `db push`. Never load it into a real parish's project.
+| # | Migration | What it is |
+|---|---|---|
+| 1 | `…120001_baseline_golive.sql` | **Consolidated baseline** — org+tenancy, domain tables, RLS, guard triggers, onboarding/reports/portal/scheduling/security-prep/billing RPCs, and the first authz-fix wave, all in one. |
+| 2 | `…120002_feature_tables.sql` | donors / pledges / contributions / OR series, etc. |
+| 3 | `…120003_portal_config.sql` | parishioner-portal configuration RPCs. |
+| 4 | `…120004_ai_cost_guardrails.sql` | `rate_allow` + `ai_budget`/`ai_usage` + `ai_budget_allow` (per-tenant AI cost gate). |
+| 5 | `…120005_hardening.sql` | post-audit hardening. |
+| 6 | `…120006_form_scans.sql` | private per-parish `form-scans` Storage bucket + RLS. |
+| 7 | `…120007_authz_fix.sql` | back-port of the authz fixes (dead `current_user` guards → `is_untrusted_client_write()`). |
+| 8 | `…120008_diocese_read_pii_scopedown.sql` | drops `diocese_read_*` from parishioner/donor/sacrament PII tables (RA 10173 posture). |
+| 9 | `…120009_derive_report_force_parish.sql` | re-gates `derive_report`'s server-side parish stamp (BUG-1h). |
+| 10 | `…120010_audit_chain_and_intake_cap.sql` | audit `prev_hash` server-chaining + RLS-layer anon intake size cap. |
+| 11 | *(in flight — see note below)* | storage analog of 0008 + config-RPC grant realign + TRUNCATE revoke. |
+| 12 | `…120012_sacrament_engine.sql` | **the agentic sacrament engine** (`sacrament_requests`/`sacrament_events`, one state machine + human gate + register dispatch for baptism/wedding/confirmation/funeral) — previously applied to prod ONLY as a root script, now migrationized with explicit grants. |
 
-**Deliberately NOT migrations:**
-- `churchos-saas-setup.sql` + `-onboarding`/`-reports`/`-portal`/`-scheduling`/`-security-prep`/`-billing`/`-authz-fix` — **consolidated into `golive.sql`** (which literally begins with the setup section and contains all their objects).
-- `churchos-saas-ALL.sql` — a **stale** generated concatenation (predates `golive.sql`); ignore it.
-- `churchos-saas-rls-probe*.sql`, `churchos-saas-portal-intake.test.sql` — **tests/probes**, run manually to verify, not schema.
+> **The 0011 gap:** `20260712120011_storage_pii_scopedown_and_grant_realign.sql`
+> was authored on branch `fix/ci-dep-vulns` (commit `9d62bf5`) and **is already
+> applied to prod**, whose migration ledger was initialized 2026-07-27 for
+> 0001–0011. Until that branch lands, this branch's tree has no 0011 file —
+> which is fine for a local `db reset`, but a prod `supabase db push` will
+> refuse (remote ledger knows a version the local tree lacks). **Merge
+> `fix/ci-dep-vulns` (or cherry-pick `9d62bf5`) before any prod push.**
+> 0012 was numbered to leave its slot free.
+
+**Seed** — `supabase/seed.sql` (ex `churchos-saas-seed.sql`): demo
+dioceses/parishes/logins. It is DATA, not schema: Supabase applies it on
+`supabase db reset` (local) but not on a prod `db push`. Never load it into a
+real parish's project.
+
+**Not migrations:** `archive/sql/churchos-saas-rls-probe*.sql` and
+`…portal-intake.test.sql` are manual verification probes;
+`archive/sql/churchos-saas-ALL.sql` is a **stale generated concat — frozen, do
+not apply** (it predates the 0009/0010 security fixes and lacks the sacrament
+engine entirely).
 
 Every migration is idempotent (`create … if not exists`, `create or replace`,
 `drop policy … before create`) and contains **no** non-transactional statements
 (`concurrently`, `vacuum`, `alter type … add value`), so `db push` (which wraps
-each migration in a transaction) is safe.
+each migration in a transaction) is safe. New tables/functions must carry
+**explicit GRANTs in the migration itself** — grant state applied out-of-band
+is this family's known rebuild killer.
 
 ## Rebuild a FRESH project (the reproducibility goal)
 ```bash
 supabase link --project-ref <new-ref>
-supabase db push          # applies migrations 1→6 = the whole schema
+supabase db push          # applies the whole chain = the whole schema
 # then, separately (not in migrations):
 supabase functions deploy ai scan-extract notify xendit-webhook --use-api
 supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # runtime secret, dashboard-managed
 ```
 
-## Adopt this for the EXISTING prod project (already built out-of-band)
-Prod already has all of this applied by hand, so its migration ledger is empty.
-Do **not** `db push` it (that would re-run everything). Instead mark the baseline
-as already-applied so the ledger matches reality and only FUTURE migrations push:
+## Prod ledger
+
+Initialized **2026-07-27** for 0001–0011 (branch `fix/ci-dep-vulns`, applied
+live): prod's `supabase_migrations` ledger now matches its actual state, after
+a long stretch with no ledger at all — during which 0008 was silently skipped
+in prod while 0009/0010 landed. The ledger exists precisely so that class of
+gap can't recur; keep it honest.
+
+### Reconciling 0012 (operator step — run once, after this branch merges)
+
+Prod ALREADY has the entire sacrament engine (it was applied out-of-band as
+`churchos-saas-sacraments.sql` long ago); 0012 only re-homes it into the chain.
+Two ways to make the ledger agree, **either is correct**:
+
 ```bash
 supabase link --project-ref eosbjxavrvmxafpvoroj
-supabase migration repair --status applied 20260712120001 20260712120002 20260712120003 20260712120004 20260712120005 20260712120006
-supabase migration list   # should now show all six as applied on remote
+# Option A (preferred): mark as applied — zero DDL executed against prod.
+supabase migration repair --status applied 20260712120012
+# Option B: push it — 0012 is idempotent by construction, so this is a no-op
+# apply that also proves the file runs against prod. Requires the 0011 FILE to
+# be present locally first (see the 0011 note above), or push will refuse.
+supabase db push
+supabase migration list   # either way: local == remote through 120012
 ```
-After that, every new schema change is a new `supabase/migrations/<ts>_*.sql`
-file → `supabase db push`, and the ledger stays honest. No more out-of-band drift.
 
-## Verification status (honest)
-- ✅ Each migration is a byte-for-byte copy of a `churchos-saas-*.sql` script that
-  was already applied to and verified against **live prod** — they are known-good.
-- ✅ Ordered by dependency (golive baseline first, then additive); no
-  push-incompatible statements.
-- ⚠️ A true from-scratch `supabase db push` to a **fresh** project was **not** run
-  here — it needs Docker (for the local shadow DB) or a new cloud project, neither
-  available in this environment. That push is the definitive reproducibility test;
-  run it once against a throwaway project to confirm before relying on it.
+**Decision note:** prefer **A**. The schema is verifiably already live, so
+executing DDL against prod buys nothing except risk-surface (Option B's only
+edge — proving the file executes — is already covered by the local
+`supabase db reset` verification). Use B only if you specifically want prod's
+apply history to show the migration ran.
 
-## Note on drift
-The `churchos-saas-*.sql` root scripts remain as the human-editable sources and the
-out-of-band (`db query --linked --file`) fallback. Going forward, treat
-`supabase/migrations/` as **canonical**: make schema changes as new migration files,
-and keep the two in sync if you edit a source script.
+## Going forward
+
+1. Schema change = new `supabase/migrations/<ts>_*.sql` (idempotent, explicit
+   grants, unique timestamp — a shared numeric prefix makes the ledger silently
+   skip one).
+2. `supabase db push` to prod; never `db query` schema by hand again.
+3. CI lints `supabase/migrations/` (squawk) — the root `*.sql` glob is gone.

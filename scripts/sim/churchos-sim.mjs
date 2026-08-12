@@ -23,7 +23,7 @@ if (!ANON || !SERVICE) {
   process.exit(1);
 }
 
-// Fixed seed UUIDs (from churchos-saas-seed.sql)
+// Fixed seed UUIDs (from supabase/seed.sql, ex churchos-saas-seed.sql)
 const MANILA = '11111111-1111-1111-1111-111111111111';
 const CUBAO  = '22222222-2222-2222-2222-222222222222';
 const ST_MARY  = 'a1111111-1111-1111-1111-111111111111'; // FOCAL parish (Manila)
