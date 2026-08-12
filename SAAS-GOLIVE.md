@@ -10,35 +10,34 @@ into a live, tested one.
 Supabase dashboard → **New project**. Note the **Project URL** and **anon key**
 (Settings → API). Keep the **service_role** key secret — it bypasses all security.
 
-## 2. Run the schema (SQL Editor, in this order)
-1. `churchos-saas-setup.sql` — tables, RLS, guard triggers, the verification query.
-2. `churchos-saas-onboarding.sql` — self-service diocese onboarding + invites.
-3. `churchos-saas-reports.sql` — monthly diocese financial packets.
-4. `churchos-saas-portal.sql` — parishioner self-service intake queue.
-5. `churchos-saas-scheduling.sql` — self-service sacrament slot booking.
-6. `churchos-saas-security-prep.sql` — audit HMAC + rate limiting.
-7. `churchos-saas-billing.sql` — per-parish subscriptions (Xendit-ready).
-8. `churchos-saas-seed.sql` — 2 dioceses, 3 parishes, 4 logins, demo data, portal slugs.
-9. **`churchos-saas-authz-fix.sql`** — ⚠ **LAUNCH-BLOCKER, MUST RUN LAST.** The guard
-   triggers in (1)/(4)/(5) gate on `current_user`, which is dead inside their
-   `SECURITY DEFINER` bodies (it's always `postgres`) — so without this fix a parish
-   user can self-elevate to bishop and hop tenants. This re-gates them on
-   `auth.role()` + a secret-nonce capability. Re-runnable; verified locally.
+## 2. Run the schema (the migration chain)
+```bash
+supabase link --project-ref <your-new-ref>
+supabase db push          # applies supabase/migrations/ in order = the whole schema
+```
+See `MIGRATIONS.md` for the chain map. The authz re-gating (the old
+"authz-fix runs LAST" launch-blocker: guard triggers gated on `current_user`,
+dead inside `SECURITY DEFINER` — a parish user could self-elevate and hop
+tenants) is inside the chain (0001 + 0007 and later); nothing is applied by
+hand anymore. Demo seed data (`supabase/seed.sql`) loads on a local
+`supabase db reset` only — never load it into a real parish's project.
 
-After (1), the verification query at the bottom must show **every** table with
-`rls_enabled = true` and `policies ≥ 1`. A `false` is a release blocker.
+> The numbered per-script run order this section used to carry is retired; the
+> hand-applied scripts are frozen in `archive/sql/` for provenance.
 
-**Prove the fix** (after step 9): run the self-elevation probe — an `authenticated`
-session doing `update profiles set role='bishop' where id=auth.uid()` must leave
-`role` unchanged. `churchos-saas-rls-probe.sql` includes this check (`c1`).
+**Prove the fix** (after the push): run the self-elevation probe — an
+`authenticated` session doing `update profiles set role='bishop' where
+id=auth.uid()` must leave `role` unchanged.
+`archive/sql/churchos-saas-rls-probe.sql` includes this check (`c1`).
 
 The **public parishioner portal** is then at `…/#/portal/st-mary` (mobile-first).
 
-After (1), the verification query at the bottom must show **every** table with
-`rls_enabled = true` and `policies ≥ 1`. A `false` is a release blocker.
+The RLS verification query (bottom of `archive/sql/churchos-saas-setup.sql`)
+must show **every** table with `rls_enabled = true` and `policies ≥ 1`. A
+`false` is a release blocker.
 
 ## 3. Prove tenant isolation (the real test)
-Run `churchos-saas-rls-probe.sql`. Every returned row must show **`pass = true`**:
+Run `archive/sql/churchos-saas-rls-probe.sql`. Every returned row must show **`pass = true`**:
 it impersonates the seeded secretaries + bishop and confirms cross-parish reads,
 cross-diocese reads, self-promotion, forged-parish inserts, and the view leak are
 all blocked. (The append-only-audit check is a commented block that should *error*
@@ -74,4 +73,4 @@ Roque waiver, and **not** Sto. Niño (it's in another diocese).
 - Billing enforcement (suspend on non-payment) — `billing_status` exists, nothing
   acts on it yet.
 - Rate limiting, Realtime authorization review, point-in-time-recovery config.
-- The ops checklist in `churchos-saas-setup.sql` §6b (service_role key hygiene, etc).
+- The ops checklist in `archive/sql/churchos-saas-setup.sql` §6b (service_role key hygiene, etc).

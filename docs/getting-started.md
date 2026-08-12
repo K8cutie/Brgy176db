@@ -68,7 +68,7 @@ npm run test:coverage   # coverage for the tested business logic in src/lib
 | Error boundary + monitoring | `src/components/ErrorBoundary.tsx`, `src/lib/monitoring.ts` |
 | Electron main/preload/auth/sync | `electron/` |
 | Edge functions (Deno) | `supabase/functions/ai`, `supabase/functions/xendit-webhook`, shared `_shared/log.ts` |
-| SQL schema/setup | repo root `*.sql` (e.g. `churchos-saas-setup.sql`) |
+| SQL schema/setup | `supabase/migrations/` (canonical chain — see `MIGRATIONS.md`); retired hand-applied scripts frozen in `archive/sql/` |
 | Docs | `docs/` (this folder) |
 | Regression harnesses | `tests/` (`*.cjs`) |
 

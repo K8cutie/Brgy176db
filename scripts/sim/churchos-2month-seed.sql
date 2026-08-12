@@ -1,6 +1,8 @@
 -- ChurchOS Verifier — 2-month presentable dataset (DATA-ONLY snapshot)
 -- Focal parish: St. Mary Magdalene (a1111111-...), Manila. Span: 2026-05-04 .. 2026-06-28.
--- Restore into a DB that already has the 8 churchos-saas-*.sql schema applied:
+-- Restore into a DB that already has the schema applied (canonical: the
+-- supabase/migrations/ chain; historically the 8 root churchos-saas-*.sql
+-- scripts, now archive/sql/):
 --   docker exec -i <db> psql -U postgres -d postgres < churchos-2month-seed.sql
 -- Throwaway demo data + test logins only (pw Test1234!).
 

@@ -7,7 +7,9 @@
 -- anon key; client_ip() undefined; audit back-dating; >=100k approval bypass).
 -- Runs LAST — depends on objects from 0001..0006. Idempotent (create-or-replace
 -- + guarded DDL), so re-applying against the already-patched live DB is a no-op.
--- Source of truth reconciled: keep this file == churchos-saas-authz-fix.sql.
+-- Source of truth: this CHAIN (2026-08-13 — the old "keep this file ==
+-- churchos-saas-authz-fix.sql" mirror contract is retired; that root script is
+-- frozen in archive/sql/ and its later deltas live in migrations 0009/0010).
 -- ══════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════

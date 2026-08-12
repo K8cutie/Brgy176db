@@ -1,5 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ChurchOS RE-VERIFY — focused regression after churchos-saas-authz-fix.sql
+// ChurchOS RE-VERIFY — focused regression after the authz fixes (migration
+// 20260712120007_authz_fix.sql; retired source archive/sql/churchos-saas-authz-fix.sql)
 // LOCAL THROWAWAY Supabase only (127.0.0.1). Uses the SAME real auth + PostgREST
 // path as the sim. Re-checks the two fixed bugs (self-elevation, calendar overlap)
 // + the previously-passing controls most coupled to the fix. Non-destructive:
