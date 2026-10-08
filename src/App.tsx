@@ -6,7 +6,7 @@ import { hasSetupBeenCompleted } from '@/lib/store'
 import { setPersistedWriteErrorHandler } from '@/hooks/usePersistedState'
 import { setCorruptionHandler } from '@/lib/storageNamespaced'
 import { setDesktopWriteErrorHandler } from '@/lib/desktopStore'
-import { setCloudWriteErrorHandler, isCloud, retryPendingCloudWrites } from '@/lib/cloudStore'
+import { setCloudWriteErrorHandler, setCloudWriteConflictHandler, isCloud, retryPendingCloudWrites } from '@/lib/cloudStore'
 import { toast } from 'sonner'
 import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
@@ -119,6 +119,14 @@ function AppRoutes() {
     setPersistedWriteErrorHandler(warn);
     setDesktopWriteErrorHandler(warn);
     setCloudWriteErrorHandler(warnCloud);
+    // The database REFUSED a save (someone else already booked that priest/church/time, or a
+    // duplicate). Say so plainly — it was not saved, and retrying will not change that.
+    setCloudWriteConflictHandler((reasons) => {
+      toast.error(`Not saved — ${reasons[0]}.${reasons.length > 1 ? ` (${reasons.length - 1} more not saved for the same reason.)` : ''} Reload to see the current schedule.`, {
+        id: 'cloud-write-conflict', duration: Infinity,
+        action: { label: 'Reload', onClick: () => window.location.reload() },
+      });
+    });
     setCorruptionHandler((key) => {
       toast.error(`Some saved data ("${key}") was unreadable and has been set aside (kept as a "${key}__corrupt" copy). Your other records are safe — restore from a backup in Settings if needed.`, {
         duration: 12000,
@@ -128,6 +136,7 @@ function AppRoutes() {
       setPersistedWriteErrorHandler(null);
       setDesktopWriteErrorHandler(null);
       setCloudWriteErrorHandler(null);
+      setCloudWriteConflictHandler(null);
       setCorruptionHandler(null);
     };
   }, []);
