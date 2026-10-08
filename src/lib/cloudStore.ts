@@ -122,6 +122,30 @@ function singletonFor(fullKey: string): string | null {
 let onWriteError: (() => void) | null = null;
 export function setCloudWriteErrorHandler(fn: (() => void) | null) { onWriteError = fn; }
 
+// A write the DATABASE refused — a calendar overlap (23P01: the overlap trigger or the
+// EXCLUDE constraints), a duplicate key (23505) — is NOT a connectivity failure. Retrying
+// the same row can never succeed, and the person must be told the booking did NOT happen.
+// Before this, a second secretary booking an already-taken priest/church slot saw the
+// wedding stay on her calendar, was told "check your connection and retry", and a later
+// edit cleared the error so Retry said "All changes saved" for a booking the database had
+// refused. (Live-proven 2026-10-08: 10 simultaneous bookings, 1 stored, 9 told nothing true.)
+let onWriteConflict: ((messages: string[]) => void) | null = null;
+export function setCloudWriteConflictHandler(fn: ((messages: string[]) => void) | null) { onWriteConflict = fn; }
+const CONFLICT_CODES = new Set(['23P01', '23505']);
+type DbError = { code?: string; message?: string };
+function isConflict(e: unknown): e is DbError {
+  return !!e && typeof e === 'object' && CONFLICT_CODES.has(String((e as DbError).code));
+}
+/** Plain words for a refused write — the trigger's own message where it has one. */
+export function describeConflict(e: DbError): string {
+  const m = e.message ?? '';
+  if (/excl_officiant/i.test(m)) return 'the officiant is already booked at that time';
+  if (/excl_location/i.test(m)) return 'that location is already booked at that time';
+  if (/^calendar conflict:/i.test(m)) return m.replace(/^calendar conflict:\s*/i, '').replace(/ existing event [0-9a-f-]{36}/i, ' another event');
+  if (e.code === '23505') return 'it duplicates a record that already exists';
+  return m || 'the database refused it';
+}
+
 // ── shared Supabase client (data + auth share one session) ──
 import { getSupabase } from './supabaseClient';
 type SupabaseLike = {
@@ -250,7 +274,11 @@ export function cloudSet(fullKey: string, value: string): boolean {
   if (key) {
     let arr: Item[];
     try { arr = JSON.parse(value); } catch { return false; }
-    const prev = cache[key] ?? [];   // capture BEFORE overwrite so reconcile can diff
+    // Diff against what is actually PERSISTED. While an earlier write of this table is still
+    // queued as failed, the cache holds rows the server never got; diffing against the cache
+    // would drop them from this write, and its success would clear the failure — silently
+    // losing the earlier change. The failed entry's `prev` is the last persisted state.
+    const prev = failedWrites.get(key)?.prev ?? cache[key] ?? [];   // capture BEFORE overwrite
     cache[key] = arr;
     void reconcile(key, arr, prev);
     return true;
@@ -268,7 +296,7 @@ export function cloudSet(fullKey: string, value: string): boolean {
 
 export function cloudRemove(fullKey: string): void {
   const key = tableFor(fullKey);
-  if (key) { const prev = cache[key] ?? []; cache[key] = []; void reconcile(key, [], prev); return; }
+  if (key) { const prev = failedWrites.get(key)?.prev ?? cache[key] ?? []; cache[key] = []; void reconcile(key, [], prev); return; }
   const skey = singletonFor(fullKey);
   if (skey) { delete settingsCache[skey]; void removeSingleton(skey); }
 }
@@ -319,7 +347,30 @@ async function reconcile(key: string, arr: Item[], prev: Item[]): Promise<void> 
       const up = appendOnly
         ? await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id', ignoreDuplicates: true })
         : await supa.from(key).upsert(rows, { onConflict: 'parish_id,client_id' });
-      if (up.error) throw up.error;
+      if (up.error) {
+        if (appendOnly || !isConflict(up.error)) throw up.error;
+        // One refused row fails the whole bulk upsert. Save the rows the database accepts
+        // one at a time and collect the ones it refuses.
+        const refused: { id: string; why: string }[] = [];
+        for (const row of rows) {
+          const one = await supa.from(key).upsert([row], { onConflict: 'parish_id,client_id' });
+          if (!one.error) continue;
+          if (!isConflict(one.error)) throw one.error;
+          refused.push({ id: row.client_id as string, why: describeConflict(one.error) });
+        }
+        if (refused.length) {
+          // Undo the optimistic cache for exactly the refused rows — restore the persisted
+          // version, or drop a row the server never had — so nothing claims it was saved and
+          // the next save cannot resend it. A reload now shows the same thing the cache does.
+          const ids = new Set(refused.map((r) => r.id));
+          cache[key] = (cache[key] ?? []).flatMap((i) => {
+            if (!ids.has(i.id as string)) return [i];
+            const before = prevById.get(i.id as string);
+            return before ? [before] : [];
+          });
+          if (onWriteConflict) onWriteConflict(refused.map((r) => r.why));
+        }
+      }
     }
 
     // Delete ONLY the rows this change actually removed — scoped to explicit
